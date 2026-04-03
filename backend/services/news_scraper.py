@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-import feedparser
+try:
+    import feedparser
+    _FEEDPARSER_AVAILABLE = True
+except ImportError:
+    _FEEDPARSER_AVAILABLE = False
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -80,6 +85,8 @@ class NewsScraper:
         return self._deduplicate(items)
 
     def _fetch_rss_feeds(self) -> list[NewsItem]:
+        if not _FEEDPARSER_AVAILABLE:
+            return self._fetch_rss_via_requests()
         items = []
         for source, url in RSS_FEEDS.items():
             try:
@@ -92,11 +99,44 @@ class NewsScraper:
                 logger.warning("RSS feed error for %s: %s", source, e)
         return items
 
+    def _fetch_rss_via_requests(self) -> list[NewsItem]:
+        """Fallback RSS parser using requests + BeautifulSoup when feedparser unavailable."""
+        items = []
+        for source, url in RSS_FEEDS.items():
+            try:
+                resp = self.session.get(url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                soup = BeautifulSoup(resp.content, "xml")
+                for entry in soup.find_all("item")[:20]:
+                    headline = entry.find("title")
+                    headline = headline.get_text().strip() if headline else ""
+                    if not headline:
+                        continue
+                    summary_tag = entry.find("description") or entry.find("summary")
+                    summary = BeautifulSoup(summary_tag.get_text() if summary_tag else "", "html.parser").get_text()[:500]
+                    link = entry.find("link")
+                    url_str = link.get_text().strip() if link else ""
+                    tickers = TICKER_RE.findall(headline + " " + summary)
+                    items.append(NewsItem(
+                        source=source,
+                        headline=headline,
+                        summary=summary,
+                        url=url_str,
+                        published_at=datetime.now(timezone.utc),
+                        ticker=tickers[0] if tickers else None,
+                    ))
+            except Exception as e:
+                logger.warning("RSS fallback error for %s: %s", source, e)
+        return items
+
     def _fetch_yahoo_finance(self, ticker: str) -> list[NewsItem]:
         try:
-            import yfinance as yf
-            t = yf.Ticker(ticker)
-            news = t.news or []
+            url = f"https://query1.finance.yahoo.com/v1/finance/search?q={ticker}&newsCount=10&enableFuzzyQuery=false"
+            resp = self.session.get(url, timeout=8)
+            if resp.status_code != 200:
+                return []
+            news = resp.json().get("news", [])
             items = []
             for n in news[:10]:
                 headline = n.get("title", "").strip()
@@ -107,7 +147,7 @@ class NewsScraper:
                 items.append(NewsItem(
                     source="Yahoo Finance",
                     headline=headline,
-                    summary=n.get("summary", "")[:500],
+                    summary="",
                     url=n.get("link", ""),
                     published_at=pub_dt,
                     ticker=ticker,

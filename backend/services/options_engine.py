@@ -17,7 +17,14 @@ def _format_news(items) -> str:
     lines = []
     for it in items[:40]:
         lines.append(f"- [{it.ticker or 'MARKET'}] {it.source}: {it.headline}")
-    return "\n".join(lines) if lines else "No recent news available."
+    if not lines:
+        return (
+            "Live news feeds are unavailable in this environment. "
+            "Base recommendations on current market conditions, recent macro trends "
+            "(tariff news, Fed policy, earnings season), and technical price action. "
+            f"Today's date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}."
+        )
+    return "\n".join(lines)
 
 
 def _format_price_data(data: dict) -> str:

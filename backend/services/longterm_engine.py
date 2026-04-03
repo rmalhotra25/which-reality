@@ -17,7 +17,14 @@ def _format_news(items) -> str:
     lines = []
     for it in items[:40]:
         lines.append(f"- [{it.ticker or 'MARKET'}] {it.source}: {it.headline}")
-    return "\n".join(lines) if lines else "No recent news available."
+    if not lines:
+        return (
+            "Live news feeds are unavailable in this environment. "
+            "Base recommendations on well-known fundamentals, long-term secular trends "
+            "(AI, energy transition, healthcare, consumer staples), and dividend reliability. "
+            f"Today's date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}."
+        )
+    return "\n".join(lines)
 
 
 def _format_fundamentals(data: dict) -> str:

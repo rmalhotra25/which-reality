@@ -23,6 +23,8 @@ HEADERS = {
     )
 }
 
+REQUEST_TIMEOUT = 8  # seconds; sources that don't respond are skipped silently
+
 RSS_FEEDS = {
     "Reuters": "https://feeds.reuters.com/reuters/businessNews",
     "CNBC": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
@@ -104,7 +106,7 @@ class NewsScraper:
         items = []
         for source, url in RSS_FEEDS.items():
             try:
-                resp = self.session.get(url, timeout=10)
+                resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
                 if resp.status_code != 200:
                     continue
                 soup = BeautifulSoup(resp.content, "xml")
@@ -133,7 +135,7 @@ class NewsScraper:
     def _fetch_yahoo_finance(self, ticker: str) -> list[NewsItem]:
         try:
             url = f"https://query1.finance.yahoo.com/v1/finance/search?q={ticker}&newsCount=10&enableFuzzyQuery=false"
-            resp = self.session.get(url, timeout=8)
+            resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
             if resp.status_code != 200:
                 return []
             news = resp.json().get("news", [])
@@ -160,7 +162,7 @@ class NewsScraper:
     def _fetch_stocktwits(self, ticker: str) -> list[NewsItem]:
         try:
             url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
-            resp = self.session.get(url, timeout=8)
+            resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
             if resp.status_code != 200:
                 return []
             data = resp.json()

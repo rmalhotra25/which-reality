@@ -1,8 +1,11 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,3 +52,13 @@ app.include_router(longterm.router, prefix="/api/longterm", tags=["Long-Term"])
 @app.get("/api/health", tags=["Health"])
 def health():
     return {"status": "ok"}
+
+
+# Serve the built React frontend — must come last
+_frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_frontend_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_frontend_dist, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        return FileResponse(os.path.join(_frontend_dist, "index.html"))

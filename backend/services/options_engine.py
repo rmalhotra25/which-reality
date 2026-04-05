@@ -8,7 +8,10 @@ from models.recommendation import Recommendation, TabType, GradeEnum
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
 from services.claude_analyst import ClaudeAnalyst
-from services.quant_scorer import compute_options_quant_score, compute_entry_exit_options
+from services.quant_scorer import (
+    compute_options_quant_score, compute_entry_exit_options,
+    recommend_strategy_type, compute_entry_exit_multi_leg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +111,20 @@ class OptionsEngine:
                 if t in technicals:
                     technicals[t].update(options_data[t])
 
-            # Pre-compute quantitative scores for each ticker
+            # Pre-compute quantitative scores + strategy recommendation for each ticker
             quant_scores = {}
             for ticker, tech in technicals.items():
                 if tech:
                     qs = compute_options_quant_score(tech)
+                    strategy = recommend_strategy_type(tech)
                     ee = compute_entry_exit_options(tech, option_type="CALL")
-                    quant_scores[ticker] = {**qs, "entry_exit": ee}
+                    ml = compute_entry_exit_multi_leg(tech, strategy)
+                    quant_scores[ticker] = {
+                        **qs,
+                        "entry_exit": ee,
+                        "recommended_strategy": strategy,
+                        "multi_leg": ml,
+                    }
 
             news_str = _format_news(news)
             tech_str = _format_technicals(technicals)
@@ -147,6 +157,9 @@ class OptionsEngine:
                 from services.quant_scorer import compute_entry_exit_options as _cee
                 ee = _cee(tech, option_type="PUT")
 
+            strategy_type = str(rec.get("strategy_type") or qs_data.get("recommended_strategy") or "single_leg")
+            ml = qs_data.get("multi_leg", {})
+
             obj = Recommendation(
                 tab=TabType.options,
                 ticker=ticker,
@@ -158,12 +171,23 @@ class OptionsEngine:
                 qual_score=round(qual_score, 1),
                 combined_score=combined,
                 quant_components=json.dumps(qs_data.get("components", {})),
-                option_type=opt_type,
+                option_type=opt_type if strategy_type == "single_leg" else "N/A",
+                strategy_type=strategy_type,
                 strike=rec.get("strike"),
                 expiry=rec.get("expiry"),
                 entry_price=rec.get("entry_price"),
                 exit_price=rec.get("exit_price"),
                 stop_loss=rec.get("stop_loss"),
+                # Multi-leg strikes (Claude primary, quant fallback)
+                short_call_strike=rec.get("short_call_strike") or ml.get("short_call_strike"),
+                long_call_strike=rec.get("long_call_strike") or ml.get("long_call_strike"),
+                short_put_strike=rec.get("short_put_strike") or ml.get("short_put_strike"),
+                long_put_strike=rec.get("long_put_strike") or ml.get("long_put_strike"),
+                net_credit=rec.get("net_credit") or ml.get("net_credit"),
+                max_profit=rec.get("max_profit") or ml.get("max_profit"),
+                max_loss=rec.get("max_loss") or ml.get("max_loss"),
+                breakeven_low=rec.get("breakeven_low") or ml.get("breakeven_low"),
+                breakeven_high=rec.get("breakeven_high") or ml.get("breakeven_high"),
                 underlying_entry=rec.get("underlying_entry") or ee.get("underlying_entry"),
                 underlying_target=rec.get("underlying_target") or ee.get("underlying_target"),
                 underlying_stop=rec.get("underlying_stop") or ee.get("underlying_stop"),

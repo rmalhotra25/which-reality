@@ -18,11 +18,22 @@ class RecommendationSchema(BaseModel):
     quant_components: Optional[str] = None
     # Options-specific
     option_type: Optional[str] = None
+    strategy_type: Optional[str] = None
     strike: Optional[float] = None
     expiry: Optional[str] = None
     entry_price: Optional[float] = None
     exit_price: Optional[float] = None
     stop_loss: Optional[float] = None
+    # Multi-leg strikes
+    short_call_strike: Optional[float] = None
+    long_call_strike: Optional[float] = None
+    short_put_strike: Optional[float] = None
+    long_put_strike: Optional[float] = None
+    net_credit: Optional[float] = None
+    max_profit: Optional[float] = None
+    max_loss: Optional[float] = None
+    breakeven_low: Optional[float] = None
+    breakeven_high: Optional[float] = None
     underlying_entry: Optional[float] = None
     underlying_target: Optional[float] = None
     underlying_stop: Optional[float] = None

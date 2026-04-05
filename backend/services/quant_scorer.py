@@ -291,6 +291,169 @@ def compute_longterm_quant_score(technicals: dict, fundamentals: dict) -> dict:
     }
 
 
+def recommend_strategy_type(technicals: dict) -> str:
+    """
+    Recommend the most appropriate options strategy based on technical conditions.
+
+    Returns one of:
+      single_leg        — strong directional momentum (buy call or put outright)
+      iron_condor       — range-bound, collect premium from both sides
+      bull_put_spread   — mildly bullish, sell put spread for credit
+      bear_call_spread  — mildly bearish, sell call spread for credit
+      bull_call_spread  — moderately bullish, buy call spread for debit
+      bear_put_spread   — moderately bearish, buy put spread for debit
+    """
+    rsi  = technicals.get("rsi") or 50
+    macd = technicals.get("macd") or {}
+    bb   = technicals.get("bollinger") or {}
+    ma   = technicals.get("moving_averages") or {}
+    iv   = technicals.get("iv_rank_approx") or technicals.get("atm_iv") or 30
+
+    crossover = macd.get("crossover", "neutral")
+    histogram = macd.get("histogram", 0) or 0
+    pct_b     = bb.get("pct_b", 0.5) or 0.5
+    squeeze   = bb.get("squeeze", False)
+    above50   = ma.get("above_ma50", None)
+    above200  = ma.get("above_ma200", None)
+
+    # Strong directional — outright single-leg option is best
+    strong_bull = rsi < 32 and crossover == "bullish"
+    strong_bear = rsi > 68 and crossover == "bearish"
+    if strong_bull or strong_bear:
+        return "single_leg"
+
+    # Breakout incoming (BB squeeze) — single leg for max leverage
+    if squeeze and abs(histogram) > 0.3:
+        return "single_leg"
+
+    # Range-bound with elevated IV — iron condor
+    range_bound = 40 <= rsi <= 60 and 0.25 <= pct_b <= 0.75 and crossover == "neutral"
+    if range_bound and iv >= 35:
+        return "iron_condor"
+
+    # Mild bearish with high IV — credit spread (bear call)
+    if rsi > 58 and (crossover == "bearish" or histogram < -0.1) and iv >= 30:
+        return "bear_call_spread"
+
+    # Mild bullish with high IV — credit spread (bull put)
+    if rsi < 52 and (crossover == "bullish" or histogram > 0.1) and iv >= 30:
+        return "bull_put_spread"
+
+    # Moderate bearish — debit spread (bear put)
+    if rsi > 60 and crossover == "bearish":
+        return "bear_put_spread"
+
+    # Moderate bullish — debit spread (bull call)
+    if rsi < 45 and crossover == "bullish":
+        return "bull_call_spread"
+
+    # Default: single leg if no clear multi-leg setup
+    return "single_leg"
+
+
+def compute_entry_exit_multi_leg(technicals: dict, strategy: str) -> dict:
+    """
+    Calculate strikes, max profit, max loss, and breakevens for multi-leg strategies.
+    All values are per-share (multiply by 100 for per-contract).
+    """
+    price = technicals.get("price")
+    atr   = technicals.get("atr")
+    fib   = technicals.get("fibonacci") or {}
+    ma    = technicals.get("moving_averages") or {}
+
+    if not price or not atr:
+        return {"strategy_type": strategy}
+
+    wing = round(atr * 1.5, 2)   # width of each spread wing (≈1.5 ATR)
+
+    fib618  = fib.get("fib_618")
+    fib382  = fib.get("fib_382")
+    fib236  = fib.get("fib_236")
+    ma50    = ma.get("ma50")
+    ma200   = ma.get("ma200")
+
+    result = {"strategy_type": strategy}
+
+    if strategy == "iron_condor":
+        # Short strangle 1 ATR out; wings 1.5 ATR further
+        sc = round(price + atr, 2)         # short call
+        lc = round(sc + wing, 2)           # long call (wing)
+        sp = round(price - atr, 2)         # short put
+        lp = round(sp - wing, 2)           # long put (wing)
+        # Net credit: rough estimate (~30% of wing width each side)
+        credit = round(wing * 0.30 * 2, 2)
+        result.update({
+            "short_call_strike": sc, "long_call_strike": lc,
+            "short_put_strike": sp, "long_put_strike": lp,
+            "net_credit": credit,
+            "max_profit": round(credit * 100, 0),
+            "max_loss": round((wing - credit) * 100, 0),
+            "breakeven_low":  round(sp - credit, 2),
+            "breakeven_high": round(sc + credit, 2),
+        })
+
+    elif strategy == "bull_put_spread":
+        # Short put at Fib/MA support; long put = wing below
+        sp = fib618 or ma50 or round(price - atr, 2)
+        sp = round(sp, 2)
+        lp = round(sp - wing, 2)
+        credit = round(wing * 0.35, 2)
+        result.update({
+            "short_put_strike": sp, "long_put_strike": lp,
+            "net_credit": credit,
+            "max_profit": round(credit * 100, 0),
+            "max_loss": round((wing - credit) * 100, 0),
+            "breakeven_low": round(sp - credit, 2),
+        })
+
+    elif strategy == "bear_call_spread":
+        # Short call at Fib/resistance; long call = wing above
+        sc = fib236 or fib382 or round(price + atr, 2)
+        if sc <= price:
+            sc = round(price + atr, 2)
+        sc = round(sc, 2)
+        lc = round(sc + wing, 2)
+        credit = round(wing * 0.35, 2)
+        result.update({
+            "short_call_strike": sc, "long_call_strike": lc,
+            "net_credit": credit,
+            "max_profit": round(credit * 100, 0),
+            "max_loss": round((wing - credit) * 100, 0),
+            "breakeven_high": round(sc + credit, 2),
+        })
+
+    elif strategy == "bull_call_spread":
+        # Buy call near price; sell call = wing above
+        lc = round(price, 2)
+        sc = round(lc + wing, 2)
+        debit = round(wing * 0.40, 2)
+        result.update({
+            "long_call_strike": lc, "short_call_strike": sc,
+            "net_credit": -debit,
+            "max_profit": round((wing - debit) * 100, 0),
+            "max_loss": round(debit * 100, 0),
+            "breakeven_high": round(lc + debit, 2),
+        })
+
+    elif strategy == "bear_put_spread":
+        # Buy put near price; sell put = wing below
+        lp = round(price, 2)
+        sp = round(lp - wing, 2)
+        debit = round(wing * 0.40, 2)
+        result.update({
+            "long_put_strike": lp, "short_put_strike": sp,
+            "net_credit": -debit,
+            "max_profit": round((wing - debit) * 100, 0),
+            "max_loss": round(debit * 100, 0),
+            "breakeven_low": round(lp - debit, 2),
+        })
+
+    else:  # single_leg — use regular entry/exit calc
+        pass
+
+    return result
+
+
 def compute_entry_exit_options(technicals: dict, option_type: str = "CALL") -> dict:
     """
     Suggest entry/exit/stop for an options trade based purely on ATR and Fib levels.

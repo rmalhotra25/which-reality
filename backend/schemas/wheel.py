@@ -14,6 +14,13 @@ class WheelRecommendationSchema(BaseModel):
     put_expiry: Optional[str] = None
     put_premium: Optional[float] = None
     iv_rank: Optional[float] = None
+    # Dual confidence scores
+    quant_score: Optional[float] = None
+    qual_score: Optional[float] = None
+    combined_score: Optional[float] = None
+    quant_components: Optional[str] = None
+    pct_otm: Optional[float] = None
+    breakeven: Optional[float] = None
     run_at: datetime
     accepted: bool
     accepted_at: Optional[datetime] = None

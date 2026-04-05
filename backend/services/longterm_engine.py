@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from models.recommendation import Recommendation, TabType, GradeEnum
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
 from services.claude_analyst import ClaudeAnalyst
+from services.quant_scorer import compute_longterm_quant_score, compute_entry_exit_longterm
 
 logger = logging.getLogger(__name__)
 
@@ -94,24 +96,50 @@ class LongTermEngine:
             technicals = self.stock_data.get_technicals_bulk(LONGTERM_UNIVERSE)
             news_str = _format_news(news)
             fund_str = _format_fundamentals_and_technicals(fundamentals, technicals)
-            recs = self.analyst.analyze_longterm(news_str, fund_str)
-            self._store(recs, run_at)
+
+            # Pre-compute quantitative scores
+            quant_scores = {}
+            for ticker in set(list(technicals.keys()) + list(fundamentals.keys())):
+                tech = technicals.get(ticker, {}) or {}
+                fund = fundamentals.get(ticker, {}) or {}
+                if tech or fund:
+                    qs = compute_longterm_quant_score(tech, fund)
+                    ee = compute_entry_exit_longterm(tech, fund)
+                    quant_scores[ticker] = {**qs, "entry_exit": ee}
+
+            recs = self.analyst.analyze_longterm(news_str, fund_str, quant_scores=quant_scores)
+            self._store(recs, run_at, quant_scores)
             logger.info("LongTermEngine: stored %d recommendations", len(recs))
         except Exception as e:
             logger.error("LongTermEngine run failed: %s", e, exc_info=True)
 
-    def _store(self, recs: list[dict], run_at: datetime) -> None:
+    def _store(self, recs: list[dict], run_at: datetime, quant_scores: dict | None = None) -> None:
+        quant_scores = quant_scores or {}
         for rec in recs:
+            ticker = str(rec.get("ticker", "")).upper()
+            qual_score = float(rec.get("qual_score") or rec.get("score", 50))
+            qs_data = quant_scores.get(ticker, {})
+            quant_score = qs_data.get("composite", None)
+            combined = round(0.4 * quant_score + 0.6 * qual_score, 1) if quant_score is not None else qual_score
+
+            ee = qs_data.get("entry_exit", {})
             obj = Recommendation(
                 tab=TabType.longterm,
-                ticker=str(rec.get("ticker", "")).upper(),
+                ticker=ticker,
                 rank=int(rec.get("rank", 0)),
                 score=float(rec.get("score", 50)),
                 grade=_grade_to_enum(str(rec.get("grade", "C"))),
                 explanation=str(rec.get("explanation", "")),
+                quant_score=round(quant_score, 1) if quant_score is not None else None,
+                qual_score=round(qual_score, 1),
+                combined_score=combined,
+                quant_components=json.dumps(qs_data.get("components", {})),
                 investment_type=str(rec.get("investment_type", "growth")).lower(),
                 target_price=rec.get("target_price"),
                 time_horizon=rec.get("time_horizon"),
+                buy_zone_low=rec.get("buy_zone_low") or ee.get("buy_zone_low"),
+                buy_zone_high=rec.get("buy_zone_high") or ee.get("buy_zone_high"),
+                invalidation_stop=rec.get("invalidation_stop") or ee.get("invalidation_stop"),
                 run_at=run_at,
             )
             self.db.add(obj)

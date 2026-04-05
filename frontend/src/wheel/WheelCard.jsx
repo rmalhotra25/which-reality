@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
+import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import AcceptModal from './AcceptModal'
 
@@ -70,10 +71,21 @@ export default function WheelCard({ rec, onAccepted }) {
         </div>
       </div>
 
-      <div>
-        <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>CONVICTION SCORE</div>
-        <ScoreBar score={rec.score} />
-      </div>
+      {rec.combined_score != null ? (
+        <div>
+          <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>CONFIDENCE SCORE</div>
+          <DualScorePanel
+            quantScore={rec.quant_score}
+            qualScore={rec.qual_score}
+            combinedScore={rec.combined_score}
+          />
+        </div>
+      ) : (
+        <div>
+          <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>CONVICTION SCORE</div>
+          <ScoreBar score={rec.score} />
+        </div>
+      )}
 
       <TradingViewWidget ticker={rec.ticker} />
 
@@ -95,6 +107,16 @@ export default function WheelCard({ rec, onAccepted }) {
             <td style={s.td}>IV Rank</td>
             <td style={s.tdVal}>{rec.iv_rank ? `${rec.iv_rank}` : '—'}</td>
           </tr>
+          {(rec.pct_otm != null || rec.breakeven != null) && (
+            <tr>
+              <td style={s.td}>% OTM</td>
+              <td style={s.tdVal}>{rec.pct_otm != null ? `${rec.pct_otm}%` : '—'}</td>
+              <td style={s.td}>Breakeven</td>
+              <td style={{ ...s.tdVal, color: '#fbd38d' }}>
+                {rec.breakeven != null ? `$${Number(rec.breakeven).toFixed(2)}` : '—'}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 

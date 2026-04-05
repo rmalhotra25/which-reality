@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from models.recommendation import Recommendation, TabType, GradeEnum
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
 from services.claude_analyst import ClaudeAnalyst
+from services.quant_scorer import compute_options_quant_score, compute_entry_exit_options
 
 logger = logging.getLogger(__name__)
 
@@ -106,31 +108,65 @@ class OptionsEngine:
                 if t in technicals:
                     technicals[t].update(options_data[t])
 
+            # Pre-compute quantitative scores for each ticker
+            quant_scores = {}
+            for ticker, tech in technicals.items():
+                if tech:
+                    qs = compute_options_quant_score(tech)
+                    ee = compute_entry_exit_options(tech, option_type="CALL")
+                    quant_scores[ticker] = {**qs, "entry_exit": ee}
+
             news_str = _format_news(news)
             tech_str = _format_technicals(technicals)
             market_context = f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
 
-            recs = self.analyst.analyze_options(news_str, tech_str, market_context)
-            self._store(recs, run_at)
+            recs = self.analyst.analyze_options(news_str, tech_str, market_context,
+                                                quant_scores=quant_scores)
+            self._store(recs, run_at, technicals, quant_scores)
             logger.info("OptionsEngine: stored %d recommendations", len(recs))
         except Exception as e:
             logger.error("OptionsEngine run failed: %s", e, exc_info=True)
 
-    def _store(self, recs: list[dict], run_at: datetime) -> None:
+    def _store(self, recs: list[dict], run_at: datetime,
+               technicals: dict | None = None, quant_scores: dict | None = None) -> None:
+        technicals = technicals or {}
+        quant_scores = quant_scores or {}
         for rec in recs:
+            ticker = str(rec.get("ticker", "")).upper()
+            qual_score = float(rec.get("qual_score") or rec.get("score", 50))
+            qs_data = quant_scores.get(ticker, {})
+            quant_score = qs_data.get("composite", None)
+            combined = round(0.4 * quant_score + 0.6 * qual_score, 1) if quant_score is not None else qual_score
+
+            # Entry/exit: prefer Claude's values; fall back to quant calculator
+            ee = qs_data.get("entry_exit", {})
+            opt_type = str(rec.get("option_type", "CALL")).upper()
+            # Recompute if we need PUT entry/exit
+            tech = technicals.get(ticker, {})
+            if tech and opt_type == "PUT":
+                from services.quant_scorer import compute_entry_exit_options as _cee
+                ee = _cee(tech, option_type="PUT")
+
             obj = Recommendation(
                 tab=TabType.options,
-                ticker=str(rec.get("ticker", "")).upper(),
+                ticker=ticker,
                 rank=int(rec.get("rank", 0)),
                 score=float(rec.get("score", 50)),
                 grade=_grade_to_enum(str(rec.get("grade", "C"))),
                 explanation=str(rec.get("explanation", "")),
-                option_type=str(rec.get("option_type", "CALL")).upper(),
+                quant_score=round(quant_score, 1) if quant_score is not None else None,
+                qual_score=round(qual_score, 1),
+                combined_score=combined,
+                quant_components=json.dumps(qs_data.get("components", {})),
+                option_type=opt_type,
                 strike=rec.get("strike"),
                 expiry=rec.get("expiry"),
                 entry_price=rec.get("entry_price"),
                 exit_price=rec.get("exit_price"),
                 stop_loss=rec.get("stop_loss"),
+                underlying_entry=rec.get("underlying_entry") or ee.get("underlying_entry"),
+                underlying_target=rec.get("underlying_target") or ee.get("underlying_target"),
+                underlying_stop=rec.get("underlying_stop") or ee.get("underlying_stop"),
                 run_at=run_at,
             )
             self.db.add(obj)

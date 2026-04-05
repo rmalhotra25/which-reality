@@ -8,6 +8,7 @@ from models.wheel import WheelRecommendation, WheelPosition, WheelStatus
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
 from services.claude_analyst import ClaudeAnalyst
+from services.quant_scorer import compute_wheel_quant_score, compute_entry_exit_wheel
 
 logger = logging.getLogger(__name__)
 
@@ -85,24 +86,52 @@ class WheelEngine:
             news_str = _format_news(news)
             screening_str = _format_screening(screening)
             logger.info("WheelEngine: fetched technicals for %d tickers", len(screening))
-            recs = self.analyst.analyze_wheel(news_str, screening_str)
-            self._store(recs, run_at)
+
+            # Pre-compute quantitative scores
+            quant_scores = {}
+            for ticker, tech in screening.items():
+                if tech:
+                    qs = compute_wheel_quant_score(tech)
+                    ee = compute_entry_exit_wheel(tech)
+                    quant_scores[ticker] = {**qs, "entry_exit": ee}
+
+            recs = self.analyst.analyze_wheel(news_str, screening_str, quant_scores=quant_scores)
+            self._store(recs, run_at, quant_scores)
             logger.info("WheelEngine: stored %d recommendations", len(recs))
         except Exception as e:
             logger.error("WheelEngine run failed: %s", e, exc_info=True)
 
-    def _store(self, recs: list[dict], run_at: datetime) -> None:
+    def _store(self, recs: list[dict], run_at: datetime, quant_scores: dict | None = None) -> None:
+        quant_scores = quant_scores or {}
         for rec in recs:
+            ticker = str(rec.get("ticker", "")).upper()
+            qual_score = float(rec.get("qual_score") or rec.get("score", 50))
+            qs_data = quant_scores.get(ticker, {})
+            quant_score = qs_data.get("composite", None)
+            combined = round(0.4 * quant_score + 0.6 * qual_score, 1) if quant_score is not None else qual_score
+
+            put_strike = rec.get("put_strike")
+            put_premium = rec.get("put_premium")
+            ee = qs_data.get("entry_exit", {})
+            pct_otm = ee.get("pct_otm")
+            breakeven = round(put_strike - put_premium, 2) if put_strike and put_premium else None
+
             obj = WheelRecommendation(
-                ticker=str(rec.get("ticker", "")).upper(),
+                ticker=ticker,
                 rank=int(rec.get("rank", 0)),
                 score=float(rec.get("score", 50)),
                 grade=str(rec.get("grade", "C")),
                 explanation=str(rec.get("explanation", "")),
-                put_strike=rec.get("put_strike"),
+                put_strike=put_strike,
                 put_expiry=rec.get("put_expiry"),
-                put_premium=rec.get("put_premium"),
+                put_premium=put_premium,
                 iv_rank=rec.get("iv_rank"),
+                quant_score=round(quant_score, 1) if quant_score is not None else None,
+                qual_score=round(qual_score, 1),
+                combined_score=combined,
+                quant_components=json.dumps(qs_data.get("components", {})),
+                pct_otm=pct_otm,
+                breakeven=breakeven,
                 run_at=run_at,
             )
             self.db.add(obj)

@@ -27,6 +27,14 @@ class WheelRecommendation(Base):
     put_expiry = Column(String(12), nullable=True)
     put_premium = Column(Float, nullable=True)
     iv_rank = Column(Float, nullable=True)
+    # Dual confidence scores
+    quant_score = Column(Float, nullable=True)
+    qual_score = Column(Float, nullable=True)
+    combined_score = Column(Float, nullable=True)
+    quant_components = Column(Text, nullable=True)
+    # Entry details
+    pct_otm = Column(Float, nullable=True)         # % OTM for the put strike
+    breakeven = Column(Float, nullable=True)        # put_strike - put_premium
     run_at = Column(DateTime(timezone=True), nullable=False, index=True)
     accepted = Column(Boolean, default=False, nullable=False)
     accepted_at = Column(DateTime(timezone=True), nullable=True)

@@ -37,12 +37,24 @@ class Recommendation(Base):
     quant_components = Column(Text, nullable=True)
 
     # Options-specific
-    option_type = Column(String(4), nullable=True)   # CALL | PUT
+    option_type = Column(String(4), nullable=True)   # CALL | PUT | N/A (multi-leg)
+    strategy_type = Column(String(20), nullable=True)  # single_leg | iron_condor | bull_put_spread | bear_call_spread | bull_call_spread | bear_put_spread
     strike = Column(Float, nullable=True)
     expiry = Column(String(12), nullable=True)
-    entry_price = Column(Float, nullable=True)
+    entry_price = Column(Float, nullable=True)    # premium paid/received
     exit_price = Column(Float, nullable=True)
     stop_loss = Column(Float, nullable=True)
+    # Multi-leg strikes
+    short_call_strike = Column(Float, nullable=True)
+    long_call_strike = Column(Float, nullable=True)
+    short_put_strike = Column(Float, nullable=True)
+    long_put_strike = Column(Float, nullable=True)
+    # Payoff
+    net_credit = Column(Float, nullable=True)     # net credit (positive) or debit (negative)
+    max_profit = Column(Float, nullable=True)
+    max_loss = Column(Float, nullable=True)
+    breakeven_low = Column(Float, nullable=True)
+    breakeven_high = Column(Float, nullable=True)
     # ATR-based underlying price targets (options)
     underlying_entry = Column(Float, nullable=True)
     underlying_target = Column(Float, nullable=True)

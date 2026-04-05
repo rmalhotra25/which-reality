@@ -40,57 +40,86 @@ class ClaudeAnalyst:
                         quant_scores: dict | None = None) -> list[dict]:
         system = (
             "You are a professional options trader and technical analyst with 20+ years of experience. "
-            "You have deep expertise in RSI, MACD, Bollinger Bands, VWAP, Fibonacci retracements, "
-            "moving averages, ATR, and volume analysis. "
-            "Identify the top 5 options trading opportunities for the next 1-10 days. "
-            "Use the technical indicators to time entries precisely — e.g. buy calls near Fibonacci "
-            "support when RSI is oversold and MACD is turning bullish; buy puts near resistance when "
-            "RSI is overbought and price is below VWAP. "
+            "You have deep expertise in single-leg options, iron condors, bull put spreads, bear call "
+            "spreads, and debit spreads. You select the BEST strategy structure for each setup:\n"
+            "  - single_leg CALL/PUT: strong directional momentum or BB squeeze breakout\n"
+            "  - iron_condor: range-bound price with high IV (sell premium both sides)\n"
+            "  - bull_put_spread: mildly bullish with high IV (credit spread)\n"
+            "  - bear_call_spread: mildly bearish with high IV (credit spread)\n"
+            "  - bull_call_spread: moderately bullish with lower IV (debit spread)\n"
+            "  - bear_put_spread: moderately bearish with lower IV (debit spread)\n"
             "Respond ONLY with a valid JSON array — no prose, no markdown fences."
         )
+
         quant_ctx = ""
         if quant_scores:
             lines = []
             for ticker, qs in quant_scores.items():
                 comp = qs.get("composite", 50)
-                entry_exit = qs.get("entry_exit", {})
+                ee = qs.get("entry_exit", {})
+                strat = qs.get("recommended_strategy", "single_leg")
+                ml = qs.get("multi_leg", {})
                 lines.append(
-                    f"  {ticker}: quant_score={comp}/100 | "
-                    f"entry=${entry_exit.get('underlying_entry','?')} "
-                    f"target=${entry_exit.get('underlying_target','?')} "
-                    f"stop=${entry_exit.get('underlying_stop','?')}"
+                    f"  {ticker}: quant={comp}/100 | suggested={strat} | "
+                    f"entry=${ee.get('underlying_entry','?')} "
+                    f"target=${ee.get('underlying_target','?')} "
+                    f"stop=${ee.get('underlying_stop','?')}"
                 )
-            quant_ctx = "\nPre-computed quantitative scores (math-based baseline):\n" + "\n".join(lines) + "\n"
+                if ml and strat != "single_leg":
+                    sc = ml.get("short_call_strike","?")
+                    lc = ml.get("long_call_strike","?")
+                    sp = ml.get("short_put_strike","?")
+                    lp = ml.get("long_put_strike","?")
+                    cred = ml.get("net_credit","?")
+                    lines.append(
+                        f"    strikes: SC={sc} LC={lc} SP={sp} LP={lp} | "
+                        f"net_credit≈${cred} | "
+                        f"max_profit≈${ml.get('max_profit','?')} max_loss≈${ml.get('max_loss','?')}"
+                    )
+            quant_ctx = "\nQuantitative analysis (math-based baseline):\n" + "\n".join(lines) + "\n"
 
         user = (
             f"{market_context}\n"
             f"{quant_ctx}\n"
             f"Recent news:\n{news_bullets}\n\n"
-            f"Technical data (price, RSI, MACD, Bollinger Bands, MAs, Fibonacci, ATR, VWAP, volume):\n"
+            f"Technical data (RSI, MACD, Bollinger, MAs, Fibonacci, ATR, VWAP, volume):\n"
             f"{technical_data}\n\n"
             "Instructions:\n"
-            "- Cite specific indicator readings in your explanation (e.g. 'RSI at 32 oversold, "
-            "price bouncing off Fib 61.8% support at $142, MACD bullish crossover')\n"
-            "- Set strike near key Fibonacci or MA level where you expect a reaction\n"
-            "- Use ATR to size the move — entry/exit should reflect realistic ATR-based targets\n"
-            "- Flag if a Bollinger squeeze is present (explosive move imminent)\n"
-            "- Avoid trades where price is between MAs with no clear direction\n"
-            "- Your 'qual_score' is your own qualitative judgment (0-100), considering news catalysts, "
-            "market context, and nuances beyond the math. It may differ from the quant_score baseline.\n\n"
-            "Return a JSON array of exactly 5 objects:\n"
-            "[\n"
-            '  {"rank":1,"ticker":"AAPL","option_type":"CALL","strike":195.0,'
-            '"expiry":"2025-04-11","entry_price":2.40,"exit_price":4.80,'
-            '"stop_loss":1.20,"underlying_entry":192.50,"underlying_target":198.00,'
-            '"underlying_stop":189.00,"qual_score":82,"score":87,"grade":"B",'
-            '"explanation":"3-4 sentences citing specific indicator readings and levels"}\n'
-            "]\n\n"
+            "- Select the strategy_type that best fits the technical setup (use the suggestions above "
+            "as a starting point but override if the setup calls for it)\n"
+            "- For single_leg: set option_type (CALL/PUT), strike, entry_price, exit_price, stop_loss, "
+            "underlying_entry, underlying_target, underlying_stop\n"
+            "- For multi-leg (iron_condor, spreads): set the appropriate strikes from "
+            "short_call_strike, long_call_strike, short_put_strike, long_put_strike, "
+            "net_credit (positive=credit received, negative=debit paid), max_profit, max_loss, "
+            "breakeven_low, breakeven_high. Also set expiry.\n"
+            "- Cite specific indicator readings in your explanation\n"
+            "- Your qual_score is your qualitative judgment (0-100)\n\n"
+            "Return a JSON array of exactly 5 objects. For single_leg:\n"
+            '  {"rank":1,"ticker":"AAPL","strategy_type":"single_leg","option_type":"CALL",'
+            '"strike":195.0,"expiry":"2025-04-18","entry_price":2.40,"exit_price":4.80,'
+            '"stop_loss":1.20,"underlying_entry":192.5,"underlying_target":198.0,'
+            '"underlying_stop":189.0,"qual_score":82,"score":87,"grade":"B",'
+            '"explanation":"RSI 32 oversold, bouncing off Fib 61.8%..."}\n\n'
+            "For iron_condor:\n"
+            '  {"rank":2,"ticker":"SPY","strategy_type":"iron_condor","option_type":"N/A",'
+            '"expiry":"2025-04-18","short_call_strike":512.0,"long_call_strike":515.0,'
+            '"short_put_strike":490.0,"long_put_strike":487.0,"net_credit":1.85,'
+            '"max_profit":185.0,"max_loss":115.0,"breakeven_low":488.15,'
+            '"breakeven_high":513.85,"qual_score":79,"score":83,"grade":"B",'
+            '"explanation":"RSI neutral at 52, BB %B at 0.45 range-bound, IV rank 48..."}\n\n'
+            "For spreads (bull_put_spread example):\n"
+            '  {"rank":3,"ticker":"MSFT","strategy_type":"bull_put_spread","option_type":"N/A",'
+            '"expiry":"2025-04-18","short_put_strike":380.0,"long_put_strike":375.0,'
+            '"net_credit":1.20,"max_profit":120.0,"max_loss":380.0,"breakeven_low":378.80,'
+            '"qual_score":85,"score":88,"grade":"B",'
+            '"explanation":"Strong uptrend above MA50+200, Fib 61.8% support at 381..."}\n\n'
             "Scoring rubric for qual_score and score (0-100):\n"
             "- Technical setup quality (RSI, MACD, Fib, MA alignment): 35%\n"
             "- Catalyst/news strength: 25%\n"
             "- IV environment and premium value: 20%\n"
-            "- Risk/reward ratio: 20%\n"
-            "Grade (based on combined confidence): A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
+            "- Risk/reward of chosen structure: 20%\n"
+            "Grade: A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
         )
         raw = self._call(system, user)
         return self._parse(raw)

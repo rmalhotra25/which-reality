@@ -29,14 +29,44 @@ def _format_news(items) -> str:
 
 
 def _format_screening(data: dict) -> str:
+    """Format technical data for wheel strategy — emphasise support levels and IV."""
     lines = []
     for ticker, d in data.items():
-        iv = d.get("atm_iv") or d.get("iv_rank_approx")
-        lines.append(
-            f"{ticker}: price=${d['price']}, IV≈{iv}%, "
-            f"5d_chg={d['change_5d_pct']}%, vol={d['volume']:,}"
+        if not d:
+            continue
+        price = d.get("price", "?")
+        rsi = d.get("rsi", "?")
+        iv = d.get("atm_iv") or d.get("iv_rank_approx", "?")
+        atr = d.get("atr", "?")
+
+        ma = d.get("moving_averages", {})
+        trend = "UPTREND" if ma.get("above_ma50") and ma.get("above_ma200") else \
+                "DOWNTREND" if not ma.get("above_ma50") and not ma.get("above_ma200") else "MIXED"
+        ma_str = f"MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')} [{trend}]" if ma else ""
+
+        fib = d.get("fibonacci", {})
+        fib_str = (
+            f"Support zones: Fib38.2%={fib.get('fib_382','?')} "
+            f"Fib50%={fib.get('fib_500','?')} Fib61.8%={fib.get('fib_618','?')}"
+            if fib else ""
         )
-    return "\n".join(lines) if lines else "No screening data available."
+
+        sr = d.get("support_resistance", {})
+        sr_str = f"S1={sr.get('support_1','?')} S2={sr.get('support_2','?')}" if sr else ""
+
+        bb = d.get("bollinger", {})
+        bb_str = f"BB%B={bb.get('pct_b','?')} squeeze={'YES' if bb.get('squeeze') else 'no'}" if bb else ""
+
+        vol = d.get("volume_trend", {})
+        vol_str = f"vol={vol.get('trend','?')}" if vol else ""
+
+        lines.append(
+            f"{ticker}: ${price} RSI={rsi} IV≈{iv}% ATR={atr} {vol_str}\n"
+            f"  {ma_str}\n"
+            f"  {fib_str} | {sr_str}\n"
+            f"  {bb_str}"
+        )
+    return "\n\n".join(lines) if lines else "No screening data available."
 
 
 class WheelEngine:
@@ -54,6 +84,7 @@ class WheelEngine:
             screening = self.stock_data.get_wheel_screening_data(WHEEL_UNIVERSE)
             news_str = _format_news(news)
             screening_str = _format_screening(screening)
+            logger.info("WheelEngine: fetched technicals for %d tickers", len(screening))
             recs = self.analyst.analyze_wheel(news_str, screening_str)
             self._store(recs, run_at)
             logger.info("WheelEngine: stored %d recommendations", len(recs))
@@ -90,14 +121,16 @@ class WheelEngine:
                 if position.assigned_at
                 else "unknown"
             )
+            technicals = self.stock_data.get_price_and_technicals(position.ticker)
             suggestion = self.analyst.generate_call_suggestion(
                 ticker=position.ticker,
                 cost_basis=position.cost_basis or position.put_strike,
                 current_price=current_price,
                 assigned_date=assigned_date,
-                iv_rank=None,
+                iv_rank=technicals.get("iv_rank_approx"),
                 earnings_date=None,
                 news_bullets=news_str,
+                technicals=technicals,
             )
             return json.dumps(suggestion)
         except Exception as e:

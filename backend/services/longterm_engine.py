@@ -27,20 +27,50 @@ def _format_news(items) -> str:
     return "\n".join(lines)
 
 
-def _format_fundamentals(data: dict) -> str:
+def _format_fundamentals_and_technicals(fund_data: dict, tech_data: dict) -> str:
+    """Combine fundamentals + long-term technical trend data for Claude."""
     lines = []
-    for ticker, d in data.items():
-        pe = d.get("pe_ratio")
-        eps = d.get("eps_growth_ttm")
-        rev = d.get("revenue_growth_ttm")
-        div = d.get("div_yield")
-        sector = d.get("sector", "?")
-        rating = d.get("analyst_rating", "?")
-        lines.append(
-            f"{ticker}: PE={pe}, EPS_growth={eps}, rev_growth={rev}, "
-            f"div_yield={div}, sector={sector}, analyst={rating}"
+    tickers = set(list(fund_data.keys()) + list(tech_data.keys()))
+    for ticker in tickers:
+        f = fund_data.get(ticker, {})
+        t = tech_data.get(ticker, {})
+        if not f and not t:
+            continue
+
+        # Fundamentals
+        pe = f.get("pe_ratio", "?")
+        eps = f.get("eps_growth_ttm", "?")
+        rev = f.get("revenue_growth_ttm", "?")
+        div = f.get("div_yield", "?")
+        sector = f.get("sector", "?")
+        rating = f.get("analyst_rating", "?")
+
+        # Long-term technicals — focus on MAs and relative trend
+        ma = t.get("moving_averages", {})
+        trend = "STRONG_UPTREND" if (ma.get("above_ma50") and ma.get("above_ma200") and ma.get("golden_cross")) \
+           else "UPTREND" if (ma.get("above_ma50") and ma.get("above_ma200")) \
+           else "DOWNTREND" if (not ma.get("above_ma50") and not ma.get("above_ma200")) \
+           else "MIXED"
+        ma_str = (
+            f"MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')} "
+            f"price=${t.get('price','?')} [{trend}]"
+            if ma else f"price=${t.get('price','?')}"
         )
-    return "\n".join(lines) if lines else "No fundamental data available."
+
+        rsi = t.get("rsi", "?")
+        vol = t.get("volume_trend", {})
+        vol_str = f"vol_trend={vol.get('trend','?')}" if vol else ""
+
+        fib = t.get("fibonacci", {})
+        fib_str = f"52w range: {fib.get('low','?')}-{fib.get('high','?')}" if fib else ""
+
+        lines.append(
+            f"{ticker} ({sector}): PE={pe} EPS_growth={eps} rev_growth={rev} "
+            f"div_yield={div} analyst={rating} RSI={rsi} {vol_str}\n"
+            f"  {ma_str}\n"
+            f"  {fib_str}"
+        )
+    return "\n\n".join(lines) if lines else "No fundamental/technical data available."
 
 
 def _grade_to_enum(grade: str) -> GradeEnum:
@@ -61,8 +91,9 @@ class LongTermEngine:
         try:
             news = self.scraper.fetch_all(LONGTERM_UNIVERSE[:15])
             fundamentals = self.stock_data.get_fundamentals(LONGTERM_UNIVERSE)
+            technicals = self.stock_data.get_technicals_bulk(LONGTERM_UNIVERSE)
             news_str = _format_news(news)
-            fund_str = _format_fundamentals(fundamentals)
+            fund_str = _format_fundamentals_and_technicals(fundamentals, technicals)
             recs = self.analyst.analyze_longterm(news_str, fund_str)
             self._store(recs, run_at)
             logger.info("LongTermEngine: stored %d recommendations", len(recs))

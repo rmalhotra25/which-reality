@@ -27,15 +27,60 @@ def _format_news(items) -> str:
     return "\n".join(lines)
 
 
-def _format_price_data(data: dict) -> str:
+def _format_technicals(data: dict) -> str:
+    """Format full technical indicator suite for Claude."""
     lines = []
     for ticker, d in data.items():
-        iv = d.get("atm_iv") or d.get("iv_rank_approx")
-        lines.append(
-            f"{ticker}: price=${d['price']}, 5d_chg={d['change_5d_pct']}%, "
-            f"IV≈{iv}%, vol={d['volume']:,}"
+        if not d:
+            continue
+        price = d.get("price", "?")
+        chg = d.get("change_5d_pct", "?")
+        rsi = d.get("rsi", "?")
+        iv = d.get("atm_iv") or d.get("iv_rank_approx", "?")
+
+        macd = d.get("macd", {})
+        macd_str = (
+            f"MACD={macd.get('macd','?')} signal={macd.get('signal','?')} "
+            f"hist={macd.get('histogram','?')} [{macd.get('crossover','?')}]"
+            if macd else "MACD=n/a"
         )
-    return "\n".join(lines) if lines else "No price data available."
+
+        bb = d.get("bollinger", {})
+        bb_str = (
+            f"BB upper={bb.get('upper','?')} lower={bb.get('lower','?')} "
+            f"%B={bb.get('pct_b','?')} squeeze={'YES' if bb.get('squeeze') else 'no'}"
+            if bb else "BB=n/a"
+        )
+
+        ma = d.get("moving_averages", {})
+        ma_str = (
+            f"MA20={ma.get('ma20','?')} MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')} "
+            f"[above_50={'Y' if ma.get('above_ma50') else 'N'} "
+            f"above_200={'Y' if ma.get('above_ma200') else 'N'} "
+            f"{'GOLDEN_CROSS' if ma.get('golden_cross') else 'DEATH_CROSS' if ma.get('death_cross') else 'no_cross'}]"
+            if ma else "MA=n/a"
+        )
+
+        fib = d.get("fibonacci", {})
+        fib_str = (
+            f"Fib: high={fib.get('high','?')} 61.8%={fib.get('fib_618','?')} "
+            f"50%={fib.get('fib_500','?')} 38.2%={fib.get('fib_382','?')} low={fib.get('low','?')}"
+            if fib else "Fib=n/a"
+        )
+
+        atr = d.get("atr", "?")
+        vwap = d.get("vwap", "?")
+        vol = d.get("volume_trend", {})
+        vol_str = f"vol_trend={vol.get('trend','?')}({vol.get('ratio','?')}x)" if vol else ""
+
+        lines.append(
+            f"{ticker}: ${price} 5d={chg}% RSI={rsi} IV≈{iv}% ATR={atr} VWAP={vwap}\n"
+            f"  {macd_str}\n"
+            f"  {bb_str}\n"
+            f"  {ma_str}\n"
+            f"  {fib_str} {vol_str}"
+        )
+    return "\n\n".join(lines) if lines else "No technical data available."
 
 
 def _grade_to_enum(grade: str) -> GradeEnum:
@@ -55,18 +100,17 @@ class OptionsEngine:
         run_at = datetime.now(timezone.utc)
         try:
             news = self.scraper.fetch_all(OPTIONS_UNIVERSE[:15])
-            price_data = self.stock_data.get_price_data(OPTIONS_UNIVERSE)
-            options_data = self.stock_data.get_options_data(OPTIONS_UNIVERSE[:20])
-            combined = {}
-            for t in OPTIONS_UNIVERSE:
-                if t in price_data:
-                    combined[t] = {**price_data[t], **(options_data.get(t, {}))}
+            technicals = self.stock_data.get_technicals_bulk(OPTIONS_UNIVERSE)
+            options_data = self.stock_data.get_options_data(list(technicals.keys())[:20])
+            for t in options_data:
+                if t in technicals:
+                    technicals[t].update(options_data[t])
 
-            market_context = "Normal trading session. Check VIX for volatility context."
             news_str = _format_news(news)
-            price_str = _format_price_data(combined)
+            tech_str = _format_technicals(technicals)
+            market_context = f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
 
-            recs = self.analyst.analyze_options(news_str, price_str, market_context)
+            recs = self.analyst.analyze_options(news_str, tech_str, market_context)
             self._store(recs, run_at)
             logger.info("OptionsEngine: stored %d recommendations", len(recs))
         except Exception as e:

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../api'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
+import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import LastUpdated from '../components/LastUpdated'
 
@@ -63,11 +64,12 @@ const s = {
     color: type === 'CALL' ? '#68d391' : '#fc8181',
     border: `1px solid ${type === 'CALL' ? '#2f855a' : '#c53030'}`,
   }),
+  sectionLabel: { fontSize: '11px', color: '#718096', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' },
   td: { padding: '5px 0', color: '#a0aec0', width: '50%' },
   tdVal: { padding: '5px 0', color: '#e2e8f0', fontWeight: 600, textAlign: 'right' },
+  divider: { borderTop: '1px solid #2d3748', margin: '2px 0' },
   explanation: { fontSize: '13px', color: '#a0aec0', lineHeight: 1.6 },
-  scoreRow: { display: 'flex', alignItems: 'center', gap: '12px' },
   empty: { color: '#718096', textAlign: 'center', padding: '48px', fontSize: '14px' },
   error: { color: '#fc8181', textAlign: 'center', padding: '24px', fontSize: '14px' },
 }
@@ -75,6 +77,12 @@ const s = {
 function fmt(val, prefix = '$') {
   if (val == null) return '—'
   return `${prefix}${Number(val).toFixed(2)}`
+}
+
+function calcRR(entry, exit_, stop) {
+  if (!entry || !exit_ || !stop || entry === stop) return '—'
+  const rr = (exit_ - entry) / Math.abs(entry - stop)
+  return `${rr.toFixed(1)}x`
 }
 
 export default function OptionsTab() {
@@ -102,7 +110,6 @@ export default function OptionsTab() {
     setRefreshing(true)
     try {
       await api.options.refresh()
-      // Poll for new data after ~30s
       setTimeout(load, 30000)
       setError(null)
     } catch (e) {
@@ -130,7 +137,7 @@ export default function OptionsTab() {
 
       {!loading && recs.length === 0 && !error && (
         <div style={s.empty}>
-          No recommendations yet. Click "Run Analysis" to generate your first set of recommendations.
+          No recommendations yet. Click "Run Analysis" to generate your first set.
           <br />
           <small style={{ color: '#4a5568', marginTop: '8px', display: 'block' }}>
             Scheduled runs: 9:00 AM, 9:45 AM, 12:00 PM, 3:00 PM, 6:00 PM Eastern
@@ -141,6 +148,7 @@ export default function OptionsTab() {
       <div style={s.grid}>
         {recs.map((rec) => (
           <div key={rec.id} style={s.card}>
+            {/* Header row */}
             <div style={s.cardHeader}>
               <div>
                 <span style={s.ticker}>{rec.ticker}</span>
@@ -156,42 +164,77 @@ export default function OptionsTab() {
               </div>
             </div>
 
-            <div>
-              <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>CONVICTION SCORE</div>
-              <ScoreBar score={rec.score} />
-            </div>
+            {/* Dual confidence score */}
+            {rec.combined_score != null ? (
+              <div>
+                <div style={s.sectionLabel}>Confidence Score</div>
+                <DualScorePanel
+                  quantScore={rec.quant_score}
+                  qualScore={rec.qual_score}
+                  combinedScore={rec.combined_score}
+                />
+              </div>
+            ) : (
+              <div>
+                <div style={s.sectionLabel}>Conviction Score</div>
+                <ScoreBar score={rec.score} />
+              </div>
+            )}
 
             <TradingViewWidget ticker={rec.ticker} />
 
-            <table style={s.table}>
-              <tbody>
-                <tr>
-                  <td style={s.td}>Strike</td>
-                  <td style={s.tdVal}>{fmt(rec.strike)}</td>
-                  <td style={s.td}>Expiry</td>
-                  <td style={s.tdVal}>{rec.expiry || '—'}</td>
-                </tr>
-                <tr>
-                  <td style={s.td}>Entry</td>
-                  <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.entry_price)}</td>
-                  <td style={s.td}>Target Exit</td>
-                  <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.exit_price)}</td>
-                </tr>
-                <tr>
-                  <td style={s.td}>Stop Loss</td>
-                  <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.stop_loss)}</td>
-                  <td style={s.td}>R/R</td>
-                  <td style={s.tdVal}>
-                    {rec.entry_price && rec.exit_price && rec.stop_loss
-                      ? `${((rec.exit_price - rec.entry_price) / (rec.entry_price - rec.stop_loss)).toFixed(1)}x`
-                      : '—'}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            {/* Option contract details */}
+            <div>
+              <div style={s.sectionLabel}>Option Contract</div>
+              <table style={s.table}>
+                <tbody>
+                  <tr>
+                    <td style={s.td}>Strike</td>
+                    <td style={s.tdVal}>{fmt(rec.strike)}</td>
+                    <td style={s.td}>Expiry</td>
+                    <td style={s.tdVal}>{rec.expiry || '—'}</td>
+                  </tr>
+                  <tr>
+                    <td style={s.td}>Premium Entry</td>
+                    <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.entry_price)}</td>
+                    <td style={s.td}>Premium Target</td>
+                    <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.exit_price)}</td>
+                  </tr>
+                  <tr>
+                    <td style={s.td}>Premium Stop</td>
+                    <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.stop_loss)}</td>
+                    <td style={s.td}>R/R</td>
+                    <td style={s.tdVal}>{calcRR(rec.entry_price, rec.exit_price, rec.stop_loss)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Underlying price targets */}
+            {(rec.underlying_entry || rec.underlying_target || rec.underlying_stop) && (
+              <div>
+                <div style={s.sectionLabel}>Underlying Price Targets (ATR-based)</div>
+                <table style={s.table}>
+                  <tbody>
+                    <tr>
+                      <td style={s.td}>Entry Zone</td>
+                      <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.underlying_entry)}</td>
+                      <td style={s.td}>Price Target</td>
+                      <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.underlying_target)}</td>
+                    </tr>
+                    <tr>
+                      <td style={s.td}>Invalidation</td>
+                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.underlying_stop)}</td>
+                      <td style={s.td}>Stock R/R</td>
+                      <td style={s.tdVal}>{calcRR(rec.underlying_entry, rec.underlying_target, rec.underlying_stop)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             <div>
-              <div style={{ fontSize: '11px', color: '#718096', marginBottom: '6px' }}>ANALYSIS</div>
+              <div style={s.sectionLabel}>Analysis</div>
               <p style={s.explanation}>{rec.explanation}</p>
             </div>
           </div>

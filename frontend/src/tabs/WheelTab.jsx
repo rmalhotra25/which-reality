@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
+import { useRefreshPoller } from '../hooks/useRefreshPoller'
 import LastUpdated from '../components/LastUpdated'
 import WheelCard from '../wheel/WheelCard'
 import PositionTracker from '../wheel/PositionTracker'
@@ -93,14 +94,19 @@ export default function WheelTab() {
   useEffect(() => { loadRecs() }, [])
   useEffect(() => { loadPositions() }, [loadPositions])
 
+  const wheelFetchFn = useCallback(() => api.wheel.getRecommendations(), [])
+  const { start: startPolling } = useRefreshPoller(wheelFetchFn, (data) => {
+    setRecs(data)
+    setRefreshing(false)
+  })
+
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
       await api.wheel.refresh()
-      setTimeout(loadRecs, 30000)
+      startPolling(recs[0]?.run_at)
     } catch (e) {
       setError(e.message)
-    } finally {
       setRefreshing(false)
     }
   }
@@ -129,7 +135,7 @@ export default function WheelTab() {
           <LastUpdated timestamp={lastRunAt} loading={loading} />
         </div>
         <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? 'Queued...' : '↻ Run Analysis'}
+          {refreshing ? '⏳ Analyzing...' : '↻ Run Analysis'}
         </button>
       </div>
 

@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
 import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import LastUpdated from '../components/LastUpdated'
+import { useRefreshPoller } from '../hooks/useRefreshPoller'
 
 const s = {
   header: {
@@ -113,6 +114,12 @@ export default function OptionsTab() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
 
+  const fetchFn = useCallback(() => api.options.getRecommendations(), [])
+  const { start: startPolling } = useRefreshPoller(fetchFn, (data) => {
+    setRecs(data)
+    setRefreshing(false)
+  })
+
   const load = async () => {
     setLoading(true)
     setError(null)
@@ -130,13 +137,13 @@ export default function OptionsTab() {
 
   const handleRefresh = async () => {
     setRefreshing(true)
+    setError(null)
     try {
       await api.options.refresh()
-      setTimeout(load, 30000)
-      setError(null)
+      // Poll every 10s for up to 3 minutes until new data appears
+      startPolling(recs[0]?.run_at)
     } catch (e) {
       setError(e.message)
-    } finally {
       setRefreshing(false)
     }
   }
@@ -151,7 +158,7 @@ export default function OptionsTab() {
           <LastUpdated timestamp={lastRunAt} loading={loading} />
         </div>
         <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? 'Queued...' : '↻ Run Analysis'}
+          {refreshing ? '⏳ Analyzing...' : '↻ Run Analysis'}
         </button>
       </div>
 

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
+import { useRefreshPoller } from '../hooks/useRefreshPoller'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
 import DualScorePanel from '../components/DualScorePanel'
@@ -102,6 +103,12 @@ export default function LongTermTab() {
   const [error, setError] = useState(null)
   const [filter, setFilter] = useState('all')
 
+  const fetchFn = useCallback(() => api.longterm.getRecommendations(), [])
+  const { start: startPolling } = useRefreshPoller(fetchFn, (data) => {
+    setRecs(data)
+    setRefreshing(false)
+  })
+
   const load = async () => {
     setLoading(true)
     setError(null)
@@ -119,12 +126,12 @@ export default function LongTermTab() {
 
   const handleRefresh = async () => {
     setRefreshing(true)
+    setError(null)
     try {
       await api.longterm.refresh()
-      setTimeout(load, 30000)
+      startPolling(recs[0]?.run_at)
     } catch (e) {
       setError(e.message)
-    } finally {
       setRefreshing(false)
     }
   }
@@ -140,7 +147,7 @@ export default function LongTermTab() {
           <LastUpdated timestamp={lastRunAt} loading={loading} />
         </div>
         <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? 'Queued...' : '↻ Run Analysis'}
+          {refreshing ? '⏳ Analyzing...' : '↻ Run Analysis'}
         </button>
       </div>
 

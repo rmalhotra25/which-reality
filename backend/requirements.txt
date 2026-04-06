@@ -6,7 +6,7 @@ sqlalchemy==2.0.35
 pydantic-settings==2.5.2
 apscheduler==3.10.4
 pytz==2024.2
-anthropic==0.34.2
+anthropic>=0.40.0
 yfinance==0.2.43
 feedparser==6.0.11
 requests==2.32.3

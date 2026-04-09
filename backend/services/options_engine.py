@@ -12,6 +12,7 @@ from services.quant_scorer import (
     compute_options_quant_score, compute_entry_exit_options,
     recommend_strategy_type, compute_entry_exit_multi_leg,
 )
+import services.run_status as run_status
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ class OptionsEngine:
 
     def run(self) -> None:
         logger.info("OptionsEngine: starting analysis run")
+        run_status.set_running("options")
         run_at = datetime.now(timezone.utc)
         try:
             news = self.scraper.fetch_all(OPTIONS_UNIVERSE[:15])
@@ -133,8 +135,10 @@ class OptionsEngine:
             recs = self.analyst.analyze_options(news_str, tech_str, market_context,
                                                 quant_scores=quant_scores)
             self._store(recs, run_at, technicals, quant_scores)
+            run_status.set_success("options")
             logger.info("OptionsEngine: stored %d recommendations", len(recs))
         except Exception as e:
+            run_status.set_error("options", str(e))
             logger.error("OptionsEngine run failed: %s", e, exc_info=True)
 
     def _store(self, recs: list[dict], run_at: datetime,

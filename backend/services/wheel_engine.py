@@ -9,6 +9,7 @@ from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
 from services.claude_analyst import ClaudeAnalyst
 from services.quant_scorer import compute_wheel_quant_score, compute_entry_exit_wheel
+import services.run_status as run_status
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class WheelEngine:
 
     def run(self) -> None:
         logger.info("WheelEngine: starting analysis run")
+        run_status.set_running("wheel")
         run_at = datetime.now(timezone.utc)
         try:
             news = self.scraper.fetch_all(WHEEL_UNIVERSE[:15])
@@ -97,8 +99,10 @@ class WheelEngine:
 
             recs = self.analyst.analyze_wheel(news_str, screening_str, quant_scores=quant_scores)
             self._store(recs, run_at, quant_scores)
+            run_status.set_success("wheel")
             logger.info("WheelEngine: stored %d recommendations", len(recs))
         except Exception as e:
+            run_status.set_error("wheel", str(e))
             logger.error("WheelEngine run failed: %s", e, exc_info=True)
 
     def _store(self, recs: list[dict], run_at: datetime, quant_scores: dict | None = None) -> None:

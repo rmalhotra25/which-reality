@@ -95,16 +95,18 @@ export default function WheelTab() {
   useEffect(() => { loadPositions() }, [loadPositions])
 
   const wheelFetchFn = useCallback(() => api.wheel.getRecommendations(), [])
-  const { start: startPolling } = useRefreshPoller(wheelFetchFn, (data) => {
-    setRecs(data)
-    setRefreshing(false)
-  })
+  const { start: startPolling } = useRefreshPoller(
+    wheelFetchFn,
+    (data) => { setRecs(data) },
+    setError,
+    'wheel'
+  )
 
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
       await api.wheel.refresh()
-      startPolling(recs[0]?.run_at)
+      startPolling(recs[0]?.run_at, () => setRefreshing(false))
     } catch (e) {
       setError(e.message)
       setRefreshing(false)

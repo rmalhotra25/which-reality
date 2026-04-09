@@ -36,4 +36,5 @@ export const api = {
     getRecommendations: () => request('/api/longterm/recommendations'),
     refresh: () => request('/api/longterm/refresh', { method: 'POST' }),
   },
+  getStatus: () => request('/api/status'),
 }

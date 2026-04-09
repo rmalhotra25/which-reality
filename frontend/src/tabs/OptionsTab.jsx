@@ -115,10 +115,12 @@ export default function OptionsTab() {
   const [error, setError] = useState(null)
 
   const fetchFn = useCallback(() => api.options.getRecommendations(), [])
-  const { start: startPolling } = useRefreshPoller(fetchFn, (data) => {
-    setRecs(data)
-    setRefreshing(false)
-  })
+  const { start: startPolling } = useRefreshPoller(
+    fetchFn,
+    (data) => { setRecs(data) },
+    setError,
+    'options'
+  )
 
   const load = async () => {
     setLoading(true)
@@ -140,8 +142,7 @@ export default function OptionsTab() {
     setError(null)
     try {
       await api.options.refresh()
-      // Poll every 10s for up to 3 minutes until new data appears
-      startPolling(recs[0]?.run_at)
+      startPolling(recs[0]?.run_at, () => setRefreshing(false))
     } catch (e) {
       setError(e.message)
       setRefreshing(false)

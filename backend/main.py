@@ -54,6 +54,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/status", tags=["Health"])
+def run_status_endpoint():
+    from services.run_status import get_all
+    return get_all()
+
+
 # Serve the built React frontend — must come last
 _frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(_frontend_dist):

@@ -102,10 +102,33 @@ function fmt(val, prefix = '$') {
   return `${prefix}${Number(val).toFixed(2)}`
 }
 
-function calcRR(entry, exit_, stop) {
-  if (!entry || !exit_ || !stop || entry === stop) return '—'
-  const rr = (exit_ - entry) / Math.abs(entry - stop)
+function calcRR(entry, stop, targets) {
+  if (!entry || !stop || !targets?.length || entry === stop) return '—'
+  const maxTarget = targets[targets.length - 1].price
+  const rr = (maxTarget - entry) / Math.abs(entry - stop)
   return `${rr.toFixed(1)}x`
+}
+
+/** Generate scale-out targets at 25%, 50%, 75%, 100% gain from entry */
+function scaleOutTargets(entry) {
+  if (!entry) return []
+  return [25, 50, 75, 100].map((pct) => ({
+    pct,
+    price: Math.round(entry * (1 + pct / 100) * 20) / 20,  // round to $0.05
+    label: pct === 100 ? 'Final 25% · +100%' : `Sell 25% · +${pct}%`,
+    color: pct === 25 ? '#68d391' : pct === 50 ? '#63b3ed' : pct === 75 ? '#f6e05e' : '#ed8936',
+  }))
+}
+
+/** For credit spreads: buy-back targets as % of max profit captured */
+function creditScaleOutTargets(netCredit) {
+  if (!netCredit || netCredit <= 0) return []
+  return [25, 50, 75].map((pct) => ({
+    pct,
+    price: Math.round(netCredit * (1 - pct / 100) * 20) / 20,
+    label: `Close at ${pct}% profit`,
+    color: pct === 25 ? '#68d391' : pct === 50 ? '#63b3ed' : '#f6e05e',
+  }))
 }
 
 export default function OptionsTab() {
@@ -220,185 +243,297 @@ export default function OptionsTab() {
             <TradingViewWidget ticker={rec.ticker} />
 
             {/* Single-leg contract details */}
-            {(!rec.strategy_type || rec.strategy_type === 'single_leg') && (
-              <div>
-                <div style={s.sectionLabel}>
-                  Option Contract
-                  <span style={{ fontSize: '10px', color: '#4a5568', marginLeft: '6px', fontWeight: 400 }}>
-                    premiums are estimates — verify with your broker
-                  </span>
+            {(!rec.strategy_type || rec.strategy_type === 'single_leg') && (() => {
+              const targets = scaleOutTargets(rec.entry_price)
+              return (
+                <div>
+                  <div style={s.sectionLabel}>
+                    Option Contract
+                    <span style={{ fontSize: '10px', color: '#4a5568', marginLeft: '6px', fontWeight: 400 }}>
+                      est. premiums — verify with broker
+                    </span>
+                  </div>
+                  <table style={s.table}>
+                    <tbody>
+                      <tr>
+                        <td style={s.td}>Strike</td>
+                        <td style={s.tdVal}>{fmt(rec.strike)}</td>
+                        <td style={s.td}>Expiry</td>
+                        <td style={s.tdVal}>{rec.expiry || '—'}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Est. Entry</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.entry_price)}</td>
+                        <td style={s.td}>Stop Loss</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.stop_loss)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  {targets.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ ...s.sectionLabel, marginBottom: '6px' }}>
+                        Scale-Out Targets (sell 25% at each level)
+                      </div>
+                      <table style={s.table}>
+                        <tbody>
+                          {targets.map((t) => (
+                            <tr key={t.pct}>
+                              <td style={{ ...s.td, fontSize: '12px' }}>{t.label}</td>
+                              <td style={{ ...s.tdVal, color: t.color }}>{fmt(t.price)}</td>
+                              <td style={{ ...s.td, fontSize: '11px', color: '#4a5568' }}>
+                                +${(t.price - rec.entry_price).toFixed(2)}/contract × 100
+                              </td>
+                              <td style={{ ...s.tdVal, fontSize: '11px', color: t.color }}>
+                                +${((t.price - rec.entry_price) * 100).toFixed(0)}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td style={{ ...s.td, fontSize: '12px' }}>Max R/R</td>
+                            <td colSpan={3} style={{ ...s.tdVal, color: '#a0aec0', fontSize: '12px' }}>
+                              {calcRR(rec.entry_price, rec.stop_loss, targets)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
-                <table style={s.table}>
-                  <tbody>
-                    <tr>
-                      <td style={s.td}>Strike</td>
-                      <td style={s.tdVal}>{fmt(rec.strike)}</td>
-                      <td style={s.td}>Expiry</td>
-                      <td style={s.tdVal}>{rec.expiry || '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Est. Entry</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.entry_price)}</td>
-                      <td style={s.td}>Est. Target</td>
-                      <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.exit_price)}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Est. Stop</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.stop_loss)}</td>
-                      <td style={s.td}>R/R</td>
-                      <td style={s.tdVal}>{calcRR(rec.entry_price, rec.exit_price, rec.stop_loss)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
+              )
+            })()}
 
             {/* Iron condor legs */}
-            {rec.strategy_type === 'iron_condor' && (
-              <div>
-                <div style={s.sectionLabel}>Iron Condor Strikes · {rec.expiry || '—'}</div>
-                <table style={s.table}>
-                  <tbody>
-                    <tr>
-                      <td style={{ ...s.td, color: '#68d391' }}>Long Put (wing)</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_put_strike)}</td>
-                      <td style={{ ...s.td, color: '#fc8181' }}>Short Put</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.short_put_strike)}</td>
-                    </tr>
-                    <tr>
-                      <td style={{ ...s.td, color: '#63b3ed' }}>Short Call</td>
-                      <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.short_call_strike)}</td>
-                      <td style={{ ...s.td, color: '#a0aec0' }}>Long Call (wing)</td>
-                      <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.long_call_strike)}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Net Credit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.net_credit != null ? `$${Number(rec.net_credit).toFixed(2)}` : '—'}</td>
-                      <td style={s.td}>Expiry</td>
-                      <td style={s.tdVal}>{rec.expiry || '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Max Profit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${Number(rec.max_profit).toFixed(0)}` : '—'}</td>
-                      <td style={s.td}>Max Loss</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${Number(rec.max_loss).toFixed(0)}` : '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Profit Zone</td>
-                      <td colSpan={3} style={{ ...s.tdVal, color: '#f6e05e' }}>
-                        {rec.breakeven_low != null && rec.breakeven_high != null
-                          ? `$${Number(rec.breakeven_low).toFixed(2)} – $${Number(rec.breakeven_high).toFixed(2)}`
-                          : '—'}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {rec.strategy_type === 'iron_condor' && (() => {
+              const closeTargets = creditScaleOutTargets(rec.net_credit)
+              return (
+                <div>
+                  <div style={s.sectionLabel}>Iron Condor · {rec.expiry || '—'}</div>
+                  <table style={s.table}>
+                    <tbody>
+                      <tr>
+                        <td style={{ ...s.td, color: '#68d391' }}>Long Put (wing)</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_put_strike)}</td>
+                        <td style={{ ...s.td, color: '#fc8181' }}>Short Put</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.short_put_strike)}</td>
+                      </tr>
+                      <tr>
+                        <td style={{ ...s.td, color: '#63b3ed' }}>Short Call</td>
+                        <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.short_call_strike)}</td>
+                        <td style={{ ...s.td, color: '#a0aec0' }}>Long Call (wing)</td>
+                        <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.long_call_strike)}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Net Credit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.net_credit)}</td>
+                        <td style={s.td}>Profit Zone</td>
+                        <td style={{ ...s.tdVal, color: '#f6e05e', fontSize: '11px' }}>
+                          {rec.breakeven_low != null && rec.breakeven_high != null
+                            ? `${fmt(rec.breakeven_low)} – ${fmt(rec.breakeven_high)}`
+                            : '—'}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Max Profit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${rec.max_profit}` : '—'}</td>
+                        <td style={s.td}>Max Loss</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${rec.max_loss}` : '—'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {closeTargets.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ ...s.sectionLabel, marginBottom: '6px' }}>Early Close Targets (buy back spread)</div>
+                      <table style={s.table}>
+                        <tbody>
+                          {closeTargets.map((t) => (
+                            <tr key={t.pct}>
+                              <td style={{ ...s.td, fontSize: '12px' }}>{t.label}</td>
+                              <td style={{ ...s.tdVal, color: t.color }}>buy back at {fmt(t.price)}</td>
+                              <td style={{ ...s.tdVal, color: t.color, fontSize: '11px' }}>
+                                +${((rec.net_credit - t.price) * 100).toFixed(0)} profit
+                              </td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td style={{ ...s.td, fontSize: '12px' }}>Let expire (100%)</td>
+                            <td colSpan={2} style={{ ...s.tdVal, color: '#68d391', fontSize: '12px' }}>
+                              keep full ${rec.max_profit} credit
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Bull put spread */}
-            {rec.strategy_type === 'bull_put_spread' && (
-              <div>
-                <div style={s.sectionLabel}>Bull Put Spread · {rec.expiry || '—'}</div>
-                <table style={s.table}>
-                  <tbody>
-                    <tr>
-                      <td style={{ ...s.td, color: '#fc8181' }}>Short Put (sell)</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.short_put_strike)}</td>
-                      <td style={{ ...s.td, color: '#68d391' }}>Long Put (buy)</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_put_strike)}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Net Credit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.net_credit != null ? `$${Number(rec.net_credit).toFixed(2)}` : '—'}</td>
-                      <td style={s.td}>Max Loss</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${Number(rec.max_loss).toFixed(0)}` : '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Max Profit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${Number(rec.max_profit).toFixed(0)}` : '—'}</td>
-                      <td style={s.td}>Breakeven</td>
-                      <td style={{ ...s.tdVal, color: '#f6e05e' }}>{rec.breakeven_low != null ? `$${Number(rec.breakeven_low).toFixed(2)}` : '—'}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {rec.strategy_type === 'bull_put_spread' && (() => {
+              const closeTargets = creditScaleOutTargets(rec.net_credit)
+              return (
+                <div>
+                  <div style={s.sectionLabel}>Bull Put Spread · {rec.expiry || '—'}</div>
+                  <table style={s.table}>
+                    <tbody>
+                      <tr>
+                        <td style={{ ...s.td, color: '#fc8181' }}>Short Put (sell)</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.short_put_strike)}</td>
+                        <td style={{ ...s.td, color: '#68d391' }}>Long Put (buy)</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_put_strike)}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Net Credit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.net_credit)}</td>
+                        <td style={s.td}>Breakeven</td>
+                        <td style={{ ...s.tdVal, color: '#f6e05e' }}>{rec.breakeven_low != null ? fmt(rec.breakeven_low) : '—'}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Max Profit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${rec.max_profit}` : '—'}</td>
+                        <td style={s.td}>Max Loss</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${rec.max_loss}` : '—'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {closeTargets.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ ...s.sectionLabel, marginBottom: '6px' }}>Early Close Targets</div>
+                      <table style={s.table}>
+                        <tbody>
+                          {closeTargets.map((t) => (
+                            <tr key={t.pct}>
+                              <td style={{ ...s.td, fontSize: '12px' }}>{t.label}</td>
+                              <td style={{ ...s.tdVal, color: t.color }}>buy back at {fmt(t.price)}</td>
+                              <td style={{ ...s.tdVal, color: t.color, fontSize: '11px' }}>
+                                +${((rec.net_credit - t.price) * 100).toFixed(0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Bear call spread */}
-            {rec.strategy_type === 'bear_call_spread' && (
-              <div>
-                <div style={s.sectionLabel}>Bear Call Spread · {rec.expiry || '—'}</div>
-                <table style={s.table}>
-                  <tbody>
-                    <tr>
-                      <td style={{ ...s.td, color: '#63b3ed' }}>Short Call (sell)</td>
-                      <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.short_call_strike)}</td>
-                      <td style={{ ...s.td, color: '#a0aec0' }}>Long Call (buy)</td>
-                      <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.long_call_strike)}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Net Credit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.net_credit != null ? `$${Number(rec.net_credit).toFixed(2)}` : '—'}</td>
-                      <td style={s.td}>Max Loss</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${Number(rec.max_loss).toFixed(0)}` : '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Max Profit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${Number(rec.max_profit).toFixed(0)}` : '—'}</td>
-                      <td style={s.td}>Breakeven</td>
-                      <td style={{ ...s.tdVal, color: '#f6e05e' }}>{rec.breakeven_high != null ? `$${Number(rec.breakeven_high).toFixed(2)}` : '—'}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {rec.strategy_type === 'bear_call_spread' && (() => {
+              const closeTargets = creditScaleOutTargets(rec.net_credit)
+              return (
+                <div>
+                  <div style={s.sectionLabel}>Bear Call Spread · {rec.expiry || '—'}</div>
+                  <table style={s.table}>
+                    <tbody>
+                      <tr>
+                        <td style={{ ...s.td, color: '#63b3ed' }}>Short Call (sell)</td>
+                        <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.short_call_strike)}</td>
+                        <td style={{ ...s.td, color: '#a0aec0' }}>Long Call (buy)</td>
+                        <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.long_call_strike)}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Net Credit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.net_credit)}</td>
+                        <td style={s.td}>Breakeven</td>
+                        <td style={{ ...s.tdVal, color: '#f6e05e' }}>{rec.breakeven_high != null ? fmt(rec.breakeven_high) : '—'}</td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Max Profit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${rec.max_profit}` : '—'}</td>
+                        <td style={s.td}>Max Loss</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${rec.max_loss}` : '—'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {closeTargets.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ ...s.sectionLabel, marginBottom: '6px' }}>Early Close Targets</div>
+                      <table style={s.table}>
+                        <tbody>
+                          {closeTargets.map((t) => (
+                            <tr key={t.pct}>
+                              <td style={{ ...s.td, fontSize: '12px' }}>{t.label}</td>
+                              <td style={{ ...s.tdVal, color: t.color }}>buy back at {fmt(t.price)}</td>
+                              <td style={{ ...s.tdVal, color: t.color, fontSize: '11px' }}>
+                                +${((rec.net_credit - t.price) * 100).toFixed(0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Bull/bear debit spreads */}
-            {(rec.strategy_type === 'bull_call_spread' || rec.strategy_type === 'bear_put_spread') && (
-              <div>
-                <div style={s.sectionLabel}>
-                  {rec.strategy_type === 'bull_call_spread' ? 'Bull Call Spread' : 'Bear Put Spread'} · {rec.expiry || '—'}
+            {(rec.strategy_type === 'bull_call_spread' || rec.strategy_type === 'bear_put_spread') && (() => {
+              const debit = rec.net_credit != null ? Math.abs(rec.net_credit) : null
+              const targets = scaleOutTargets(debit)
+              const isBull = rec.strategy_type === 'bull_call_spread'
+              return (
+                <div>
+                  <div style={s.sectionLabel}>
+                    {isBull ? 'Bull Call Spread' : 'Bear Put Spread'} · {rec.expiry || '—'}
+                  </div>
+                  <table style={s.table}>
+                    <tbody>
+                      <tr>
+                        {isBull ? (<>
+                          <td style={{ ...s.td, color: '#68d391' }}>Long Call (buy)</td>
+                          <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_call_strike)}</td>
+                          <td style={{ ...s.td, color: '#a0aec0' }}>Short Call (sell)</td>
+                          <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.short_call_strike)}</td>
+                        </>) : (<>
+                          <td style={{ ...s.td, color: '#fc8181' }}>Long Put (buy)</td>
+                          <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.long_put_strike)}</td>
+                          <td style={{ ...s.td, color: '#a0aec0' }}>Short Put (sell)</td>
+                          <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.short_put_strike)}</td>
+                        </>)}
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Net Debit</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{debit != null ? fmt(debit) : '—'}</td>
+                        <td style={s.td}>Breakeven</td>
+                        <td style={{ ...s.tdVal, color: '#f6e05e' }}>
+                          {(rec.breakeven_high || rec.breakeven_low) != null
+                            ? fmt(rec.breakeven_high || rec.breakeven_low) : '—'}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={s.td}>Max Profit</td>
+                        <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${rec.max_profit}` : '—'}</td>
+                        <td style={s.td}>Max Loss</td>
+                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${rec.max_loss}` : '—'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {targets.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ ...s.sectionLabel, marginBottom: '6px' }}>
+                        Scale-Out Targets on spread value (sell 25% at each level)
+                      </div>
+                      <table style={s.table}>
+                        <tbody>
+                          {targets.map((t) => (
+                            <tr key={t.pct}>
+                              <td style={{ ...s.td, fontSize: '12px' }}>{t.label}</td>
+                              <td style={{ ...s.tdVal, color: t.color }}>{fmt(t.price)}</td>
+                              <td style={{ ...s.tdVal, color: t.color, fontSize: '11px' }}>
+                                +${((t.price - debit) * 100).toFixed(0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
-                <table style={s.table}>
-                  <tbody>
-                    {rec.strategy_type === 'bull_call_spread' ? (
-                      <tr>
-                        <td style={{ ...s.td, color: '#68d391' }}>Long Call (buy)</td>
-                        <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.long_call_strike)}</td>
-                        <td style={{ ...s.td, color: '#a0aec0' }}>Short Call (sell)</td>
-                        <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.short_call_strike)}</td>
-                      </tr>
-                    ) : (
-                      <tr>
-                        <td style={{ ...s.td, color: '#fc8181' }}>Long Put (buy)</td>
-                        <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.long_put_strike)}</td>
-                        <td style={{ ...s.td, color: '#a0aec0' }}>Short Put (sell)</td>
-                        <td style={{ ...s.tdVal, color: '#a0aec0' }}>{fmt(rec.short_put_strike)}</td>
-                      </tr>
-                    )}
-                    <tr>
-                      <td style={s.td}>Net Debit</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>
-                        {rec.net_credit != null ? `$${Math.abs(Number(rec.net_credit)).toFixed(2)}` : '—'}
-                      </td>
-                      <td style={s.td}>Max Profit</td>
-                      <td style={{ ...s.tdVal, color: '#68d391' }}>{rec.max_profit != null ? `$${Number(rec.max_profit).toFixed(0)}` : '—'}</td>
-                    </tr>
-                    <tr>
-                      <td style={s.td}>Max Loss</td>
-                      <td style={{ ...s.tdVal, color: '#fc8181' }}>{rec.max_loss != null ? `$${Number(rec.max_loss).toFixed(0)}` : '—'}</td>
-                      <td style={s.td}>Breakeven</td>
-                      <td style={{ ...s.tdVal, color: '#f6e05e' }}>
-                        {(rec.breakeven_high || rec.breakeven_low) != null
-                          ? `$${Number(rec.breakeven_high || rec.breakeven_low).toFixed(2)}`
-                          : '—'}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
+              )
+            })()}
 
             {/* Underlying price targets (single leg only) */}
             {(!rec.strategy_type || rec.strategy_type === 'single_leg') &&

@@ -6,10 +6,76 @@ a score between 0-100 based purely on mathematical rules — no AI involved.
 These scores are passed to Claude alongside the raw indicators so that
 Claude's qualitative score adjusts from an anchored baseline.
 """
+import math
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
+
+
+# ---------------------------------------------------------------------------
+# Option pricing helpers
+# ---------------------------------------------------------------------------
+
+def _round_strike(price: float) -> float:
+    """Round to the nearest standard option strike increment."""
+    if price < 25:    return round(price * 2) / 2          # $0.50 increments
+    if price < 100:   return float(round(price))            # $1.00 increments
+    if price < 200:   return round(price / 2.5) * 2.5      # $2.50 increments
+    if price < 500:   return round(price / 5) * 5.0        # $5.00 increments
+    return round(price / 10) * 10.0                         # $10.00 increments
+
+
+def _round_premium(val: float) -> float:
+    """Round to nearest $0.05 (standard options tick)."""
+    return max(0.05, round(val * 20) / 20)
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF via math.erf."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def estimate_atm_premium(price: float, atr: float, days: int = 7) -> float:
+    """
+    Estimate ATM option premium using a simplified Black-Scholes approach.
+    Annualised vol is derived from ATR (ATR ≈ 1-day expected move).
+    ATM approximation:  premium ≈ S × σ × sqrt(T) × 0.3989  (N'(0))
+    """
+    if not price or not atr or price <= 0 or days <= 0:
+        return 0.0
+    daily_vol   = atr / price
+    annual_vol  = daily_vol * math.sqrt(252)
+    T           = days / 365.0
+    premium     = price * annual_vol * math.sqrt(T) * 0.3989   # N'(0)
+    return _round_premium(premium)
+
+
+def estimate_otm_premium(price: float, strike: float, atr: float,
+                          option_type: str = "CALL", days: int = 7) -> float:
+    """
+    Estimate OTM option premium using simplified Black-Scholes (zero interest rate).
+    Falls back to ATM estimate if vol data is unavailable.
+    """
+    if not price or not atr or price <= 0 or days <= 0:
+        return 0.0
+    daily_vol  = atr / price
+    annual_vol = daily_vol * math.sqrt(252)
+    T          = days / 365.0
+    sigma_sqrtT = annual_vol * math.sqrt(T)
+    if sigma_sqrtT <= 0:
+        return estimate_atm_premium(price, atr, days)
+
+    ln_m = math.log(price / strike)   # positive = ITM for call
+    d1   = (ln_m + 0.5 * annual_vol**2 * T) / sigma_sqrtT
+    d2   = d1 - sigma_sqrtT
+
+    if option_type.upper() == "CALL":
+        prem = price * _norm_cdf(d1) - strike * _norm_cdf(d2)
+    else:
+        prem = strike * _norm_cdf(-d2) - price * _norm_cdf(-d1)
+
+    return _round_premium(max(prem, 0.05))
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +420,8 @@ def recommend_strategy_type(technicals: dict) -> str:
 def compute_entry_exit_multi_leg(technicals: dict, strategy: str) -> dict:
     """
     Calculate strikes, max profit, max loss, and breakevens for multi-leg strategies.
-    All values are per-share (multiply by 100 for per-contract).
+    Strikes are rounded to standard option increments; premiums use Black-Scholes.
+    All per-share values; multiply by 100 for per-contract P&L.
     """
     price = technicals.get("price")
     atr   = technicals.get("atr")
@@ -364,126 +431,155 @@ def compute_entry_exit_multi_leg(technicals: dict, strategy: str) -> dict:
     if not price or not atr:
         return {"strategy_type": strategy}
 
-    wing = round(atr * 1.5, 2)   # width of each spread wing (≈1.5 ATR)
+    # Wing width: 2× ATR rounded to standard strike increment
+    raw_wing = atr * 2.0
+    # Round wing to nearest strike increment (so wings land on real strikes)
+    inc = (_round_strike(price + raw_wing) - _round_strike(price))
+    wing = max(inc, _round_strike(price + raw_wing) - _round_strike(price))
+    if wing <= 0:
+        wing = _round_strike(price + raw_wing) - _round_strike(price - raw_wing)
+    wing = max(wing, _round_strike(price) * 0.02)   # at least 2% of price
 
-    fib618  = fib.get("fib_618")
-    fib382  = fib.get("fib_382")
-    fib236  = fib.get("fib_236")
-    ma50    = ma.get("ma50")
-    ma200   = ma.get("ma200")
+    fib618 = fib.get("fib_618")
+    fib382 = fib.get("fib_382")
+    fib236 = fib.get("fib_236")
+    ma50   = ma.get("ma50")
 
     result = {"strategy_type": strategy}
 
     if strategy == "iron_condor":
-        # Short strangle 1 ATR out; wings 1.5 ATR further
-        sc = round(price + atr, 2)         # short call
-        lc = round(sc + wing, 2)           # long call (wing)
-        sp = round(price - atr, 2)         # short put
-        lp = round(sp - wing, 2)           # long put (wing)
-        # Net credit: rough estimate (~30% of wing width each side)
-        credit = round(wing * 0.30 * 2, 2)
+        sc = _round_strike(price + atr)          # short call ~1 ATR OTM
+        lc = _round_strike(sc + wing)            # long call wing
+        sp = _round_strike(price - atr)          # short put ~1 ATR OTM
+        lp = _round_strike(sp - wing)            # long put wing
+        # BS premiums for each leg (7-day expiry)
+        sc_prem = estimate_otm_premium(price, sc, atr, "CALL", 7)
+        lc_prem = estimate_otm_premium(price, lc, atr, "CALL", 7)
+        sp_prem = estimate_otm_premium(price, sp, atr, "PUT",  7)
+        lp_prem = estimate_otm_premium(price, lp, atr, "PUT",  7)
+        credit  = _round_premium((sc_prem - lc_prem) + (sp_prem - lp_prem))
+        loss    = _round_premium((lc - sc) - credit)   # max loss per share
         result.update({
             "short_call_strike": sc, "long_call_strike": lc,
-            "short_put_strike": sp, "long_put_strike": lp,
-            "net_credit": credit,
-            "max_profit": round(credit * 100, 0),
-            "max_loss": round((wing - credit) * 100, 0),
+            "short_put_strike":  sp, "long_put_strike":  lp,
+            "net_credit":    credit,
+            "max_profit":    round(credit * 100),
+            "max_loss":      round(loss   * 100),
             "breakeven_low":  round(sp - credit, 2),
             "breakeven_high": round(sc + credit, 2),
         })
 
     elif strategy == "bull_put_spread":
-        # Short put at Fib/MA support; long put = wing below
-        sp = fib618 or ma50 or round(price - atr, 2)
-        sp = round(sp, 2)
-        lp = round(sp - wing, 2)
-        credit = round(wing * 0.35, 2)
+        # Short put at closest Fib/MA support below price
+        raw_sp = fib618 or ma50 or (price - atr)
+        if raw_sp >= price:
+            raw_sp = price - atr
+        sp     = _round_strike(raw_sp)
+        lp     = _round_strike(sp - wing)
+        sp_prem = estimate_otm_premium(price, sp, atr, "PUT", 7)
+        lp_prem = estimate_otm_premium(price, lp, atr, "PUT", 7)
+        credit  = _round_premium(sp_prem - lp_prem)
+        loss    = _round_premium((sp - lp) - credit)
         result.update({
             "short_put_strike": sp, "long_put_strike": lp,
-            "net_credit": credit,
-            "max_profit": round(credit * 100, 0),
-            "max_loss": round((wing - credit) * 100, 0),
+            "net_credit":  credit,
+            "max_profit":  round(credit * 100),
+            "max_loss":    round(loss   * 100),
             "breakeven_low": round(sp - credit, 2),
         })
 
     elif strategy == "bear_call_spread":
-        # Short call at Fib/resistance; long call = wing above
-        sc = fib236 or fib382 or round(price + atr, 2)
-        if sc <= price:
-            sc = round(price + atr, 2)
-        sc = round(sc, 2)
-        lc = round(sc + wing, 2)
-        credit = round(wing * 0.35, 2)
+        # Short call at first Fib resistance above price
+        raw_sc = fib236 or fib382 or (price + atr)
+        if raw_sc <= price:
+            raw_sc = price + atr
+        sc     = _round_strike(raw_sc)
+        lc     = _round_strike(sc + wing)
+        sc_prem = estimate_otm_premium(price, sc, atr, "CALL", 7)
+        lc_prem = estimate_otm_premium(price, lc, atr, "CALL", 7)
+        credit  = _round_premium(sc_prem - lc_prem)
+        loss    = _round_premium((lc - sc) - credit)
         result.update({
             "short_call_strike": sc, "long_call_strike": lc,
-            "net_credit": credit,
-            "max_profit": round(credit * 100, 0),
-            "max_loss": round((wing - credit) * 100, 0),
+            "net_credit":  credit,
+            "max_profit":  round(credit * 100),
+            "max_loss":    round(loss   * 100),
             "breakeven_high": round(sc + credit, 2),
         })
 
     elif strategy == "bull_call_spread":
-        # Buy call near price; sell call = wing above
-        lc = round(price, 2)
-        sc = round(lc + wing, 2)
-        debit = round(wing * 0.40, 2)
+        lc = _round_strike(price)                  # buy ATM call
+        sc = _round_strike(price + wing)           # sell OTM call
+        lc_prem = estimate_atm_premium(price, atr, 14)
+        sc_prem = estimate_otm_premium(price, sc, atr, "CALL", 14)
+        debit   = _round_premium(lc_prem - sc_prem)
+        profit  = _round_premium((sc - lc) - debit)
         result.update({
             "long_call_strike": lc, "short_call_strike": sc,
-            "net_credit": -debit,
-            "max_profit": round((wing - debit) * 100, 0),
-            "max_loss": round(debit * 100, 0),
+            "net_credit":  -debit,
+            "max_profit":  round(profit * 100),
+            "max_loss":    round(debit  * 100),
             "breakeven_high": round(lc + debit, 2),
         })
 
     elif strategy == "bear_put_spread":
-        # Buy put near price; sell put = wing below
-        lp = round(price, 2)
-        sp = round(lp - wing, 2)
-        debit = round(wing * 0.40, 2)
+        lp = _round_strike(price)                  # buy ATM put
+        sp = _round_strike(price - wing)           # sell OTM put
+        lp_prem = estimate_atm_premium(price, atr, 14)
+        sp_prem = estimate_otm_premium(price, sp, atr, "PUT", 14)
+        debit   = _round_premium(lp_prem - sp_prem)
+        profit  = _round_premium((lp - sp) - debit)
         result.update({
             "long_put_strike": lp, "short_put_strike": sp,
-            "net_credit": -debit,
-            "max_profit": round((wing - debit) * 100, 0),
-            "max_loss": round(debit * 100, 0),
+            "net_credit":  -debit,
+            "max_profit":  round(profit * 100),
+            "max_loss":    round(debit  * 100),
             "breakeven_low": round(lp - debit, 2),
         })
-
-    else:  # single_leg — use regular entry/exit calc
-        pass
 
     return result
 
 
 def compute_entry_exit_options(technicals: dict, option_type: str = "CALL") -> dict:
     """
-    Suggest entry/exit/stop for an options trade based purely on ATR and Fib levels.
-    Claude will refine these with a specific strike and premium estimate.
+    Suggest entry/exit/stop for a single-leg options trade.
+    Returns rounded strikes and BS-estimated premiums for 7-day expiry.
     """
     price = technicals.get("price")
     atr   = technicals.get("atr")
-    fib   = technicals.get("fibonacci", {})
-    ma    = technicals.get("moving_averages", {})
+    fib   = technicals.get("fibonacci") or {}
+    ma    = technicals.get("moving_averages") or {}
 
     if not price or not atr:
         return {}
 
     if option_type.upper() == "CALL":
-        # Entry near current price or Fib support; target = price + 1.5-2x ATR
-        support    = fib.get("fib_618") or fib.get("fib_500") or (price - atr)
-        target     = round(price + 2.0 * atr, 2)
-        stop_level = round(support - 0.5 * atr, 2)
+        support     = fib.get("fib_618") or fib.get("fib_500") or (price - atr)
+        target      = round(price + 2.0 * atr, 2)
+        stop_level  = round(max(support - 0.5 * atr, price * 0.90), 2)
+        # Slightly OTM call strike
+        strike      = _round_strike(price + atr * 0.3)
+        entry_prem  = estimate_otm_premium(price, strike, atr, "CALL", 7)
+        target_prem = _round_premium(entry_prem * 2.0)   # 2× premium target
+        stop_prem   = _round_premium(entry_prem * 0.50)  # 50% stop
     else:  # PUT
-        # Entry near current price; target = price - 1.5-2x ATR
-        resistance = fib.get("fib_236") or fib.get("fib_382") or (price + atr)
-        target     = round(price - 2.0 * atr, 2)
-        stop_level = round(resistance + 0.5 * atr, 2)
+        resistance  = fib.get("fib_236") or fib.get("fib_382") or (price + atr)
+        target      = round(price - 2.0 * atr, 2)
+        stop_level  = round(min(resistance + 0.5 * atr, price * 1.10), 2)
+        strike      = _round_strike(price - atr * 0.3)
+        entry_prem  = estimate_otm_premium(price, strike, atr, "PUT", 7)
+        target_prem = _round_premium(entry_prem * 2.0)
+        stop_prem   = _round_premium(entry_prem * 0.50)
 
     return {
-        "underlying_entry": round(price, 2),
+        "underlying_entry":  round(price, 2),
         "underlying_target": target,
-        "underlying_stop": stop_level,
-        "atr": atr,
-        "expected_move_1atr": round(atr, 2),
+        "underlying_stop":   stop_level,
+        "suggested_strike":  strike,
+        "entry_premium_est": entry_prem,
+        "target_premium_est": target_prem,
+        "stop_premium_est":  stop_prem,
+        "atr":               round(atr, 2),
     }
 
 

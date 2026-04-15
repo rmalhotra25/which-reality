@@ -222,7 +222,12 @@ export default function OptionsTab() {
             {/* Single-leg contract details */}
             {(!rec.strategy_type || rec.strategy_type === 'single_leg') && (
               <div>
-                <div style={s.sectionLabel}>Option Contract</div>
+                <div style={s.sectionLabel}>
+                  Option Contract
+                  <span style={{ fontSize: '10px', color: '#4a5568', marginLeft: '6px', fontWeight: 400 }}>
+                    premiums are estimates — verify with your broker
+                  </span>
+                </div>
                 <table style={s.table}>
                   <tbody>
                     <tr>
@@ -232,13 +237,13 @@ export default function OptionsTab() {
                       <td style={s.tdVal}>{rec.expiry || '—'}</td>
                     </tr>
                     <tr>
-                      <td style={s.td}>Premium Entry</td>
+                      <td style={s.td}>Est. Entry</td>
                       <td style={{ ...s.tdVal, color: '#68d391' }}>{fmt(rec.entry_price)}</td>
-                      <td style={s.td}>Premium Target</td>
+                      <td style={s.td}>Est. Target</td>
                       <td style={{ ...s.tdVal, color: '#63b3ed' }}>{fmt(rec.exit_price)}</td>
                     </tr>
                     <tr>
-                      <td style={s.td}>Premium Stop</td>
+                      <td style={s.td}>Est. Stop</td>
                       <td style={{ ...s.tdVal, color: '#fc8181' }}>{fmt(rec.stop_loss)}</td>
                       <td style={s.td}>R/R</td>
                       <td style={s.tdVal}>{calcRR(rec.entry_price, rec.exit_price, rec.stop_loss)}</td>

@@ -55,28 +55,38 @@ class ClaudeAnalyst:
         if quant_scores:
             lines = []
             for ticker, qs in quant_scores.items():
-                comp = qs.get("composite", 50)
-                ee = qs.get("entry_exit", {})
+                comp  = qs.get("composite", 50)
+                ee    = qs.get("entry_exit", {})
                 strat = qs.get("recommended_strategy", "single_leg")
-                ml = qs.get("multi_leg", {})
-                lines.append(
-                    f"  {ticker}: quant={comp}/100 | suggested={strat} | "
-                    f"entry=${ee.get('underlying_entry','?')} "
-                    f"target=${ee.get('underlying_target','?')} "
-                    f"stop=${ee.get('underlying_stop','?')}"
-                )
-                if ml and strat != "single_leg":
+                ml    = qs.get("multi_leg", {})
+                if strat == "single_leg":
+                    lines.append(
+                        f"  {ticker}: quant={comp}/100 | strategy={strat} | "
+                        f"underlying entry=${ee.get('underlying_entry','?')} "
+                        f"target=${ee.get('underlying_target','?')} "
+                        f"stop=${ee.get('underlying_stop','?')} | "
+                        f"suggested strike=${ee.get('suggested_strike','?')} "
+                        f"BS-premium-est entry=${ee.get('entry_premium_est','?')} "
+                        f"target=${ee.get('target_premium_est','?')} "
+                        f"stop=${ee.get('stop_premium_est','?')}"
+                    )
+                else:
                     sc = ml.get("short_call_strike","?")
                     lc = ml.get("long_call_strike","?")
                     sp = ml.get("short_put_strike","?")
                     lp = ml.get("long_put_strike","?")
-                    cred = ml.get("net_credit","?")
                     lines.append(
-                        f"    strikes: SC={sc} LC={lc} SP={sp} LP={lp} | "
-                        f"net_credit≈${cred} | "
-                        f"max_profit≈${ml.get('max_profit','?')} max_loss≈${ml.get('max_loss','?')}"
+                        f"  {ticker}: quant={comp}/100 | strategy={strat} | "
+                        f"strikes SC={sc} LC={lc} SP={sp} LP={lp} | "
+                        f"BS-credit-est=${ml.get('net_credit','?')} "
+                        f"max_profit=${ml.get('max_profit','?')} "
+                        f"max_loss=${ml.get('max_loss','?')}"
                     )
-            quant_ctx = "\nQuantitative analysis (math-based baseline):\n" + "\n".join(lines) + "\n"
+            quant_ctx = (
+                "\nQuantitative analysis with Black-Scholes estimated premiums "
+                "(use these as realistic anchors — adjust based on your judgment):\n"
+                + "\n".join(lines) + "\n"
+            )
 
         user = (
             f"{market_context}\n"

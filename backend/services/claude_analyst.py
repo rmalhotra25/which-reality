@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import anthropic
@@ -15,6 +15,22 @@ MODEL = "claude-sonnet-4-6"
 def _clean_json(text: str) -> str:
     """Strip markdown fences and surrounding whitespace."""
     return re.sub(r"```(?:json)?|```", "", text).strip()
+
+
+def _valid_expiry_dates(n: int = 6) -> list[str]:
+    """Return the next n upcoming Friday dates that are at least 5 calendar days away.
+    These are real tradeable weekly/monthly expiries."""
+    today = datetime.now(timezone.utc).date()
+    days_to_friday = (4 - today.weekday()) % 7  # weekday 4 = Friday
+    # Ensure at least 5 calendar days gap so we're not expiring imminently
+    if days_to_friday < 5:
+        days_to_friday += 7
+    fridays = []
+    d = today + timedelta(days=days_to_friday)
+    for _ in range(n):
+        fridays.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(weeks=1)
+    return fridays
 
 
 class ClaudeAnalyst:
@@ -88,7 +104,18 @@ class ClaudeAnalyst:
                 + "\n".join(lines) + "\n"
             )
 
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        valid_expiries = _valid_expiry_dates(6)
+        expiry_list = ", ".join(valid_expiries)
+        # Use nearest and second-nearest as concrete examples in the schema
+        ex_expiry1 = valid_expiries[0]
+        ex_expiry2 = valid_expiries[1] if len(valid_expiries) > 1 else valid_expiries[0]
+
         user = (
+            f"Today's date (UTC): {today_str}\n"
+            f"Valid option expiry dates — YOU MUST use one of these exact dates for every expiry field: "
+            f"{expiry_list}\n"
+            f"IMPORTANT: Never use a date not in the list above. Never use example dates from the schema.\n\n"
             f"{market_context}\n"
             f"{quant_ctx}\n"
             f"Recent news:\n{news_bullets}\n\n"
@@ -106,24 +133,24 @@ class ClaudeAnalyst:
             "- Cite specific indicator readings in your explanation\n"
             "- Your qual_score is your qualitative judgment (0-100)\n\n"
             "Return a JSON array of exactly 5 objects. For single_leg:\n"
-            '  {"rank":1,"ticker":"AAPL","strategy_type":"single_leg","option_type":"CALL",'
-            '"strike":195.0,"expiry":"2025-04-18","entry_price":2.40,"exit_price":4.80,'
+            f'  {{"rank":1,"ticker":"AAPL","strategy_type":"single_leg","option_type":"CALL",'
+            f'"strike":195.0,"expiry":"{ex_expiry1}","entry_price":2.40,"exit_price":4.80,'
             '"stop_loss":1.20,"underlying_entry":192.5,"underlying_target":198.0,'
             '"underlying_stop":189.0,"qual_score":82,"score":87,"grade":"B",'
-            '"explanation":"RSI 32 oversold, bouncing off Fib 61.8%..."}\n\n'
+            '"explanation":"RSI 32 oversold, bouncing off Fib 61.8%..."}}\n\n'
             "For iron_condor:\n"
-            '  {"rank":2,"ticker":"SPY","strategy_type":"iron_condor","option_type":"N/A",'
-            '"expiry":"2025-04-18","short_call_strike":512.0,"long_call_strike":515.0,'
+            f'  {{"rank":2,"ticker":"SPY","strategy_type":"iron_condor","option_type":"N/A",'
+            f'"expiry":"{ex_expiry2}","short_call_strike":512.0,"long_call_strike":515.0,'
             '"short_put_strike":490.0,"long_put_strike":487.0,"net_credit":1.85,'
             '"max_profit":185.0,"max_loss":115.0,"breakeven_low":488.15,'
             '"breakeven_high":513.85,"qual_score":79,"score":83,"grade":"B",'
-            '"explanation":"RSI neutral at 52, BB %B at 0.45 range-bound, IV rank 48..."}\n\n'
+            '"explanation":"RSI neutral at 52, BB %B at 0.45 range-bound, IV rank 48..."}}\n\n'
             "For spreads (bull_put_spread example):\n"
-            '  {"rank":3,"ticker":"MSFT","strategy_type":"bull_put_spread","option_type":"N/A",'
-            '"expiry":"2025-04-18","short_put_strike":380.0,"long_put_strike":375.0,'
+            f'  {{"rank":3,"ticker":"MSFT","strategy_type":"bull_put_spread","option_type":"N/A",'
+            f'"expiry":"{ex_expiry1}","short_put_strike":380.0,"long_put_strike":375.0,'
             '"net_credit":1.20,"max_profit":120.0,"max_loss":380.0,"breakeven_low":378.80,'
             '"qual_score":85,"score":88,"grade":"B",'
-            '"explanation":"Strong uptrend above MA50+200, Fib 61.8% support at 381..."}\n\n'
+            '"explanation":"Strong uptrend above MA50+200, Fib 61.8% support at 381..."}}\n\n'
             "Scoring rubric for qual_score and score (0-100):\n"
             "- Technical setup quality (RSI, MACD, Fib, MA alignment): 35%\n"
             "- Catalyst/news strength: 25%\n"
@@ -159,8 +186,15 @@ class ClaudeAnalyst:
                 )
             quant_ctx = "\nPre-computed quantitative scores:\n" + "\n".join(lines) + "\n"
 
+        valid_expiries = _valid_expiry_dates(6)
+        expiry_list = ", ".join(valid_expiries)
+        ex_expiry1 = valid_expiries[0]
+
         user = (
             f"Current date/time (UTC): {datetime.now(timezone.utc).isoformat()}\n"
+            f"Valid option expiry dates — YOU MUST use one of these exact dates for every expiry field: "
+            f"{expiry_list}\n"
+            f"IMPORTANT: Never use a date not in the list above.\n\n"
             f"{quant_ctx}\n"
             f"Recent market news:\n{news_bullets}\n\n"
             f"Technical screening data:\n{screening_data}\n\n"
@@ -177,9 +211,9 @@ class ClaudeAnalyst:
             "news context, and willingness-to-own assessment.\n\n"
             "Return a JSON array of exactly 5 objects:\n"
             "[\n"
-            '  {"rank":1,"ticker":"MSFT","put_strike":380.0,"put_expiry":"2025-04-18",'
+            f'  {{"rank":1,"ticker":"MSFT","put_strike":380.0,"put_expiry":"{ex_expiry1}",'
             '"put_premium":4.20,"iv_rank":52,"qual_score":88,"score":91,"grade":"A",'
-            '"explanation":"3-4 sentences citing trend, support level, and IV context"}\n'
+            '"explanation":"3-4 sentences citing trend, support level, and IV context"}}\n'
             "]\n\n"
             "Scoring rubric for qual_score and score (0-100):\n"
             "- Technical trend strength (MA, Fib support quality): 35%\n"
@@ -283,7 +317,13 @@ class ClaudeAnalyst:
                 f"ATR={technicals.get('atr','?')} (daily expected move)"
             )
 
+        valid_expiries = _valid_expiry_dates(4)
+        expiry_list = ", ".join(valid_expiries)
+        ex_expiry1 = valid_expiries[0]
+
         user = (
+            f"Today's date (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n"
+            f"Valid expiry dates — use one of these exactly: {expiry_list}\n\n"
             f"I own 100 shares of {ticker} at cost basis ${cost_basis:.2f}/share "
             f"(assigned on {assigned_date}).\n"
             f"Current price: ${current_price:.2f}\n"
@@ -293,10 +333,10 @@ class ClaudeAnalyst:
             f"Recent news for {ticker}:\n{news_bullets}\n\n"
             "Select the call strike at a Fibonacci resistance level or near the Bollinger upper band "
             "where price is likely to stall. Do NOT go below cost basis. "
-            "Use ATR to estimate realistic premium. Prefer the nearest Friday expiry.\n\n"
+            "Use ATR to estimate realistic premium. Use the nearest date from the valid expiry list above.\n\n"
             "Return JSON:\n"
-            '{"call_strike":195.0,"call_expiry":"2025-04-18",'
-            '"estimated_premium":1.85,"rationale":"cite the specific technical level used"}'
+            f'{{"call_strike":195.0,"call_expiry":"{ex_expiry1}",'
+            '"estimated_premium":1.85,"rationale":"cite the specific technical level used"}}'
         )
         raw = self._call(system, user, max_tokens=1024)
         return self._parse(raw)

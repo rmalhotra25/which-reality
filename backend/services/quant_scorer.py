@@ -52,28 +52,32 @@ def estimate_atm_premium(price: float, atr: float, days: int = 7) -> float:
 
 
 def estimate_otm_premium(price: float, strike: float, atr: float,
-                          option_type: str = "CALL", days: int = 7) -> float:
+                          option_type: str = "CALL", days: int = 7,
+                          risk_free_rate: float = 0.045) -> float:
     """
-    Estimate OTM option premium using simplified Black-Scholes (zero interest rate).
-    Falls back to ATM estimate if vol data is unavailable.
+    Estimate option premium using full Black-Scholes with risk-free rate.
+    Vol is derived from ATR: annual_vol = (ATR/price) * sqrt(252).
+    risk_free_rate defaults to 4.5% (approximate current rate).
     """
     if not price or not atr or price <= 0 or days <= 0:
         return 0.0
-    daily_vol  = atr / price
-    annual_vol = daily_vol * math.sqrt(252)
-    T          = days / 365.0
+    daily_vol   = atr / price
+    annual_vol  = daily_vol * math.sqrt(252)
+    T           = days / 365.0
     sigma_sqrtT = annual_vol * math.sqrt(T)
     if sigma_sqrtT <= 0:
         return estimate_atm_premium(price, atr, days)
 
-    ln_m = math.log(price / strike)   # positive = ITM for call
-    d1   = (ln_m + 0.5 * annual_vol**2 * T) / sigma_sqrtT
+    r    = risk_free_rate
+    ln_m = math.log(price / strike)
+    d1   = (ln_m + (r + 0.5 * annual_vol**2) * T) / sigma_sqrtT
     d2   = d1 - sigma_sqrtT
 
+    discount = math.exp(-r * T)
     if option_type.upper() == "CALL":
-        prem = price * _norm_cdf(d1) - strike * _norm_cdf(d2)
+        prem = price * _norm_cdf(d1) - strike * discount * _norm_cdf(d2)
     else:
-        prem = strike * _norm_cdf(-d2) - price * _norm_cdf(-d1)
+        prem = strike * discount * _norm_cdf(-d2) - price * _norm_cdf(-d1)
 
     return _round_premium(max(prem, 0.05))
 

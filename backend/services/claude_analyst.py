@@ -375,9 +375,9 @@ class ClaudeAnalyst:
             f"hist={macd.get('histogram','?')} [{macd.get('crossover','?')}]\n"
             f"Fib levels (from recent swing): "
             f"23.6%={fib.get('fib_236','?')} 38.2%={fib.get('fib_382','?')} "
-            f"50%={fib.get('fib_50','?')} 61.8%={fib.get('fib_618','?')}\n"
+            f"50%={fib.get('fib_500','?')} 61.8%={fib.get('fib_618','?')}\n"
             f"5d change: {technicals.get('change_5d_pct','?')}% | "
-            f"Vol vs avg: {technicals.get('volume_vs_avg','?')}x"
+            f"Vol vs avg: {technicals.get('volume_trend', {}).get('ratio','?')}x"
         )
 
         fund_str = ""

@@ -164,6 +164,11 @@ class OptionsEngine:
             strategy_type = str(rec.get("strategy_type") or qs_data.get("recommended_strategy") or "single_leg")
             ml = qs_data.get("multi_leg", {})
 
+            # For single-leg, fall back to quant-computed suggested_strike if Claude didn't provide one
+            strike = rec.get("strike")
+            if not strike and strategy_type == "single_leg":
+                strike = ee.get("suggested_strike")
+
             obj = Recommendation(
                 tab=TabType.options,
                 ticker=ticker,
@@ -177,7 +182,7 @@ class OptionsEngine:
                 quant_components=json.dumps(qs_data.get("components", {})),
                 option_type=opt_type if strategy_type == "single_leg" else "N/A",
                 strategy_type=strategy_type,
-                strike=rec.get("strike"),
+                strike=strike,
                 expiry=rec.get("expiry"),
                 entry_price=rec.get("entry_price"),
                 exit_price=rec.get("exit_price"),

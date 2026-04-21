@@ -42,11 +42,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import options, wheel, longterm  # noqa: E402
+from routers import options, wheel, longterm, lookup  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
 app.include_router(longterm.router, prefix="/api/longterm", tags=["Long-Term"])
+app.include_router(lookup.router)
 
 
 @app.get("/api/health", tags=["Health"])

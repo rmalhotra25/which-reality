@@ -3,11 +3,13 @@ import TabNav from './components/TabNav'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
 import LongTermTab from './tabs/LongTermTab'
+import StockLookupTab from './tabs/StockLookupTab'
 
 const TABS = [
   { id: 'options', label: '📈 Options Trading' },
   { id: 'wheel', label: '🔄 Wheel Strategy' },
   { id: 'longterm', label: '🌱 Growth & Income' },
+  { id: 'lookup', label: '🔍 Stock Lookup' },
 ]
 
 const styles = {
@@ -58,6 +60,7 @@ export default function App() {
         {activeTab === 'options' && <OptionsTab />}
         {activeTab === 'wheel' && <WheelTab />}
         {activeTab === 'longterm' && <LongTermTab />}
+        {activeTab === 'lookup' && <StockLookupTab />}
       </main>
     </div>
   )

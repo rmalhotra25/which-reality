@@ -340,3 +340,87 @@ class ClaudeAnalyst:
         )
         raw = self._call(system, user, max_tokens=1024)
         return self._parse(raw)
+
+    # ------------------------------------------------------------------
+    # On-demand single-stock analysis (Stock Lookup tab)
+    # ------------------------------------------------------------------
+    def analyze_stock(
+        self,
+        ticker: str,
+        current_price: float,
+        technicals: dict,
+        fundamentals: dict,
+        news_bullets: str,
+    ) -> dict:
+        system = (
+            "You are a senior equity analyst combining technical analysis, fundamental research, "
+            "and market sentiment to produce actionable stock ratings. "
+            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
+        )
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        ma = technicals.get("moving_averages", {})
+        fib = technicals.get("fibonacci", {})
+        bb = technicals.get("bollinger", {})
+        macd = technicals.get("macd", {})
+
+        tech_str = (
+            f"Price: ${current_price} | RSI={technicals.get('rsi','?')} | "
+            f"ATR={technicals.get('atr','?')} | VWAP={technicals.get('vwap','?')}\n"
+            f"MA20={ma.get('ma20','?')} MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')}\n"
+            f"Bollinger: upper={bb.get('upper','?')} mid={bb.get('middle','?')} lower={bb.get('lower','?')} "
+            f"%B={bb.get('pct_b','?')}\n"
+            f"MACD={macd.get('macd','?')} signal={macd.get('signal','?')} "
+            f"hist={macd.get('histogram','?')} [{macd.get('crossover','?')}]\n"
+            f"Fib levels (from recent swing): "
+            f"23.6%={fib.get('fib_236','?')} 38.2%={fib.get('fib_382','?')} "
+            f"50%={fib.get('fib_50','?')} 61.8%={fib.get('fib_618','?')}\n"
+            f"5d change: {technicals.get('change_5d_pct','?')}% | "
+            f"Vol vs avg: {technicals.get('volume_vs_avg','?')}x"
+        )
+
+        fund_str = ""
+        if fundamentals:
+            fund_str = (
+                f"\nFundamentals: PE={fundamentals.get('pe_ratio','?')} | "
+                f"EPS growth={fundamentals.get('eps_growth_ttm','?')} | "
+                f"Revenue growth={fundamentals.get('revenue_growth_ttm','?')} | "
+                f"Div yield={fundamentals.get('div_yield','?')} | "
+                f"Sector={fundamentals.get('sector','?')}"
+            )
+
+        user = (
+            f"Today: {today_str}\n"
+            f"Analyze {ticker} and produce a structured buy/sell/hold rating with price predictions.\n\n"
+            f"Technical indicators:\n{tech_str}\n"
+            f"{fund_str}\n\n"
+            f"Recent news and sentiment:\n{news_bullets}\n\n"
+            "Produce a comprehensive analysis covering:\n"
+            "- Overall rating: BUY, SELL, or HOLD\n"
+            "- Conviction: HIGH, MEDIUM, or LOW\n"
+            "- Short-term outlook (1-4 weeks): direction, price target, key catalyst\n"
+            "- Long-term outlook (3-12 months): direction, price target, thesis\n"
+            "- Key support levels (2-3 price levels where buyers likely step in)\n"
+            "- Key resistance levels (2-3 price levels where sellers likely emerge)\n"
+            "- Main upside catalysts (2-3 bullet points)\n"
+            "- Main risks (2-3 bullet points)\n"
+            "- Technical summary: cite RSI, MACD status, MA alignment, Bollinger position\n"
+            "- Score 0-100 for overall confidence\n\n"
+            "Return JSON:\n"
+            '{"ticker":"AAPL","rating":"BUY","conviction":"HIGH","score":84,"grade":"B",'
+            '"current_price":192.50,'
+            '"short_term":{"direction":"bullish","price_target":205.0,'
+            '"timeframe":"2-3 weeks","catalyst":"RSI bounce from oversold, MACD crossover imminent"},'
+            '"long_term":{"direction":"bullish","price_target":240.0,'
+            '"timeframe":"6-9 months","thesis":"AI integration across product line drives margin expansion"},'
+            '"support_levels":[188.0,182.5,175.0],'
+            '"resistance_levels":[198.0,205.0,215.0],'
+            '"upside_catalysts":["iPhone supercycle","Services revenue acceleration","India expansion"],'
+            '"risks":["China demand slowdown","Valuation premium at risk if rates rise","Regulatory headwinds"],'
+            '"technical_summary":"RSI at 38 approaching oversold; price below MA50 but above MA200 — '
+            'dip within uptrend. MACD histogram turning less negative. BB %B at 0.15 near lower band.",'
+            '"explanation":"2-3 sentence overall thesis combining technical and fundamental view"}'
+        )
+        raw = self._call(system, user, max_tokens=2048)
+        return self._parse(raw)

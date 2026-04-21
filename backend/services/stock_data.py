@@ -15,16 +15,29 @@ except ImportError:
     logger.warning("yfinance not available — using Yahoo Finance JSON API fallback")
 
 DEFAULT_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AMD", "INTC",
-    "JPM", "BAC", "GS", "MS", "WFC",
-    "SPY", "QQQ", "IWM", "GLD", "SLV", "TLT",
-    "XOM", "CVX", "COP",
-    "JNJ", "PFE", "UNH", "ABBV",
-    "COST", "WMT", "TGT", "HD",
-    "DIS", "NFLX", "CMCSA",
-    "V", "MA", "PYPL",
-    "BA", "CAT", "DE",
-    "KO", "PEP", "MCD",
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "ORCL",
+    # Mid/large-cap tech & semiconductors
+    "AMD", "INTC", "QCOM", "MU", "LRCX", "KLAC", "MRVL", "TXN", "AMAT", "ON",
+    # Software / cloud / cybersecurity
+    "CRM", "NOW", "ADBE", "PANW", "CRWD", "NET", "SNOW", "DDOG", "ZS", "OKTA",
+    "PLTR", "HUBS", "WDAY", "TEAM", "MDB", "CFLT",
+    # Consumer / e-commerce / travel
+    "UBER", "LYFT", "ABNB", "BKNG", "DASH", "COIN", "RBLX",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "WFC", "V", "MA", "PYPL", "AXP", "BLK",
+    # Healthcare
+    "JNJ", "PFE", "UNH", "ABBV", "MRK", "LLY", "DHR", "TMO", "ISRG", "CVS",
+    # Energy
+    "XOM", "CVX", "COP", "SLB", "OXY",
+    # Industrials / defense
+    "BA", "CAT", "DE", "LMT", "RTX", "HON", "GE", "ETN",
+    # Consumer staples / retail
+    "COST", "WMT", "TGT", "HD", "KO", "PEP", "MCD", "SBUX", "NKE",
+    # Media / telecom
+    "DIS", "NFLX", "CMCSA", "T", "VZ",
+    # ETFs (broad market + sector)
+    "SPY", "QQQ", "IWM", "GLD", "TLT",
 ]
 
 HEADERS = {

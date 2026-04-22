@@ -1,5 +1,7 @@
 import logging
 import json
+import math
+from datetime import date
 from typing import Optional
 
 import numpy as np
@@ -224,6 +226,49 @@ def _compute_all_indicators(df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Black-Scholes helpers for real options chain data
+# ---------------------------------------------------------------------------
+
+def _ncdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bs_put_delta(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
+    """Put delta via Black-Scholes. iv is annual vol as fraction (0.28 = 28%)."""
+    try:
+        if T <= 0 or iv <= 0 or price <= 0 or strike <= 0:
+            return None
+        sigma_sqrtT = iv * math.sqrt(T)
+        d1 = (math.log(price / strike) + (r + 0.5 * iv ** 2) * T) / sigma_sqrtT
+        return round(_ncdf(d1) - 1.0, 3)   # negative for puts
+    except Exception:
+        return None
+
+
+def _bs_put_theta_daily(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
+    """
+    Daily income per share earned by the put SELLER from time decay.
+    Positive value = seller collects this per share per day just from time passing.
+    """
+    try:
+        if T <= 0 or iv <= 0 or price <= 0 or strike <= 0:
+            return None
+        sigma_sqrtT = iv * math.sqrt(T)
+        d1 = (math.log(price / strike) + (r + 0.5 * iv ** 2) * T) / sigma_sqrtT
+        d2 = d1 - sigma_sqrtT
+        npdf_d1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
+        # BS annual theta for put: -(S*N'(d1)*σ)/(2√T) + r*K*e^{-rT}*N(-d2)
+        theta_annual = (
+            -(price * npdf_d1 * iv) / (2 * math.sqrt(T))
+            + r * strike * math.exp(-r * T) * _ncdf(-d2)
+        )
+        # Seller receives the decay: positive, daily per share
+        return round(-theta_annual / 365.0, 4)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Yahoo Finance HTTP fallback (no yfinance)
 # ---------------------------------------------------------------------------
 
@@ -417,3 +462,161 @@ class StockDataService:
             if ticker in options:
                 technicals[ticker].update(options[ticker])
         return technicals
+
+    def get_put_tiers(self, ticker: str) -> dict | None:
+        """
+        Fetch real put options chain and return three tiers for wheel strategy analysis.
+        Tiers are based on assignment probability (delta), with real bid/ask from yfinance.
+        Returns None if options data is unavailable.
+        """
+        if not _YF_AVAILABLE:
+            return None
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return None
+
+            # Prefer expiry 14-45 days out — best premium-to-risk ratio for wheel
+            today = date.today()
+            target_expiry = None
+            for exp in expiries:
+                days = (date.fromisoformat(exp) - today).days
+                if 14 <= days <= 45:
+                    target_expiry = exp
+                    break
+            if not target_expiry:
+                target_expiry = expiries[0]
+
+            info = t.fast_info
+            price = getattr(info, "last_price", None)
+            if not price:
+                return None
+
+            chain = t.option_chain(target_expiry)
+            puts = chain.puts.copy()
+            if puts.empty:
+                return None
+
+            exp_date = date.fromisoformat(target_expiry)
+            T = max((exp_date - today).days, 1) / 365.0
+            dte = (exp_date - today).days
+
+            # Keep only liquid puts (have a real bid)
+            puts = puts[puts["bid"] > 0].copy()
+            if puts.empty:
+                return None
+
+            # Compute delta and daily theta for each put using per-strike IV
+            puts["_delta"] = puts.apply(
+                lambda r: _bs_put_delta(price, r["strike"], float(r["impliedVolatility"]), T),
+                axis=1,
+            )
+            puts["_theta_daily"] = puts.apply(
+                lambda r: _bs_put_theta_daily(price, r["strike"], float(r["impliedVolatility"]), T),
+                axis=1,
+            )
+            puts = puts[puts["_delta"].notna()].copy()
+            puts["_delta_abs"] = puts["_delta"].abs()
+
+            # ATM IV for context (put closest to current price)
+            atm_row = puts.iloc[(puts["strike"] - price).abs().argsort().iloc[0]]
+            atm_iv_pct = round(float(atm_row["impliedVolatility"]) * 100, 1)
+
+            def _best_near_delta(target: float) -> dict | None:
+                if puts.empty:
+                    return None
+                idx = (puts["_delta_abs"] - target).abs().idxmin()
+                row = puts.loc[idx]
+                bid = float(row["bid"])
+                ask = float(row["ask"])
+                mid = round((bid + ask) / 2, 2)
+                strike = float(row["strike"])
+                iv_pct = round(float(row["impliedVolatility"]) * 100, 1)
+                delta_abs = round(float(row["_delta_abs"]), 2)
+                theta = row["_theta_daily"]
+                daily_per_contract = round(float(theta) * 100, 2) if theta else None
+                breakeven = round(strike - mid, 2)
+                drop_pct = round((price - breakeven) / price * 100, 1)
+                ann_return = round((mid / strike) * (365 / dte) * 100, 1)
+                return {
+                    "strike": strike,
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "bid": bid,
+                    "ask": ask,
+                    "mid_premium": mid,
+                    "premium_per_contract": round(mid * 100, 2),
+                    "iv_pct": iv_pct,
+                    "delta_abs": delta_abs,
+                    "assignment_chance_pct": round(delta_abs * 100),
+                    "daily_income_per_contract": daily_per_contract,
+                    "breakeven": breakeven,
+                    "drop_to_breakeven_pct": drop_pct,
+                    "annualized_return_pct": ann_return,
+                    "volume": int(row.get("volume", 0) or 0),
+                    "open_interest": int(row.get("openInterest", 0) or 0),
+                }
+
+            return {
+                "current_price": round(price, 2),
+                "expiry": target_expiry,
+                "dte": dte,
+                "atm_iv_pct": atm_iv_pct,
+                "likely": _best_near_delta(0.45),
+                "moderate": _best_near_delta(0.30),
+                "unlikely": _best_near_delta(0.16),
+            }
+        except Exception as e:
+            logger.warning("get_put_tiers failed for %s: %s", ticker, e)
+            return None
+
+    def get_chain_context(self, tickers: list[str]) -> dict:
+        """
+        For each ticker return a compact real-market options chain string.
+        Used to give Claude actual bid/ask prices instead of BS estimates.
+        """
+        if not _YF_AVAILABLE:
+            return {}
+        result = {}
+        for ticker in tickers:
+            try:
+                t = yf.Ticker(ticker)
+                expiries = t.options
+                if not expiries:
+                    continue
+                info = t.fast_info
+                price = getattr(info, "last_price", None)
+                if not price:
+                    continue
+
+                chain = t.option_chain(expiries[0])
+                calls = chain.calls[chain.calls["bid"] > 0].copy()
+                puts = chain.puts[chain.puts["bid"] > 0].copy()
+
+                def _nearby(df, n_below=1, n_above=2):
+                    if df.empty:
+                        return df
+                    diffs = (df["strike"] - price).abs()
+                    atm_pos = diffs.argsort().iloc[0]
+                    pos = df.index.get_loc(atm_pos)
+                    return df.iloc[max(0, pos - n_below): pos + n_above + 1]
+
+                call_rows = _nearby(calls, 0, 3)
+                put_rows = _nearby(puts, 2, 1)
+
+                def _fmt_row(row, suffix):
+                    iv = round(float(row["impliedVolatility"]) * 100)
+                    return f"{int(row['strike'])}{suffix} ${row['bid']:.2f}/${row['ask']:.2f} IV={iv}%"
+
+                call_str = " | ".join(_fmt_row(r, "C") for _, r in call_rows.iterrows())
+                put_str = " | ".join(_fmt_row(r, "P") for _, r in put_rows.iterrows())
+
+                result[ticker] = {
+                    "expiry": expiries[0],
+                    "calls": call_str or "n/a",
+                    "puts": put_str or "n/a",
+                }
+            except Exception as e:
+                logger.debug("chain_context error for %s: %s", ticker, e)
+        return result

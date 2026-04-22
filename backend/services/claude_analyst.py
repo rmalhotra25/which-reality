@@ -424,3 +424,109 @@ class ClaudeAnalyst:
         )
         raw = self._call(system, user, max_tokens=2048)
         return self._parse(raw)
+
+    # ------------------------------------------------------------------
+    # On-demand Wheel Strategy custom analysis (user enters any ticker)
+    # ------------------------------------------------------------------
+    def analyze_wheel_custom(
+        self,
+        ticker: str,
+        current_price: float,
+        put_tiers: dict,
+        fundamentals: dict,
+        technicals: dict,
+        news_bullets: str,
+    ) -> dict:
+        system = (
+            "You are a friendly options income coach. Your job is to help everyday investors "
+            "understand the Wheel Strategy in plain, simple English — no jargon, no confusing "
+            "finance terms. Write as if explaining to a smart friend who has never traded options. "
+            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
+        )
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        ma = technicals.get("moving_averages", {})
+        bb = technicals.get("bollinger", {})
+        rsi = technicals.get("rsi", "?")
+        atr = technicals.get("atr", "?")
+
+        def _fmt_tier(t: dict | None, label: str) -> str:
+            if not t:
+                return f"  {label}: No suitable option found\n"
+            return (
+                f"  {label}:\n"
+                f"    Strike=${t['strike']} | Expiry={t['expiry']} ({t['dte']} days)\n"
+                f"    Bid=${t['bid']} / Ask=${t['ask']} | Mid=${t['mid_premium']} "
+                f"(collect ${t['premium_per_contract']} per contract = 100 shares)\n"
+                f"    IV={t['iv_pct']}% | Delta={t['delta_abs']} "
+                f"(~{t['assignment_chance_pct']}% assignment chance)\n"
+                f"    Daily time-decay income per contract=${t['daily_income_per_contract']}\n"
+                f"    Breakeven=${t['breakeven']} (protected until stock drops {t['drop_to_breakeven_pct']}%)\n"
+                f"    Annualized return on capital={t['annualized_return_pct']}%\n"
+                f"    Volume={t['volume']} Open Interest={t['open_interest']}\n"
+            )
+
+        tiers_str = (
+            f"REAL OPTIONS DATA from market (all prices are actual market bid/ask):\n"
+            f"Current price: ${current_price} | ATM IV: {put_tiers.get('atm_iv_pct','?')}%\n\n"
+            + _fmt_tier(put_tiers.get("likely"),   "TIER 1 — HIGH PREMIUM, HIGHER ASSIGNMENT RISK (~45% delta)")
+            + _fmt_tier(put_tiers.get("moderate"), "TIER 2 — BALANCED PREMIUM AND RISK (~30% delta)")
+            + _fmt_tier(put_tiers.get("unlikely"), "TIER 3 — CONSERVATIVE, LOWER PREMIUM (~16% delta)")
+        )
+
+        tech_str = (
+            f"RSI={rsi} | MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')} "
+            f"| Price {'above' if current_price > (ma.get('ma200') or 0) else 'below'} 200-day average\n"
+            f"Bollinger %B={bb.get('pct_b','?')} | ATR={atr} (typical daily move)"
+        )
+
+        fund_str = (
+            f"PE ratio={fundamentals.get('pe_ratio','?')} | "
+            f"Revenue growth={fundamentals.get('revenue_growth_ttm','?')} | "
+            f"Dividend yield={fundamentals.get('div_yield','?')} | "
+            f"Sector={fundamentals.get('sector','?')}"
+        ) if fundamentals else "Fundamental data unavailable"
+
+        user = (
+            f"Today: {today_str}\n"
+            f"Analyze {ticker} (price=${current_price}) for the Wheel Strategy.\n\n"
+            f"Technical picture:\n{tech_str}\n\n"
+            f"Fundamentals: {fund_str}\n\n"
+            f"Recent news:\n{news_bullets}\n\n"
+            f"{tiers_str}\n"
+            "Write everything in plain English. Avoid words like 'delta', 'theta', 'IV', 'volatility'. "
+            "Instead use phrases like:\n"
+            "- 'assignment chance' → 'chance you end up buying the shares'\n"
+            "- 'IV is high' → 'options are pricier than usual right now — great time to sell'\n"
+            "- 'theta decay' → 'earns money just from time passing'\n"
+            "- 'breakeven' → 'you only lose money if the stock drops below $X'\n\n"
+            "Return JSON with these exact fields:\n"
+            '{"ticker":"AAPL","current_price":192.50,'
+            '"wheel_rating":"GOOD",'
+            '"wheel_score":82,'
+            '"grade":"B",'
+            '"company_assessment":"2-3 sentences: Is this a good company to own if assigned? '
+            'Mention stability, business quality, and whether you\'d be comfortable owning shares.",'
+            '"technicals_plain":"1-2 sentences in plain English about the chart setup. '
+            'No indicator names — just what it means (e.g. \'The stock is in a healthy uptrend \'",'
+            '"iv_environment_plain":"1 sentence: are options cheap, fair, or expensive right now? '
+            'What does that mean for the seller? (e.g. \'Options are pricier than usual — '
+            'great time to collect premium\')",'
+            '"tiers":['
+            '{"tier_name":"Higher premium, more likely to buy shares",'
+            '"strike":190.0,"expiry":"2026-05-01","dte":9,'
+            '"premium_plain":"You collect $420 upfront for agreeing to buy 100 shares",'
+            '"assignment_plain":"Roughly a 45-in-100 chance you end up buying the shares at $190",'
+            '"time_decay_plain":"Earns about $18 per day automatically just from time passing",'
+            '"protection_plain":"You only start losing money if the stock drops below $186 — '
+            'that\'s a 3% drop from today\'s price",'
+            '"return_plain":"If this keeps expiring worthless, it\'s like earning 28% per year on your cash",'
+            '"best_for":"Investors who actually want to own the shares and want maximum premium"},'
+            '{"tier_name":"Balanced — decent premium with a reasonable safety cushion",...},'
+            '{"tier_name":"Conservative — smaller premium but much safer",...}'
+            '],'
+            '"overall_verdict":"2-3 sentences recommending which tier makes most sense right now '
+            'and why, in plain English."}'
+        )
+        raw = self._call(system, user, max_tokens=3000)
+        return self._parse(raw)

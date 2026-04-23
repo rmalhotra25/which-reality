@@ -12,6 +12,7 @@ from services.quant_scorer import (
     compute_options_quant_score, compute_entry_exit_options,
     recommend_strategy_type, compute_entry_exit_multi_leg,
 )
+import services.run_status as run_status
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,8 @@ def _format_news(items) -> str:
     return "\n".join(lines)
 
 
-def _format_technicals(data: dict) -> str:
-    """Format full technical indicator suite for Claude."""
+def _format_technicals(data: dict, chain_context: dict | None = None) -> str:
+    """Format full technical indicator suite for Claude, including real options chain prices."""
     lines = []
     for ticker, d in data.items():
         if not d:
@@ -78,12 +79,23 @@ def _format_technicals(data: dict) -> str:
         vol = d.get("volume_trend", {})
         vol_str = f"vol_trend={vol.get('trend','?')}({vol.get('ratio','?')}x)" if vol else ""
 
+        # Real options chain prices — use these for entry/exit, NOT estimated premiums
+        chain_str = ""
+        if chain_context and ticker in chain_context:
+            ctx = chain_context[ticker]
+            chain_str = (
+                f"\n  LIVE OPTIONS (exp {ctx['expiry']}) — use these real prices for entry/exit:\n"
+                f"  Calls: {ctx['calls']}\n"
+                f"  Puts:  {ctx['puts']}"
+            )
+
         lines.append(
             f"{ticker}: ${price} 5d={chg}% RSI={rsi} IV≈{iv}% ATR={atr} VWAP={vwap}\n"
             f"  {macd_str}\n"
             f"  {bb_str}\n"
             f"  {ma_str}\n"
             f"  {fib_str} {vol_str}"
+            f"{chain_str}"
         )
     return "\n\n".join(lines) if lines else "No technical data available."
 
@@ -102,14 +114,19 @@ class OptionsEngine:
 
     def run(self) -> None:
         logger.info("OptionsEngine: starting analysis run")
+        run_status.set_running("options")
         run_at = datetime.now(timezone.utc)
         try:
             news = self.scraper.fetch_all(OPTIONS_UNIVERSE[:15])
             technicals = self.stock_data.get_technicals_bulk(OPTIONS_UNIVERSE)
-            options_data = self.stock_data.get_options_data(list(technicals.keys())[:20])
+            top_tickers = list(technicals.keys())[:20]
+            options_data = self.stock_data.get_options_data(top_tickers)
             for t in options_data:
                 if t in technicals:
                     technicals[t].update(options_data[t])
+
+            # Real options chain: actual bid/ask per strike so Claude uses live prices
+            chain_context = self.stock_data.get_chain_context(top_tickers)
 
             # Pre-compute quantitative scores + strategy recommendation for each ticker
             quant_scores = {}
@@ -127,14 +144,16 @@ class OptionsEngine:
                     }
 
             news_str = _format_news(news)
-            tech_str = _format_technicals(technicals)
+            tech_str = _format_technicals(technicals, chain_context)
             market_context = f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
 
             recs = self.analyst.analyze_options(news_str, tech_str, market_context,
                                                 quant_scores=quant_scores)
             self._store(recs, run_at, technicals, quant_scores)
+            run_status.set_success("options")
             logger.info("OptionsEngine: stored %d recommendations", len(recs))
         except Exception as e:
+            run_status.set_error("options", str(e))
             logger.error("OptionsEngine run failed: %s", e, exc_info=True)
 
     def _store(self, recs: list[dict], run_at: datetime,
@@ -160,6 +179,11 @@ class OptionsEngine:
             strategy_type = str(rec.get("strategy_type") or qs_data.get("recommended_strategy") or "single_leg")
             ml = qs_data.get("multi_leg", {})
 
+            # For single-leg, fall back to quant-computed suggested_strike if Claude didn't provide one
+            strike = rec.get("strike")
+            if not strike and strategy_type == "single_leg":
+                strike = ee.get("suggested_strike")
+
             obj = Recommendation(
                 tab=TabType.options,
                 ticker=ticker,
@@ -173,7 +197,7 @@ class OptionsEngine:
                 quant_components=json.dumps(qs_data.get("components", {})),
                 option_type=opt_type if strategy_type == "single_leg" else "N/A",
                 strategy_type=strategy_type,
-                strike=rec.get("strike"),
+                strike=strike,
                 expiry=rec.get("expiry"),
                 entry_price=rec.get("entry_price"),
                 exit_price=rec.get("exit_price"),

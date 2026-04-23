@@ -4,6 +4,7 @@ import { useRefreshPoller } from '../hooks/useRefreshPoller'
 import LastUpdated from '../components/LastUpdated'
 import WheelCard from '../wheel/WheelCard'
 import PositionTracker from '../wheel/PositionTracker'
+import WheelCustomAnalysis from '../wheel/WheelCustomAnalysis'
 
 const s = {
   header: {
@@ -95,16 +96,18 @@ export default function WheelTab() {
   useEffect(() => { loadPositions() }, [loadPositions])
 
   const wheelFetchFn = useCallback(() => api.wheel.getRecommendations(), [])
-  const { start: startPolling } = useRefreshPoller(wheelFetchFn, (data) => {
-    setRecs(data)
-    setRefreshing(false)
-  })
+  const { start: startPolling } = useRefreshPoller(
+    wheelFetchFn,
+    (data) => { setRecs(data) },
+    setError,
+    'wheel'
+  )
 
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
       await api.wheel.refresh()
-      startPolling(recs[0]?.run_at)
+      startPolling(recs[0]?.run_at, () => setRefreshing(false))
     } catch (e) {
       setError(e.message)
       setRefreshing(false)
@@ -129,6 +132,8 @@ export default function WheelTab() {
 
   return (
     <div>
+      <WheelCustomAnalysis />
+
       <div style={s.header}>
         <div>
           <div style={s.title}>Wheel Strategy</div>

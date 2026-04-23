@@ -31,9 +31,15 @@ export const api = {
     refreshCallSuggestion: (id) =>
       request(`/api/wheel/positions/${id}/call-suggestion/refresh`, { method: 'POST' }),
     refresh: () => request('/api/wheel/refresh', { method: 'POST' }),
+    customAnalyze: (ticker) =>
+      request('/api/wheel/custom-analyze', { method: 'POST', body: { ticker } }),
   },
   longterm: {
     getRecommendations: () => request('/api/longterm/recommendations'),
     refresh: () => request('/api/longterm/refresh', { method: 'POST' }),
   },
+  lookup: {
+    analyze: (ticker) => request('/api/lookup/analyze', { method: 'POST', body: { ticker } }),
+  },
+  getStatus: () => request('/api/status'),
 }

@@ -1,10 +1,12 @@
 import json
+import re
 import threading
 import logging
 from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
@@ -19,6 +21,11 @@ from schemas.wheel import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_TICKER_RE = re.compile(r'^[A-Z]{1,5}$')
+
+
+class CustomAnalyzeRequest(BaseModel):
+    ticker: str
 
 VALID_TRANSITIONS = {
     WheelStatus.put_active: [WheelStatus.assigned, WheelStatus.closed],
@@ -191,6 +198,67 @@ def refresh_call_suggestion(pos_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Position not found")
     threading.Thread(target=_generate_call_suggestion_bg, args=(pos_id,), daemon=True).start()
     return {"status": "queued"}
+
+
+@router.post("/custom-analyze")
+def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db)):
+    """On-demand wheel strategy analysis for any ticker with real options chain data."""
+    ticker = req.ticker.strip().upper()
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker. Use 1-5 letters (e.g. AAPL).")
+
+    from services.stock_data import StockDataService
+    from services.news_scraper import NewsScraper
+    from services.claude_analyst import ClaudeAnalyst
+
+    stock_data = StockDataService()
+    scraper = NewsScraper()
+    analyst = ClaudeAnalyst()
+
+    tech = stock_data.get_price_and_technicals(ticker)
+    current_price = tech.get("price")
+    if not current_price:
+        raise HTTPException(status_code=404,
+                            detail=f"No price data for {ticker}. Check the symbol and try again.")
+
+    put_tiers = stock_data.get_put_tiers(ticker)
+    if not put_tiers:
+        raise HTTPException(status_code=503,
+                            detail=f"Could not fetch options chain for {ticker}. "
+                                   "Check the symbol and try again.")
+
+    try:
+        fund_map = stock_data.get_fundamentals([ticker])
+        fundamentals = fund_map.get(ticker) or {}
+    except Exception:
+        fundamentals = {}
+
+    try:
+        news_items = scraper.fetch_all([ticker])
+        news_bullets = "\n".join(
+            f"- [{it.ticker or 'MARKET'}] {it.source}: {it.headline}"
+            for it in news_items[:20]
+        ) or "No recent news available."
+    except Exception:
+        news_bullets = "News unavailable — base analysis on technicals."
+
+    try:
+        result = analyst.analyze_wheel_custom(
+            ticker=ticker,
+            current_price=current_price,
+            put_tiers=put_tiers,
+            fundamentals=fundamentals,
+            technicals=tech,
+            news_bullets=news_bullets,
+        )
+        result["ticker"] = ticker
+        result["current_price"] = current_price
+        result["data_source"] = put_tiers.get("data_source", "last_trade")
+        result["put_tiers_raw"] = put_tiers
+        return result
+    except Exception as e:
+        logger.error("Wheel custom analysis failed for %s: %s", ticker, e)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @router.post("/refresh")

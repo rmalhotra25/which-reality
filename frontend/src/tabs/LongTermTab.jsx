@@ -104,10 +104,12 @@ export default function LongTermTab() {
   const [filter, setFilter] = useState('all')
 
   const fetchFn = useCallback(() => api.longterm.getRecommendations(), [])
-  const { start: startPolling } = useRefreshPoller(fetchFn, (data) => {
-    setRecs(data)
-    setRefreshing(false)
-  })
+  const { start: startPolling } = useRefreshPoller(
+    fetchFn,
+    (data) => { setRecs(data) },
+    setError,
+    'longterm'
+  )
 
   const load = async () => {
     setLoading(true)
@@ -129,7 +131,7 @@ export default function LongTermTab() {
     setError(null)
     try {
       await api.longterm.refresh()
-      startPolling(recs[0]?.run_at)
+      startPolling(recs[0]?.run_at, () => setRefreshing(false))
     } catch (e) {
       setError(e.message)
       setRefreshing(false)

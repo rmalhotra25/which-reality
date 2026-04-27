@@ -502,10 +502,20 @@ class StockDataService:
             T = max((exp_date - today).days, 1) / 365.0
             dte = (exp_date - today).days
 
-            # Keep only liquid puts (have a real bid)
-            puts = puts[puts["bid"] > 0].copy()
+            # Use real bid/ask when markets are open; fall back to lastPrice when closed.
+            # This lets the feature work evenings, weekends, and pre/post market.
+            puts["_mid"] = puts.apply(
+                lambda r: round((float(r["bid"]) + float(r["ask"])) / 2, 2)
+                          if float(r["bid"]) > 0
+                          else float(r.get("lastPrice", 0) or 0),
+                axis=1,
+            )
+            puts["_is_live"] = puts["bid"] > 0
+            puts = puts[puts["_mid"] > 0].copy()
             if puts.empty:
                 return None
+
+            data_source = "live" if puts["_is_live"].any() else "last_trade"
 
             # Compute delta and daily theta for each put using per-strike IV
             puts["_delta"] = puts.apply(
@@ -520,7 +530,8 @@ class StockDataService:
             puts["_delta_abs"] = puts["_delta"].abs()
 
             # ATM IV for context (put closest to current price)
-            atm_row = puts.iloc[(puts["strike"] - price).abs().argsort().iloc[0]]
+            atm_idx = (puts["strike"] - price).abs().idxmin()
+            atm_row = puts.loc[atm_idx]
             atm_iv_pct = round(float(atm_row["impliedVolatility"]) * 100, 1)
 
             def _best_near_delta(target: float) -> dict | None:
@@ -528,9 +539,9 @@ class StockDataService:
                     return None
                 idx = (puts["_delta_abs"] - target).abs().idxmin()
                 row = puts.loc[idx]
-                bid = float(row["bid"])
-                ask = float(row["ask"])
-                mid = round((bid + ask) / 2, 2)
+                mid = float(row["_mid"])   # uses lastPrice when bid=0 (markets closed)
+                bid = float(row["bid"]) if float(row["bid"]) > 0 else mid
+                ask = float(row["ask"]) if float(row["ask"]) > 0 else mid
                 strike = float(row["strike"])
                 iv_pct = round(float(row["impliedVolatility"]) * 100, 1)
                 delta_abs = round(float(row["_delta_abs"]), 2)
@@ -563,6 +574,7 @@ class StockDataService:
                 "expiry": target_expiry,
                 "dte": dte,
                 "atm_iv_pct": atm_iv_pct,
+                "data_source": data_source,
                 "likely": _best_near_delta(0.45),
                 "moderate": _best_near_delta(0.30),
                 "unlikely": _best_near_delta(0.16),
@@ -597,10 +609,9 @@ class StockDataService:
                 def _nearby(df, n_below=1, n_above=2):
                     if df.empty:
                         return df
-                    diffs = (df["strike"] - price).abs()
-                    atm_pos = diffs.argsort().iloc[0]
-                    pos = df.index.get_loc(atm_pos)
-                    return df.iloc[max(0, pos - n_below): pos + n_above + 1]
+                    atm_label = (df["strike"] - price).abs().idxmin()
+                    atm_iloc = df.index.get_loc(atm_label)
+                    return df.iloc[max(0, atm_iloc - n_below): atm_iloc + n_above + 1]
 
                 call_rows = _nearby(calls, 0, 3)
                 put_rows = _nearby(puts, 2, 1)

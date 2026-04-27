@@ -16,6 +16,12 @@ const s = {
     gap: '12px',
   },
   title: { fontSize: '20px', fontWeight: 700, color: '#e2e8f0' },
+  btnRow: {
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
   refreshBtn: {
     padding: '8px 16px',
     background: '#2b6cb0',
@@ -24,6 +30,16 @@ const s = {
     borderRadius: '6px',
     cursor: 'pointer',
     fontSize: '13px',
+    fontWeight: 500,
+  },
+  exportBtn: {
+    padding: '8px 14px',
+    background: 'transparent',
+    color: '#68d391',
+    border: '1px solid #276749',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '12px',
     fontWeight: 500,
   },
   sectionTitle: {
@@ -59,12 +75,23 @@ const s = {
   },
 }
 
+function downloadJson(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function WheelTab() {
   const [recs, setRecs] = useState([])
   const [positions, setPositions] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadingPositions, setLoadingPositions] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState(null)
   const [showClosed, setShowClosed] = useState(false)
 
@@ -114,9 +141,21 @@ export default function WheelTab() {
     }
   }
 
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const data = await api.wheel.exportPositions()
+      const date = new Date().toISOString().slice(0, 10)
+      downloadJson(data, `wheel-positions-${date}.json`)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const handleAccepted = (newPosition) => {
     setPositions((prev) => [newPosition, ...prev])
-    // Mark the recommendation as accepted in local state
     setRecs((prev) =>
       prev.map((r) => (r.id === newPosition.recommendation_id ? { ...r, accepted: true } : r))
     )
@@ -139,9 +178,16 @@ export default function WheelTab() {
           <div style={s.title}>Wheel Strategy</div>
           <LastUpdated timestamp={lastRunAt} loading={loading} />
         </div>
-        <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? '⏳ Analyzing...' : '↻ Run Analysis'}
-        </button>
+        <div style={s.btnRow}>
+          {positions.length > 0 && (
+            <button style={s.exportBtn} onClick={handleExport} disabled={exporting} title="Download all positions as JSON backup">
+              {exporting ? '⏳' : '⬇'} Backup Positions
+            </button>
+          )}
+          <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? '⏳ Analyzing...' : '↻ Run Analysis'}
+          </button>
+        </div>
       </div>
 
       {error && <div style={s.error}>Error: {error}</div>}

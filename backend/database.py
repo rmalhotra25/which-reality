@@ -5,14 +5,19 @@ from config import settings
 
 
 def _build_url() -> str:
-    # Prefer an explicit DATABASE_URL (PostgreSQL on Neon/Supabase/Render)
-    url = os.environ.get("DATABASE_URL") or settings.database_url
-    if url:
-        # Render/Heroku sometimes give postgres:// — SQLAlchemy needs postgresql://
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return url
-    # Local fallback: SQLite
+    """
+    Use DATABASE_URL (PostgreSQL) when provided — this is the persistent store on Render.
+    Fall back to SQLite for local development.
+    """
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+
+    if database_url:
+        # Render Postgres gives postgres:// but SQLAlchemy needs postgresql://
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        return database_url
+
+    # Local dev: SQLite
     path = settings.db_path
     if not os.path.isabs(path):
         path = os.path.join(os.path.dirname(__file__), path)
@@ -21,12 +26,11 @@ def _build_url() -> str:
 
 
 _url = _build_url()
-_is_sqlite = _url.startswith("sqlite")
+_is_postgres = _url.startswith("postgresql")
 
 engine = create_engine(
     _url,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
-    pool_pre_ping=True,   # reconnect automatically if the connection drops
+    **({"pool_pre_ping": True, "pool_recycle": 300} if _is_postgres else {"connect_args": {"check_same_thread": False}}),
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

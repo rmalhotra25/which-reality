@@ -33,6 +33,7 @@ export const api = {
     refresh: () => request('/api/wheel/refresh', { method: 'POST' }),
     customAnalyze: (ticker) =>
       request('/api/wheel/custom-analyze', { method: 'POST', body: { ticker } }),
+    exportPositions: () => request('/api/wheel/positions/export'),
   },
   longterm: {
     getRecommendations: () => request('/api/longterm/recommendations'),

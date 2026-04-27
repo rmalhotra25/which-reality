@@ -269,7 +269,10 @@ export default function WheelCustomAnalysis() {
           )}
 
           <div style={{ fontSize: '11px', color: '#4a5568' }}>
-            Live options data from Yahoo Finance. Prices may differ slightly from your broker. Not financial advice.
+            {result.data_source === 'live'
+              ? 'Live bid/ask from Yahoo Finance (market hours). Prices may differ slightly from your broker.'
+              : 'Prices from last recorded trades — markets are currently closed. Refresh during market hours for live bid/ask.'}
+            {' '}Not financial advice.
           </div>
         </div>
       )}

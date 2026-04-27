@@ -466,8 +466,14 @@ class ClaudeAnalyst:
                 f"    Volume={t['volume']} Open Interest={t['open_interest']}\n"
             )
 
+        data_src = put_tiers.get("data_source", "last_trade")
+        src_note = (
+            "live bid/ask prices from open market"
+            if data_src == "live"
+            else "last-trade prices (markets closed — most recent actual transactions)"
+        )
         tiers_str = (
-            f"REAL OPTIONS DATA from market (all prices are actual market bid/ask):\n"
+            f"REAL OPTIONS DATA ({src_note}):\n"
             f"Current price: ${current_price} | ATM IV: {put_tiers.get('atm_iv_pct','?')}%\n\n"
             + _fmt_tier(put_tiers.get("likely"),   "TIER 1 — HIGH PREMIUM, HIGHER ASSIGNMENT RISK (~45% delta)")
             + _fmt_tier(put_tiers.get("moderate"), "TIER 2 — BALANCED PREMIUM AND RISK (~30% delta)")

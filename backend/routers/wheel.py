@@ -191,6 +191,44 @@ def get_call_suggestion(pos_id: int, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/positions/export")
+def export_positions(db: Session = Depends(get_db)):
+    """Export all wheel positions and their full history as JSON for backup purposes."""
+    positions = db.query(WheelPosition).order_by(WheelPosition.put_opened_at).all()
+    result = []
+    for pos in positions:
+        history = [
+            {
+                "from_status": h.from_status.value if h.from_status else None,
+                "to_status": h.to_status.value,
+                "note": h.note,
+                "changed_at": h.changed_at.isoformat() if h.changed_at else None,
+            }
+            for h in pos.history
+        ]
+        result.append({
+            "id": pos.id,
+            "ticker": pos.ticker,
+            "status": pos.status.value,
+            "put_strike": pos.put_strike,
+            "put_expiry": pos.put_expiry,
+            "put_premium_rcvd": pos.put_premium_rcvd,
+            "put_opened_at": pos.put_opened_at.isoformat() if pos.put_opened_at else None,
+            "assigned_at": pos.assigned_at.isoformat() if pos.assigned_at else None,
+            "cost_basis": pos.cost_basis,
+            "shares": pos.shares,
+            "call_strike": pos.call_strike,
+            "call_expiry": pos.call_expiry,
+            "call_premium_rcvd": pos.call_premium_rcvd,
+            "call_opened_at": pos.call_opened_at.isoformat() if pos.call_opened_at else None,
+            "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
+            "total_pnl": pos.total_pnl,
+            "notes": pos.notes,
+            "history": history,
+        })
+    return {"exported_at": __import__("datetime").datetime.utcnow().isoformat() + "Z", "positions": result}
+
+
 @router.post("/positions/{pos_id}/call-suggestion/refresh")
 def refresh_call_suggestion(pos_id: int, db: Session = Depends(get_db)):
     pos = db.get(WheelPosition, pos_id)
@@ -224,8 +262,8 @@ def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db
     put_tiers = stock_data.get_put_tiers(ticker)
     if not put_tiers:
         raise HTTPException(status_code=503,
-                            detail=f"Could not fetch live options chain for {ticker}. "
-                                   "Markets may be closed or data is unavailable — try again later.")
+                            detail=f"Could not fetch options chain for {ticker}. "
+                                   "Check the symbol and try again.")
 
     try:
         fund_map = stock_data.get_fundamentals([ticker])
@@ -253,6 +291,7 @@ def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db
         )
         result["ticker"] = ticker
         result["current_price"] = current_price
+        result["data_source"] = put_tiers.get("data_source", "last_trade")
         result["put_tiers_raw"] = put_tiers
         return result
     except Exception as e:

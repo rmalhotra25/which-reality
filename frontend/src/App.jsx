@@ -22,14 +22,17 @@ const styles = {
     minHeight: '100vh',
     background: '#0f1117',
     color: '#e2e8f0',
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     background: 'linear-gradient(135deg, #1a1f2e 0%, #16213e 100%)',
     borderBottom: '1px solid #2d3748',
-    padding: '16px 24px',
+    padding: '14px 24px',
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
+    flexShrink: 0,
   },
   logo: {
     fontSize: '22px',
@@ -42,10 +45,16 @@ const styles = {
     color: '#718096',
     marginTop: '2px',
   },
+  body: {
+    display: 'flex',
+    flex: 1,
+    minHeight: 0,
+  },
   content: {
-    maxWidth: '1400px',
-    margin: '0 auto',
-    padding: '24px 16px',
+    flex: 1,
+    padding: '24px',
+    overflowY: 'auto',
+    minWidth: 0,
   },
 }
 
@@ -61,15 +70,17 @@ export default function App() {
         </div>
       </header>
       <MarketBanner />
-      <TabNav tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
-      <main style={styles.content}>
-        {activeTab === 'options' && <OptionsTab />}
-        {activeTab === 'wheel' && <WheelTab />}
-        {activeTab === 'longterm' && <LongTermTab />}
-        {activeTab === 'lookup' && <StockLookupTab />}
-        {activeTab === 'watchlist' && <WatchlistTab />}
-        {activeTab === 'performance' && <PerformanceTab />}
-      </main>
+      <div style={styles.body}>
+        <TabNav tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
+        <main style={styles.content}>
+          {activeTab === 'options' && <OptionsTab />}
+          {activeTab === 'wheel' && <WheelTab />}
+          {activeTab === 'longterm' && <LongTermTab />}
+          {activeTab === 'lookup' && <StockLookupTab />}
+          {activeTab === 'watchlist' && <WatchlistTab />}
+          {activeTab === 'performance' && <PerformanceTab />}
+        </main>
+      </div>
     </div>
   )
 }

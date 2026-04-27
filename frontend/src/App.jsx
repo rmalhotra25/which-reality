@@ -1,15 +1,20 @@
 import { useState } from 'react'
 import TabNav from './components/TabNav'
+import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
 import LongTermTab from './tabs/LongTermTab'
 import StockLookupTab from './tabs/StockLookupTab'
+import PerformanceTab from './tabs/PerformanceTab'
+import WatchlistTab from './tabs/WatchlistTab'
 
 const TABS = [
   { id: 'options', label: '📈 Options Trading' },
   { id: 'wheel', label: '🔄 Wheel Strategy' },
   { id: 'longterm', label: '🌱 Growth & Income' },
   { id: 'lookup', label: '🔍 Stock Lookup' },
+  { id: 'watchlist', label: '👁 Watchlist' },
+  { id: 'performance', label: '🏆 Performance' },
 ]
 
 const styles = {
@@ -55,12 +60,15 @@ export default function App() {
           <div style={styles.subtitle}>AI-powered trading recommendations</div>
         </div>
       </header>
+      <MarketBanner />
       <TabNav tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
       <main style={styles.content}>
         {activeTab === 'options' && <OptionsTab />}
         {activeTab === 'wheel' && <WheelTab />}
         {activeTab === 'longterm' && <LongTermTab />}
         {activeTab === 'lookup' && <StockLookupTab />}
+        {activeTab === 'watchlist' && <WatchlistTab />}
+        {activeTab === 'performance' && <PerformanceTab />}
       </main>
     </div>
   )

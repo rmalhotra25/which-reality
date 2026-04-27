@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
 import { useRefreshPoller } from '../hooks/useRefreshPoller'
 import LastUpdated from '../components/LastUpdated'
+import AccountWidget from '../components/AccountWidget'
 import WheelCard from '../wheel/WheelCard'
 import PositionTracker from '../wheel/PositionTracker'
 import WheelCustomAnalysis from '../wheel/WheelCustomAnalysis'
@@ -171,6 +172,7 @@ export default function WheelTab() {
 
   return (
     <div>
+      <AccountWidget showSizing />
       <WheelCustomAnalysis />
 
       <div style={s.header}>

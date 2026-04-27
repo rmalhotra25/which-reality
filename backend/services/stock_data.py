@@ -631,3 +631,47 @@ class StockDataService:
             except Exception as e:
                 logger.debug("chain_context error for %s: %s", ticker, e)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Convenience helper for watchlist / one-off scoring
+# ---------------------------------------------------------------------------
+
+def get_stock_info(ticker: str) -> dict:
+    """Return a flat dict of price, technicals, and fundamentals for one ticker."""
+    try:
+        df = _yf_fetch_ohlcv(ticker, period_days=200)
+        price = float(df["Close"].iloc[-1]) if not df.empty else None
+        indicators = _compute_all_indicators(df) if not df.empty else {}
+        summary = _yf_fetch_summary(ticker)
+
+        # Earnings date from yfinance
+        earnings_date = None
+        try:
+            t = yf.Ticker(ticker)
+            cal = t.calendar
+            if cal is not None and not cal.empty:
+                ed = cal.get("Earnings Date")
+                if ed is not None and len(ed) > 0:
+                    earnings_date = str(ed[0])[:10]
+        except Exception:
+            pass
+
+        return {
+            "ticker": ticker,
+            "price": round(price, 2) if price else None,
+            "current_price": round(price, 2) if price else None,
+            "rsi": indicators.get("rsi"),
+            "ma50": indicators.get("moving_averages", {}).get("ma50"),
+            "ma200": indicators.get("moving_averages", {}).get("ma200"),
+            "pe_ratio": summary.get("pe_ratio"),
+            "div_yield": summary.get("div_yield"),
+            "sector": summary.get("sector"),
+            "analyst_rating": summary.get("analyst_rating"),
+            "52w_high": summary.get("52w_high"),
+            "52w_low": summary.get("52w_low"),
+            "earnings_date": earnings_date,
+        }
+    except Exception as e:
+        logger.warning("get_stock_info failed for %s: %s", ticker, e)
+        return {"ticker": ticker}

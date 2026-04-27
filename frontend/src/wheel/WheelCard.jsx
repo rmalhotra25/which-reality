@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
 import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import AcceptModal from './AcceptModal'
+import { api } from '../api'
 
 const s = {
   card: {
@@ -58,8 +59,27 @@ const s = {
   },
 }
 
+const sizingStyle = (isOver) => ({
+  background: isOver ? '#1a0a0a' : '#0a1f12',
+  border: `1px solid ${isOver ? '#742a2a' : '#276749'}`,
+  borderRadius: '6px', padding: '7px 10px',
+  fontSize: '12px', color: isOver ? '#fc8181' : '#68d391',
+  marginTop: '-4px',
+})
+
 export default function WheelCard({ rec, onAccepted }) {
   const [showModal, setShowModal] = useState(false)
+  const [account, setAccount] = useState(null)
+
+  useEffect(() => {
+    api.account.getBalance().then(setAccount).catch(() => {})
+  }, [])
+
+  const capitalRequired = rec.put_strike ? rec.put_strike * 100 : null
+  const isOverLimit = account && capitalRequired && capitalRequired > account.max_single_position
+  const pctOfAccount = account && capitalRequired && account.balance > 0
+    ? Math.round((capitalRequired / account.balance) * 100)
+    : null
 
   return (
     <div style={s.card}>
@@ -119,6 +139,15 @@ export default function WheelCard({ rec, onAccepted }) {
           )}
         </tbody>
       </table>
+
+      {capitalRequired && account && (
+        <div style={sizingStyle(isOverLimit)}>
+          {isOverLimit
+            ? `⚠ This trade requires ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of your account) — exceeds your ${account.max_position_pct}% position limit of $${account.max_single_position.toLocaleString()}. Consider skipping or reducing size.`
+            : `✓ Capital required: ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of account) — within your $${account.max_single_position.toLocaleString()} position limit.`
+          }
+        </div>
+      )}
 
       <div>
         <div style={{ fontSize: '11px', color: '#718096', marginBottom: '6px' }}>WHY THIS STOCK</div>

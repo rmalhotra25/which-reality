@@ -48,5 +48,5 @@ def get_db():
 
 
 def init_db():
-    from models import recommendation, wheel  # noqa: F401 — registers models
+    from models import recommendation, wheel, account, watchlist  # noqa: F401
     Base.metadata.create_all(bind=engine)

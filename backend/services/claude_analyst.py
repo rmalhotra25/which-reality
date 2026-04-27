@@ -536,3 +536,67 @@ class ClaudeAnalyst:
         )
         raw = self._call(system, user, max_tokens=3000)
         return self._parse(raw)
+
+    # ------------------------------------------------------------------
+    # Watchlist multi-strategy scoring
+    # ------------------------------------------------------------------
+    def score_watchlist_ticker(self, ticker: str, info: dict) -> dict:
+        from datetime import datetime, timezone, timedelta
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Earnings proximity check
+        earnings_date = info.get("earnings_date")
+        earnings_warning = None
+        if earnings_date:
+            try:
+                ed = datetime.strptime(str(earnings_date)[:10], "%Y-%m-%d").date()
+                days_away = (ed - datetime.now(timezone.utc).date()).days
+                if 0 <= days_away <= 14:
+                    earnings_warning = (
+                        f"⚠ Earnings in {days_away} days ({earnings_date}). "
+                        "High risk for wheel or options — avoid opening new positions."
+                    )
+                elif days_away < 0:
+                    earnings_date = None  # past earnings, not relevant
+            except Exception:
+                pass
+
+        price = info.get("price") or info.get("current_price", "?")
+        sector = info.get("sector", "?")
+        pe = info.get("pe_ratio", "?")
+        div = info.get("div_yield", "?")
+        iv_rank = info.get("iv_rank", "?")
+        rsi = info.get("rsi", "?")
+        ma50 = info.get("ma50", "?")
+        ma200 = info.get("ma200", "?")
+
+        system = (
+            "You are a senior portfolio manager at Goldman Sachs. "
+            "Evaluate a stock for three strategies and return ONLY valid JSON."
+        )
+        user = (
+            f"Today: {today_str}\n"
+            f"Stock: {ticker} | Price: ${price} | Sector: {sector}\n"
+            f"PE: {pe} | Dividend Yield: {div} | IV Rank: {iv_rank}\n"
+            f"RSI: {rsi} | MA50: {ma50} | MA200: {ma200}\n"
+            f"Earnings date: {earnings_date or 'unknown'}\n\n"
+            "Score this stock for three strategies on a 0-100 scale with a letter grade (A/B/C/D/F):\n"
+            "1. WHEEL STRATEGY: Is it a good stock to sell cash-secured puts on?\n"
+            "   Score rubric: IV rank 25% + stock quality/stability 30% + premium yield 25% + technical support 20%\n"
+            "2. OPTIONS TRADING: Is there a compelling short-term options trade (call or put)?\n"
+            "   Score rubric: catalyst strength 30% + technical momentum 30% + IV environment 20% + risk/reward 20%\n"
+            "3. LONG-TERM INVESTING: Is it worth buying and holding for 1-3 years?\n"
+            "   Score rubric: earnings growth 35% + market position 25% + valuation 20% + dividend/income 20%\n\n"
+            "Return JSON only:\n"
+            '{"wheel_score":75,"wheel_grade":"B","wheel_note":"1 sentence why",'
+            '"options_score":60,"options_grade":"C","options_note":"1 sentence why",'
+            '"longterm_score":82,"longterm_grade":"B","longterm_note":"1 sentence why",'
+            '"best_strategy":"wheel",'
+            '"summary":"2-3 sentence plain-English verdict on this stock right now."}'
+        )
+        raw = self._call(system, user, max_tokens=600)
+        result = self._parse(raw)
+        result["earnings_date"] = str(earnings_date) if earnings_date else None
+        result["earnings_warning"] = earnings_warning
+        return result

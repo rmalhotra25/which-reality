@@ -42,5 +42,23 @@ export const api = {
   lookup: {
     analyze: (ticker) => request('/api/lookup/analyze', { method: 'POST', body: { ticker } }),
   },
+  market: {
+    getContext: (refresh = false) => request(`/api/market/context${refresh ? '?refresh=true' : ''}`),
+  },
+  account: {
+    getBalance: () => request('/api/account'),
+    deposit: (amount, note) => request('/api/account/deposit', { method: 'POST', body: { amount, note } }),
+    setBalance: (balance, note) => request('/api/account', { method: 'PATCH', body: { balance, note } }),
+    getTransactions: () => request('/api/account/transactions'),
+  },
+  performance: {
+    getSummary: () => request('/api/performance/summary'),
+  },
+  watchlist: {
+    list: () => request('/api/watchlist'),
+    add: (ticker, notes = '') => request('/api/watchlist', { method: 'POST', body: { ticker, notes } }),
+    remove: (ticker) => request(`/api/watchlist/${ticker}`, { method: 'DELETE' }),
+    score: (ticker) => request(`/api/watchlist/${ticker}/score`, { method: 'POST' }),
+  },
   getStatus: () => request('/api/status'),
 }

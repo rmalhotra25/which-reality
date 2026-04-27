@@ -8,8 +8,13 @@ services:
     startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ANTHROPIC_API_KEY
-        sync: false          # you will enter this manually in the Render dashboard
+        sync: false          # enter in Render dashboard — required for AI analysis
+      - key: DATABASE_URL
+        sync: false          # IMPORTANT: set this to your Neon/Render PostgreSQL URL
+                             # Format: postgresql://user:password@host/dbname
+                             # Get a free database at https://neon.tech
+                             # Without this, data is stored in /tmp and WILL BE LOST on redeploy
       - key: DB_PATH
-        value: /tmp/trading.db
+        value: /tmp/trading.db   # only used if DATABASE_URL is not set (local dev fallback)
       - key: PYTHON_VERSION
         value: 3.11.0

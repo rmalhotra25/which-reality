@@ -60,5 +60,9 @@ export const api = {
     remove: (ticker) => request(`/api/watchlist/${ticker}`, { method: 'DELETE' }),
     score: (ticker) => request(`/api/watchlist/${ticker}/score`, { method: 'POST' }),
   },
+  champions: {
+    get: () => request('/api/champions'),
+    refresh: () => request('/api/champions/refresh', { method: 'POST' }),
+  },
   getStatus: () => request('/api/status'),
 }

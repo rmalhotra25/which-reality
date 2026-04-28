@@ -129,6 +129,26 @@ def run_all_analyses() -> None:
         db.close()
 
 
+def run_champions_scan() -> None:
+    from database import SessionLocal
+    from services.champions_engine import run as run_champions
+    import datetime as _dt
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping champions scan — not a trading day")
+        return
+
+    logger.info("Scheduler: running daily champions scan")
+    db = SessionLocal()
+    try:
+        run_champions(db)
+    except Exception as e:
+        logger.error("Champions scan failed: %s", e, exc_info=True)
+    finally:
+        db.close()
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -161,6 +181,15 @@ def start_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             misfire_grace_time=300,
         )
+
+    # Daily 9:10 AM Eastern — champions scan (one batched Claude call)
+    scheduler.add_job(
+        run_champions_scan,
+        CronTrigger(day_of_week="mon-fri", hour=9, minute=10, timezone=EASTERN),
+        id="champions_daily",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
 
     # Weekly Tuesday 9:05 AM Eastern — refresh covered call suggestions
     # (Monday could be a holiday, so Tuesday is safer)

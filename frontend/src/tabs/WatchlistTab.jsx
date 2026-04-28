@@ -4,16 +4,78 @@ import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
 
 const STRATEGY_LABELS = {
-  wheel: '🔄 Wheel',
-  options: '📈 Options',
-  longterm: '🌱 Long-Term',
-  'long-term': '🌱 Long-Term',
+  wheel: '🔄 Wheel Strategy',
+  options: '📈 Options Trading',
+  longterm: '🌱 Long-Term Investing',
+  'long-term': '🌱 Long-Term Investing',
+}
+
+const CHAMPION_COLORS = {
+  wheel:   { bg: '#0a1f12', border: '#276749', label: '#68d391', badge: '#0d2218' },
+  options: { bg: '#0a1220', border: '#2b6cb0', label: '#63b3ed', badge: '#0d1a2e' },
+  longterm:{ bg: '#0f1a0a', border: '#2f6b2f', label: '#9ae6b4', badge: '#0d1f0d' },
 }
 
 const s = {
-  page: { display: 'flex', flexDirection: 'column', gap: '24px' },
+  page: { display: 'flex', flexDirection: 'column', gap: '28px' },
   title: { fontSize: '20px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' },
   subtitle: { fontSize: '13px', color: '#718096' },
+
+  // Champions section
+  championsWrap: { display: 'flex', flexDirection: 'column', gap: '12px' },
+  championsHeader: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+  },
+  sectionTitle: {
+    fontSize: '14px', fontWeight: 700, color: '#a0aec0',
+    textTransform: 'uppercase', letterSpacing: '0.05em',
+  },
+  championsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+    gap: '14px',
+  },
+  championCard: (strategy) => ({
+    background: CHAMPION_COLORS[strategy]?.bg ?? '#131825',
+    border: `1px solid ${CHAMPION_COLORS[strategy]?.border ?? '#2d3748'}`,
+    borderRadius: '12px', padding: '18px',
+    display: 'flex', flexDirection: 'column', gap: '10px',
+  }),
+  champStratLabel: (strategy) => ({
+    fontSize: '11px', fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    color: CHAMPION_COLORS[strategy]?.label ?? '#718096',
+  }),
+  champTicker: { fontSize: '28px', fontWeight: 900, color: '#e2e8f0' },
+  champScore: { fontSize: '13px', color: '#718096' },
+  champReason: { fontSize: '13px', color: '#a0aec0', lineHeight: 1.6 },
+  champFooter: {
+    display: 'flex', justifyContent: 'space-between',
+    alignItems: 'center', marginTop: '4px',
+  },
+  addToWatchlistBtn: (strategy) => ({
+    padding: '5px 12px', fontSize: '11px', fontWeight: 600,
+    background: CHAMPION_COLORS[strategy]?.badge ?? '#1a1f2e',
+    border: `1px solid ${CHAMPION_COLORS[strategy]?.border ?? '#2d3748'}`,
+    color: CHAMPION_COLORS[strategy]?.label ?? '#718096',
+    borderRadius: '5px', cursor: 'pointer',
+  }),
+  refreshBtn: {
+    padding: '6px 14px', background: 'transparent',
+    border: '1px solid #2d3748', borderRadius: '6px',
+    color: '#718096', cursor: 'pointer', fontSize: '12px',
+  },
+  runAt: { fontSize: '11px', color: '#4a5568' },
+  noChampions: {
+    background: '#131825', border: '1px solid #2d3748',
+    borderRadius: '10px', padding: '24px',
+    textAlign: 'center', color: '#718096', fontSize: '13px',
+  },
+
+  // Divider
+  divider: { border: 'none', borderTop: '1px solid #2d3748', margin: '4px 0' },
+
+  // Watchlist section
   addRow: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' },
   input: {
     padding: '10px 14px', background: '#1a1f2e',
@@ -88,6 +150,108 @@ const s = {
   error: { color: '#fc8181', fontSize: '13px' },
 }
 
+// ─── Champions Section ────────────────────────────────────────────────────────
+
+function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
+  const [data, setData] = useState(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [status, setStatus] = useState(null)
+
+  const load = async () => {
+    try {
+      const result = await api.champions.get()
+      setData(result)
+    } catch {
+      // non-critical — fail silently
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setStatus(null)
+    try {
+      const res = await api.champions.refresh()
+      setStatus(res.status || 'Scan started — check back in ~60 seconds')
+    } catch (e) {
+      setStatus(`Error: ${e.message}`)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const champions = data?.champions || []
+  const runAt = data?.run_at ? new Date(data.run_at).toLocaleString() : null
+
+  return (
+    <div style={s.championsWrap}>
+      <div style={s.championsHeader}>
+        <div>
+          <div style={s.sectionTitle}>🏆 Today's Champions</div>
+          {runAt && <div style={s.runAt}>Scanned from 50-stock universe · {runAt}</div>}
+        </div>
+        <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
+          {refreshing ? '⏳' : '↻'} Run Scan
+        </button>
+      </div>
+
+      {status && (
+        <div style={{ fontSize: '12px', color: '#f6ad55', padding: '6px 0' }}>{status}</div>
+      )}
+
+      {champions.length === 0 ? (
+        <div style={s.noChampions}>
+          No champions yet. Click <strong>Run Scan</strong> to scan 50 top stocks and find today's best picks.
+          <br />
+          <small style={{ color: '#4a5568', display: 'block', marginTop: '6px' }}>
+            Runs automatically every trading day at 9:10am Eastern
+          </small>
+        </div>
+      ) : (
+        <div style={s.championsGrid}>
+          {champions.map((c) => {
+            const alreadyAdded = watchlistTickers.has(c.ticker)
+            return (
+              <div key={c.strategy} style={s.championCard(c.strategy)}>
+                <div style={s.champStratLabel(c.strategy)}>
+                  {STRATEGY_LABELS[c.strategy] || c.strategy} Champion
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span style={s.champTicker}>{c.ticker}</span>
+                  <GradeChip grade={c.grade} />
+                </div>
+                {c.score != null && (
+                  <ScoreBar score={c.score} />
+                )}
+                {c.reason && (
+                  <div style={s.champReason}>{c.reason}</div>
+                )}
+                <div style={s.champFooter}>
+                  {c.survivors_count && (
+                    <span style={s.champScore}>
+                      Best of {c.survivors_count} qualifying stocks
+                    </span>
+                  )}
+                  <button
+                    style={s.addToWatchlistBtn(c.strategy)}
+                    onClick={() => onAddToWatchlist(c.ticker)}
+                    disabled={alreadyAdded}
+                  >
+                    {alreadyAdded ? '✓ In Watchlist' : '+ Add to Watchlist'}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Watchlist Card ───────────────────────────────────────────────────────────
+
 function WatchlistCard({ item, onScore, onRemove, scoring }) {
   const hasWarning = !!item.earnings_warning
   const strategies = [
@@ -142,7 +306,7 @@ function WatchlistCard({ item, onScore, onRemove, scoring }) {
         <button style={s.scoreBtn} onClick={() => onScore(item.ticker)} disabled={scoring}>
           {scoring ? '⏳ Analyzing…' : item.last_scored ? '↻ Refresh Score' : '▶ Score This Stock'}
         </button>
-        <button style={s.removeBtn} onClick={() => onRemove(item.ticker)} title="Remove from watchlist">
+        <button style={s.removeBtn} onClick={() => onRemove(item.ticker)}>
           ✕ Remove
         </button>
       </div>
@@ -150,13 +314,15 @@ function WatchlistCard({ item, onScore, onRemove, scoring }) {
   )
 }
 
+// ─── Main Tab ─────────────────────────────────────────────────────────────────
+
 export default function WatchlistTab() {
   const [items, setItems] = useState([])
   const [ticker, setTicker] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
-  const [scoring, setScoring] = useState({}) // { ticker: true/false }
+  const [scoring, setScoring] = useState({})
   const [error, setError] = useState(null)
 
   const load = async () => {
@@ -172,16 +338,15 @@ export default function WatchlistTab() {
 
   useEffect(() => { load() }, [])
 
-  const handleAdd = async () => {
-    const sym = ticker.trim().toUpperCase()
-    if (!sym) return
+  const handleAdd = async (sym = null) => {
+    const symbol = (sym || ticker).trim().toUpperCase()
+    if (!symbol) return
     setAdding(true)
     setError(null)
     try {
-      const item = await api.watchlist.add(sym, notes)
+      const item = await api.watchlist.add(symbol, notes)
       setItems(prev => [item, ...prev])
-      setTicker('')
-      setNotes('')
+      if (!sym) { setTicker(''); setNotes('') }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -210,14 +375,25 @@ export default function WatchlistTab() {
     }
   }
 
+  const watchlistTickers = new Set(items.map(i => i.ticker))
+
   return (
     <div style={s.page}>
       <div>
         <div style={s.title}>Watchlist</div>
         <div style={s.subtitle}>
-          Add any stock to score it across all three strategies simultaneously — wheel, options, and long-term
+          Today's best picks from a 50-stock universe, plus your personal tracking list
         </div>
       </div>
+
+      <ChampionsSection
+        watchlistTickers={watchlistTickers}
+        onAddToWatchlist={handleAdd}
+      />
+
+      <hr style={s.divider} />
+
+      <div style={s.sectionTitle}>👁 My Watchlist</div>
 
       <div style={s.addRow}>
         <input
@@ -236,20 +412,16 @@ export default function WatchlistTab() {
           placeholder="Optional note (e.g. 'watching for breakout')"
           maxLength={200}
         />
-        <button style={s.addBtn} onClick={handleAdd} disabled={adding || !ticker.trim()}>
+        <button style={s.addBtn} onClick={() => handleAdd()} disabled={adding || !ticker.trim()}>
           {adding ? '⏳' : '+ Add to Watchlist'}
         </button>
       </div>
 
       {error && <div style={s.error}>⚠ {error}</div>}
 
-      {!loading && items.length === 0 && !error && (
+      {!loading && items.length === 0 && (
         <div style={s.empty}>
-          Your watchlist is empty. Add tickers above to score them across all strategies.
-          <br />
-          <small style={{ color: '#4a5568', display: 'block', marginTop: '8px' }}>
-            Great for keeping an eye on stocks before committing to a trade
-          </small>
+          Your watchlist is empty. Add tickers above or click "+ Add to Watchlist" on any champion card.
         </div>
       )}
 

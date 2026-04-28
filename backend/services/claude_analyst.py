@@ -600,3 +600,51 @@ class ClaudeAnalyst:
         result["earnings_date"] = str(earnings_date) if earnings_date else None
         result["earnings_warning"] = earnings_warning
         return result
+
+    # ------------------------------------------------------------------
+    # Champions — one batched call to pick best stock per strategy
+    # ------------------------------------------------------------------
+    def pick_champions(self, survivors: list[dict]) -> dict:
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        lines = []
+        for s in survivors:
+            pe_str = f"PE={s['pe']:.0f}" if s.get("pe") else "PE=n/a"
+            div_str = f"div={s['div_yield_pct']}%" if s.get("div_yield_pct") else "div=none"
+            iv_str = f"IV_rank≈{s['iv_rank']}" if s.get("iv_rank") else "IV_rank=unknown"
+            lines.append(
+                f"{s['ticker']}: ${s['price']} | RSI={s['rsi']} | {iv_str} | "
+                f"vol={s['avg_vol_m']}M/day | {pe_str} | {div_str} | "
+                f"sector={s.get('sector','?')} | analyst={s.get('analyst','?')}"
+            )
+
+        stocks_block = "\n".join(lines)
+
+        system = (
+            "You are a senior Goldman Sachs portfolio manager. "
+            "Pick the single best stock for each of three strategies. "
+            "Return ONLY valid JSON — no prose, no markdown."
+        )
+        user = (
+            f"Today: {today_str}\n"
+            f"These {len(survivors)} stocks passed a quantitative pre-screen "
+            "(price >$5, volume >500k/day, RSI 25-75, no earnings within 14 days).\n\n"
+            f"{stocks_block}\n\n"
+            "Pick the single BEST stock for each strategy:\n"
+            "1. WHEEL STRATEGY — best for selling cash-secured puts right now\n"
+            "   (favor: high IV rank, stable/quality company, strong price support, good premium yield)\n"
+            "2. OPTIONS TRADING — best for a directional call or put play right now\n"
+            "   (favor: clear momentum, strong catalyst, favorable risk/reward)\n"
+            "3. LONG-TERM INVESTING — best buy and hold for the next 1-3 years\n"
+            "   (favor: earnings growth, dominant market position, reasonable valuation)\n\n"
+            "Return JSON only — no extra keys:\n"
+            '{"wheel":{"ticker":"AAPL","score":88,"grade":"A",'
+            '"reason":"2 sentences plain English — why this is the best wheel stock right now."},'
+            '"options":{"ticker":"NVDA","score":82,"grade":"B",'
+            '"reason":"2 sentences plain English — why this is the best options play right now."},'
+            '"longterm":{"ticker":"MSFT","score":91,"grade":"A",'
+            '"reason":"2 sentences plain English — why this is the best long-term hold right now."}}'
+        )
+        raw = self._call(system, user, max_tokens=500)
+        return self._parse(raw)

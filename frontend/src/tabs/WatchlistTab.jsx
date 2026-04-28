@@ -155,29 +155,50 @@ const s = {
 function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
   const [data, setData] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [status, setStatus] = useState(null)
+  const [elapsed, setElapsed] = useState(0)
 
   const load = async () => {
     try {
       const result = await api.champions.get()
       setData(result)
+      return result
     } catch {
-      // non-critical — fail silently
+      return null
     }
   }
 
   useEffect(() => { load() }, [])
 
+  // Poll every 8 seconds while scan is running
+  useEffect(() => {
+    if (!refreshing) return
+    let count = 0
+    const iv = setInterval(async () => {
+      count += 8
+      setElapsed(count)
+      const result = await load()
+      // Stop polling when scan finishes (scan_running goes false)
+      if (result && !result.scan_running) {
+        setRefreshing(false)
+        clearInterval(iv)
+      }
+      // Safety stop after 3 minutes
+      if (count >= 180) {
+        setRefreshing(false)
+        clearInterval(iv)
+      }
+    }, 8000)
+    return () => clearInterval(iv)
+  }, [refreshing])
+
   const handleRefresh = async () => {
-    setRefreshing(true)
-    setStatus(null)
+    if (refreshing) return
+    setElapsed(0)
     try {
-      const res = await api.champions.refresh()
-      setStatus(res.status || 'Scan started — check back in ~60 seconds')
+      await api.champions.refresh()
+      setRefreshing(true)
     } catch (e) {
-      setStatus(`Error: ${e.message}`)
-    } finally {
-      setRefreshing(false)
+      // ignore
     }
   }
 
@@ -192,12 +213,14 @@ function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
           {runAt && <div style={s.runAt}>Scanned from 50-stock universe · {runAt}</div>}
         </div>
         <button style={s.refreshBtn} onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? '⏳' : '↻'} Run Scan
+          {refreshing ? `⏳ Scanning… ${elapsed}s` : '↻ Run Scan'}
         </button>
       </div>
 
-      {status && (
-        <div style={{ fontSize: '12px', color: '#f6ad55', padding: '6px 0' }}>{status}</div>
+      {refreshing && (
+        <div style={{ fontSize: '12px', color: '#f6ad55', padding: '6px 0' }}>
+          Scanning 50 stocks and asking AI to pick today's best… this takes about 30-60 seconds.
+        </div>
       )}
 
       {champions.length === 0 ? (

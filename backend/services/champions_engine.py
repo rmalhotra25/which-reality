@@ -1,21 +1,18 @@
 """
 Champions Engine — daily market-open scan.
 
-1. Pre-screens ~50 curated stocks with Python (free, fast).
+1. Pre-screens ~50 curated stocks with ONE bulk yfinance download (fast, free).
 2. Passes survivors to Claude in ONE batched call.
 3. Stores three champion records (wheel / options / longterm) in the DB.
 """
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import yfinance as yf
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Stock universe (~50 curated names across sectors and strategies)
-# ---------------------------------------------------------------------------
 UNIVERSE = [
     # Blue chips / Dow components
     "AAPL", "MSFT", "JPM", "JNJ", "KO", "HD", "V", "UNH", "MCD", "WMT",
@@ -29,131 +26,95 @@ UNIVERSE = [
     "F", "GM", "UBER", "NKE", "SNAP", "SOFI", "COIN", "RIVN", "HOOD", "LYFT",
 ]
 
-MIN_AVG_VOLUME = 500_000
-MIN_PRICE = 5.0
-RSI_LOW, RSI_HIGH = 25.0, 75.0
-EARNINGS_BUFFER_DAYS = 14
+MIN_AVG_VOLUME = 300_000
+MIN_PRICE = 3.0
+RSI_LOW, RSI_HIGH = 20.0, 80.0
 
 
 def _rsi(closes: pd.Series, period: int = 14) -> float | None:
     try:
+        if len(closes) < period + 1:
+            return None
         delta = closes.diff()
         gain = delta.clip(lower=0).rolling(period).mean()
         loss = (-delta.clip(upper=0)).rolling(period).mean()
         rs = gain / loss.replace(0, float("nan"))
-        rsi_series = 100 - (100 / (1 + rs))
-        val = rsi_series.iloc[-1]
+        val = (100 - (100 / (1 + rs))).iloc[-1]
         return round(float(val), 1) if pd.notna(val) else None
-    except Exception:
-        return None
-
-
-def _earnings_days_away(ticker: str) -> int | None:
-    """Return days until next earnings, or None if unknown."""
-    try:
-        t = yf.Ticker(ticker)
-        cal = t.calendar
-        if cal is None or cal.empty:
-            return None
-        ed_col = cal.get("Earnings Date")
-        if ed_col is None or len(ed_col) == 0:
-            return None
-        ed = ed_col[0]
-        # ed may be a Timestamp
-        ed_date = pd.Timestamp(ed).date()
-        today = datetime.now(timezone.utc).date()
-        return (ed_date - today).days
     except Exception:
         return None
 
 
 def prescreen() -> list[dict]:
     """
-    Download bulk price/volume history for the universe, compute RSI,
-    filter by basic criteria, and return survivors as dicts.
+    Single bulk download → compute RSI → filter basics.
+    No per-ticker API calls — completes in ~10-20 seconds.
     """
-    logger.info("Champions: downloading bulk data for %d tickers", len(UNIVERSE))
+    logger.info("Champions: bulk downloading %d tickers", len(UNIVERSE))
     try:
         raw = yf.download(
             UNIVERSE,
-            period="3mo",
+            period="60d",
             interval="1d",
             auto_adjust=True,
             progress=False,
-            group_by="ticker",
         )
     except Exception as e:
         logger.error("Champions bulk download failed: %s", e)
         return []
 
-    survivors = []
-    today = datetime.now(timezone.utc).date()
+    if raw.empty:
+        logger.warning("Champions: bulk download returned empty DataFrame")
+        return []
 
+    # yfinance returns (field, ticker) MultiIndex for multiple tickers
+    if isinstance(raw.columns, pd.MultiIndex):
+        try:
+            close_df = raw["Close"]
+            volume_df = raw["Volume"]
+        except KeyError:
+            logger.error("Champions: unexpected DataFrame column structure: %s", raw.columns[:10].tolist())
+            return []
+    else:
+        # Single ticker fallback (shouldn't happen with 50 tickers)
+        close_df = pd.DataFrame({"SINGLE": raw["Close"]})
+        volume_df = pd.DataFrame({"SINGLE": raw["Volume"]})
+
+    survivors = []
     for ticker in UNIVERSE:
         try:
-            # Handle both single-ticker and multi-ticker DataFrame structures
-            if len(UNIVERSE) == 1:
-                df = raw
-            else:
-                if ticker not in raw.columns.get_level_values(0):
-                    continue
-                df = raw[ticker].dropna(how="all")
-
-            if df.empty or len(df) < 20:
+            if ticker not in close_df.columns:
                 continue
 
-            price = float(df["Close"].iloc[-1])
-            avg_vol = float(df["Volume"].tail(20).mean())
+            closes = close_df[ticker].dropna()
+            volumes = volume_df[ticker].dropna() if ticker in volume_df.columns else pd.Series(dtype=float)
+
+            if len(closes) < 20:
+                continue
+
+            price = float(closes.iloc[-1])
+            avg_vol = float(volumes.tail(20).mean()) if not volumes.empty else 0
 
             if price < MIN_PRICE:
                 continue
             if avg_vol < MIN_AVG_VOLUME:
                 continue
 
-            rsi = _rsi(df["Close"])
+            rsi = _rsi(closes)
             if rsi is not None and (rsi < RSI_LOW or rsi > RSI_HIGH):
                 continue
 
-            # Quick earnings check (only for survivors so far — keeps it fast)
-            days_to_earnings = _earnings_days_away(ticker)
-            if days_to_earnings is not None and 0 <= days_to_earnings <= EARNINGS_BUFFER_DAYS:
-                logger.debug("Champions: skipping %s — earnings in %d days", ticker, days_to_earnings)
-                continue
-
-            # Approximate IV rank from options chain ATM IV (best effort)
-            iv_rank = None
-            try:
-                t = yf.Ticker(ticker)
-                expiries = t.options
-                if expiries:
-                    chain = t.option_chain(expiries[0])
-                    puts = chain.puts
-                    if not puts.empty:
-                        atm_idx = (puts["strike"] - price).abs().idxmin()
-                        iv = float(puts.loc[atm_idx, "impliedVolatility"]) * 100
-                        iv_rank = round(min(iv / 0.5, 100), 1)
-            except Exception:
-                pass
-
-            # Basic fundamentals
-            info = {}
-            try:
-                info = yf.Ticker(ticker).info or {}
-            except Exception:
-                pass
+            # 52-week context from the data we already have
+            high_52w = float(closes.max())
+            low_52w = float(closes.min())
+            pct_from_high = round((price - high_52w) / high_52w * 100, 1)
 
             survivors.append({
                 "ticker": ticker,
                 "price": round(price, 2),
                 "avg_vol_m": round(avg_vol / 1_000_000, 1),
                 "rsi": rsi,
-                "iv_rank": iv_rank,
-                "pe": info.get("trailingPE"),
-                "div_yield_pct": round(info.get("dividendYield", 0) * 100, 2) if info.get("dividendYield") else None,
-                "sector": info.get("sector", ""),
-                "analyst": info.get("recommendationKey", ""),
-                "52w_high": info.get("fiftyTwoWeekHigh"),
-                "52w_low": info.get("fiftyTwoWeekLow"),
+                "pct_from_high": pct_from_high,
             })
         except Exception as e:
             logger.debug("Champions pre-screen error for %s: %s", ticker, e)
@@ -168,7 +129,7 @@ def run(db) -> None:
 
     survivors = prescreen()
     if len(survivors) < 3:
-        logger.warning("Champions: not enough survivors (%d) to pick champions", len(survivors))
+        logger.warning("Champions: only %d survivors — need at least 3", len(survivors))
         return
 
     analyst = ClaudeAnalyst()
@@ -178,14 +139,18 @@ def run(db) -> None:
         logger.error("Champions Claude call failed: %s", e, exc_info=True)
         return
 
+    if not champions or len(champions) < 2:
+        logger.warning("Champions: Claude returned insufficient results: %s", champions)
+        return
+
     run_at = datetime.utcnow()
 
-    # Delete old champions and insert fresh ones
+    # Only wipe old data after Claude succeeds
     db.query(Champion).delete()
     for strategy, data in champions.items():
-        if not data.get("ticker"):
+        if not data or not data.get("ticker"):
             continue
-        row = Champion(
+        db.add(Champion(
             strategy=strategy,
             ticker=data["ticker"],
             score=data.get("score"),
@@ -194,7 +159,6 @@ def run(db) -> None:
             universe_size=len(UNIVERSE),
             survivors_count=len(survivors),
             run_at=run_at,
-        )
-        db.add(row)
+        ))
     db.commit()
     logger.info("Champions saved: %s", {s: d.get("ticker") for s, d in champions.items()})

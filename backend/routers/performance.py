@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models.wheel import WheelPosition, WheelHistory
+from models.wheel import WheelPosition
 
 router = APIRouter(prefix="/api/performance", tags=["Performance"])
 

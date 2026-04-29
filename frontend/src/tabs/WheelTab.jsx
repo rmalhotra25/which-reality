@@ -89,6 +89,7 @@ function downloadJson(data, filename) {
 export default function WheelTab() {
   const [recs, setRecs] = useState([])
   const [positions, setPositions] = useState([])
+  const [account, setAccount] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadingPositions, setLoadingPositions] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -122,6 +123,7 @@ export default function WheelTab() {
 
   useEffect(() => { loadRecs() }, [])
   useEffect(() => { loadPositions() }, [loadPositions])
+  useEffect(() => { api.account.getBalance().then(setAccount).catch(() => {}) }, [])
 
   const wheelFetchFn = useCallback(() => api.wheel.getRecommendations(), [])
   const { start: startPolling } = useRefreshPoller(
@@ -211,7 +213,7 @@ export default function WheelTab() {
 
       <div style={s.grid}>
         {recs.map((rec) => (
-          <WheelCard key={rec.id} rec={rec} onAccepted={handleAccepted} />
+          <WheelCard key={rec.id} rec={rec} account={account} onAccepted={handleAccepted} />
         ))}
       </div>
 

@@ -25,17 +25,23 @@ def _get_or_create(db: Session) -> AccountBalance:
 
 
 def _capital_at_risk(db: Session) -> float:
-    """Sum of cost_basis for all non-closed wheel positions."""
+    """Sum of capital committed across all non-closed wheel positions.
+    put_active: collateral = strike × shares (cost_basis not yet set).
+    assigned/call_active: cost_basis × shares (effective purchase price).
+    """
     positions = (
         db.query(WheelPosition)
         .filter(WheelPosition.status != "closed")
         .all()
     )
-    return sum(
-        (p.cost_basis or 0) * (p.shares or 100)
-        for p in positions
-        if p.cost_basis
-    )
+    total = 0.0
+    for p in positions:
+        shares = p.shares or 100
+        if p.cost_basis:
+            total += p.cost_basis * shares
+        elif p.put_strike:
+            total += p.put_strike * shares
+    return total
 
 
 @router.get("")

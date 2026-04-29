@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import GradeChip from '../components/GradeChip'
 import ScoreBar from '../components/ScoreBar'
 import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import AcceptModal from './AcceptModal'
-import { api } from '../api'
 
 const s = {
   card: {
@@ -67,13 +66,8 @@ const sizingStyle = (isOver) => ({
   marginTop: '-4px',
 })
 
-export default function WheelCard({ rec, onAccepted }) {
+export default function WheelCard({ rec, account, onAccepted }) {
   const [showModal, setShowModal] = useState(false)
-  const [account, setAccount] = useState(null)
-
-  useEffect(() => {
-    api.account.getBalance().then(setAccount).catch(() => {})
-  }, [])
 
   const capitalRequired = rec.put_strike ? rec.put_strike * 100 : null
   const isOverLimit = account && capitalRequired && capitalRequired > account.max_single_position

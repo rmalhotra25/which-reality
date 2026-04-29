@@ -13,8 +13,7 @@ router = APIRouter(prefix="/api/champions", tags=["Champions"])
 
 STRATEGY_ORDER = ["wheel", "options", "longterm"]
 
-# Simple in-process job tracker
-_job: dict = {"running": False, "started_at": None, "error": None}
+_job: dict = {"running": False, "started_at": None, "error": None, "last_run": None}
 
 
 def _serialize(row: Champion) -> dict:
@@ -32,7 +31,6 @@ def _serialize(row: Champion) -> dict:
 
 @router.get("")
 def get_champions(db: Session = Depends(get_db)):
-    # Grab latest 3 records (we delete-all before insert so these are always current)
     rows = db.query(Champion).order_by(Champion.run_at.desc()).limit(3).all()
     ordered = sorted(
         rows,
@@ -43,14 +41,6 @@ def get_champions(db: Session = Depends(get_db)):
         "champions": [_serialize(r) for r in ordered],
         "run_at": run_at,
         "scan_running": _job["running"],
-    }
-
-
-@router.get("/status")
-def get_status():
-    return {
-        "running": _job["running"],
-        "started_at": _job["started_at"],
         "last_error": _job["error"],
     }
 
@@ -63,7 +53,9 @@ def _run_job():
     _job["error"] = None
     db = SessionLocal()
     try:
-        run_champions(db)
+        success, error = run_champions(db)
+        _job["error"] = error
+        _job["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     except Exception as e:
         _job["error"] = str(e)
         logger.error("Champions refresh failed: %s", e, exc_info=True)
@@ -76,6 +68,7 @@ def _run_job():
 def refresh_champions():
     if _job["running"]:
         return {"status": "Scan already in progress — check back shortly"}
+    _job["error"] = None
     _job["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     t = threading.Thread(target=_run_job, daemon=True)
     t.start()

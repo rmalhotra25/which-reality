@@ -223,6 +223,12 @@ function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
         </div>
       )}
 
+      {!refreshing && data?.last_error && (
+        <div style={{ fontSize: '12px', color: '#fc8181', background: '#1a0a0a', border: '1px solid #742a2a', borderRadius: '6px', padding: '10px 12px' }}>
+          ⚠ Scan failed: {data.last_error}
+        </div>
+      )}
+
       {champions.length === 0 ? (
         <div style={s.noChampions}>
           No champions yet. Click <strong>Run Scan</strong> to scan 50 top stocks and find today's best picks.

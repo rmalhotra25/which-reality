@@ -13,8 +13,15 @@ MODEL = "claude-sonnet-4-6"
 
 
 def _clean_json(text: str) -> str:
-    """Strip markdown fences and surrounding whitespace."""
-    return re.sub(r"```(?:json)?|```", "", text).strip()
+    """Extract the outermost JSON object or array from the response."""
+    text = re.sub(r"```(?:json)?|```", "", text).strip()
+    # Find outermost { } or [ ] so trailing prose doesn't break json.loads
+    for start_ch, end_ch in [('{', '}'), ('[', ']')]:
+        start = text.find(start_ch)
+        end = text.rfind(end_ch)
+        if start != -1 and end > start:
+            return text[start:end + 1]
+    return text
 
 
 def _valid_expiry_dates(n: int = 6) -> list[str]:

@@ -269,6 +269,31 @@ def _bs_put_theta_daily(price: float, strike: float, iv: float, T: float, r: flo
 
 
 # ---------------------------------------------------------------------------
+# Finnhub OHLCV helper — primary data source
+# ---------------------------------------------------------------------------
+
+def _finnhub_history(ticker: str, period: str = "1y") -> pd.DataFrame:
+    """Fetch OHLCV via Finnhub candles, returned as a DataFrame matching yfinance format."""
+    try:
+        from services.finnhub_client import get_candles
+        days = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 375, "2y": 755}.get(period, 375)
+        candles = get_candles(ticker, days=days)
+        if candles.get("s") != "ok" or not candles.get("c"):
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            "Open":   candles.get("o", [None] * len(candles["c"])),
+            "High":   candles.get("h", [None] * len(candles["c"])),
+            "Low":    candles.get("l", [None] * len(candles["c"])),
+            "Close":  candles["c"],
+            "Volume": candles.get("v", [0] * len(candles["c"])),
+        }, index=pd.to_datetime(candles["t"], unit="s")).dropna(subset=["Close"])
+        return df
+    except Exception as e:
+        logger.debug("Finnhub history error for %s: %s", ticker, e)
+        return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
 # Yahoo Finance HTTP fallback (no yfinance)
 # ---------------------------------------------------------------------------
 
@@ -338,7 +363,10 @@ def _yf_fetch_summary(ticker: str) -> dict:
 class StockDataService:
 
     def _get_history(self, ticker: str, period: str = "1y") -> pd.DataFrame:
-        """Return OHLCV DataFrame regardless of whether yfinance is available."""
+        """Return OHLCV DataFrame. Finnhub primary; yfinance per-ticker fallback."""
+        df = _finnhub_history(ticker, period)
+        if not df.empty:
+            return df
         if _YF_AVAILABLE:
             try:
                 df = yf.Ticker(ticker).history(period=period)
@@ -346,7 +374,6 @@ class StockDataService:
                     return df
             except Exception:
                 pass
-        # Fallback: determine day count from period string
         days = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 252, "2y": 504}.get(period, 252)
         return _yf_fetch_ohlcv(ticker, period_days=days)
 
@@ -427,6 +454,25 @@ class StockDataService:
         result = {}
         for ticker in tickers:
             try:
+                from services.finnhub_client import get_basic_financials, get_company_profile
+                metrics = get_basic_financials(ticker)
+                profile = get_company_profile(ticker)
+                if metrics or profile:
+                    result[ticker] = {
+                        "pe_ratio": metrics.get("peNormalizedAnnual") or metrics.get("peTTM"),
+                        "eps_growth_ttm": metrics.get("epsGrowthTTMYoy"),
+                        "revenue_growth_ttm": metrics.get("revenueGrowthTTMYoy"),
+                        "div_yield": metrics.get("dividendYieldIndicatedAnnual"),
+                        "sector": profile.get("finnhubIndustry", "Unknown"),
+                        "analyst_rating": None,
+                        "52w_high": metrics.get("52WeekHigh"),
+                        "52w_low": metrics.get("52WeekLow"),
+                    }
+                    continue
+            except Exception as e:
+                logger.debug("Finnhub fundamentals error for %s: %s", ticker, e)
+            # Fallback: yfinance per-ticker
+            try:
                 if _YF_AVAILABLE:
                     info = yf.Ticker(ticker).info
                     result[ticker] = {
@@ -442,13 +488,23 @@ class StockDataService:
                     if fund:
                         result[ticker] = fund
             except Exception as e:
-                logger.debug("Fundamentals error for %s: %s", ticker, e)
+                logger.debug("Fundamentals fallback error for %s: %s", ticker, e)
         return result
 
     def get_current_price(self, ticker: str) -> Optional[float]:
         try:
+            from services.finnhub_client import get_quote
+            q = get_quote(ticker)
+            if q.get("c"):
+                return float(q["c"])
+        except Exception:
+            pass
+        try:
             if _YF_AVAILABLE:
                 return float(yf.Ticker(ticker).fast_info.last_price)
+        except Exception:
+            pass
+        try:
             df = _yf_fetch_ohlcv(ticker, period_days=5)
             return float(df["Close"].iloc[-1]) if not df.empty else None
         except Exception:
@@ -640,22 +696,37 @@ class StockDataService:
 def get_stock_info(ticker: str) -> dict:
     """Return a flat dict of price, technicals, and fundamentals for one ticker."""
     try:
-        df = _yf_fetch_ohlcv(ticker, period_days=200)
+        # OHLCV: Finnhub primary, Yahoo HTTP fallback
+        df = _finnhub_history(ticker, "1y")
+        if df.empty:
+            df = _yf_fetch_ohlcv(ticker, period_days=252)
         price = float(df["Close"].iloc[-1]) if not df.empty else None
         indicators = _compute_all_indicators(df) if not df.empty else {}
-        summary = _yf_fetch_summary(ticker)
 
-        # Earnings date from yfinance
-        earnings_date = None
+        # Fundamentals + earnings: Finnhub primary
+        summary: dict = {}
+        earnings_date: str | None = None
         try:
-            t = yf.Ticker(ticker)
-            cal = t.calendar
-            if cal is not None and not cal.empty:
-                ed = cal.get("Earnings Date")
-                if ed is not None and len(ed) > 0:
-                    earnings_date = str(ed[0])[:10]
-        except Exception:
-            pass
+            from services.finnhub_client import (
+                get_basic_financials, get_company_profile, get_earnings_this_month
+            )
+            metrics = get_basic_financials(ticker)
+            profile = get_company_profile(ticker)
+            summary = {
+                "pe_ratio": metrics.get("peNormalizedAnnual") or metrics.get("peTTM"),
+                "div_yield": metrics.get("dividendYieldIndicatedAnnual"),
+                "sector": profile.get("finnhubIndustry", ""),
+                "analyst_rating": None,
+                "52w_high": metrics.get("52WeekHigh"),
+                "52w_low": metrics.get("52WeekLow"),
+            }
+            days_away = get_earnings_this_month(ticker)
+            if days_away is not None:
+                from datetime import date, timedelta
+                earnings_date = (date.today() + timedelta(days=days_away)).isoformat()
+        except Exception as e:
+            logger.debug("Finnhub info error for %s: %s", ticker, e)
+            summary = _yf_fetch_summary(ticker)
 
         return {
             "ticker": ticker,

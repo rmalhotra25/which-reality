@@ -1,6 +1,8 @@
 """
-Fetches VIX + SPY data from yfinance and classifies the current market regime.
-Results are cached in-memory for 30 minutes to keep page loads fast.
+Fetches VIX + SPY data and classifies the current market regime.
+- SPY: via Finnhub (reliable, API-keyed)
+- VIX: via yfinance as fallback (single ticker call, rarely blocked)
+Results cached in-memory for 30 minutes.
 """
 import logging
 import time
@@ -33,16 +35,8 @@ def get_market_context(force_refresh: bool = False) -> dict:
 
 
 def _fetch() -> dict:
-    # ── VIX ──────────────────────────────────────────────────────────────────
-    vix_hist = yf.Ticker("^VIX").history(period="5d")
-    vix = float(vix_hist["Close"].iloc[-1]) if not vix_hist.empty else None
-
-    # ── SPY ───────────────────────────────────────────────────────────────────
-    spy_hist = yf.Ticker("SPY").history(period="1y")
-    spy_price = float(spy_hist["Close"].iloc[-1]) if not spy_hist.empty else None
-
-    ma50 = float(spy_hist["Close"].tail(50).mean()) if len(spy_hist) >= 50 else None
-    ma200 = float(spy_hist["Close"].tail(200).mean()) if len(spy_hist) >= 200 else None
+    vix = _fetch_vix()
+    spy_price, ma50, ma200 = _fetch_spy()
 
     spy_vs_50 = round((spy_price / ma50 - 1) * 100, 1) if spy_price and ma50 else None
     spy_vs_200 = round((spy_price / ma200 - 1) * 100, 1) if spy_price and ma200 else None
@@ -50,9 +44,6 @@ def _fetch() -> dict:
     regime = _classify_regime(vix, spy_price, ma50, ma200)
     verdict = _trade_verdict(vix, regime)
     vix_label = _vix_label(vix)
-
-    strategy_guidance = _strategy_guidance(vix, regime, vix_label)
-    summary = _summary(vix, vix_label, spy_price, spy_vs_50, spy_vs_200, regime, verdict)
 
     return {
         "vix": round(vix, 2) if vix is not None else None,
@@ -62,11 +53,50 @@ def _fetch() -> dict:
         "spy_vs_200ma_pct": spy_vs_200,
         "market_regime": regime,
         "trade_verdict": verdict,
-        "summary": summary,
-        "strategy_guidance": strategy_guidance,
+        "summary": _summary(vix, vix_label, spy_price, spy_vs_50, spy_vs_200, regime, verdict),
+        "strategy_guidance": _strategy_guidance(vix, regime, vix_label),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "available": True,
     }
+
+
+def _fetch_vix() -> float | None:
+    """VIX via yfinance — single ticker, rarely blocked."""
+    try:
+        hist = yf.Ticker("^VIX").history(period="5d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.debug("VIX yfinance fetch failed: %s", e)
+    return None
+
+
+def _fetch_spy() -> tuple[float | None, float | None, float | None]:
+    """SPY price + MA50 + MA200 via Finnhub candles."""
+    try:
+        from services.finnhub_client import get_candles
+        candles = get_candles("SPY", days=300)
+        if candles.get("s") == "ok" and candles.get("c"):
+            closes = candles["c"]
+            price = float(closes[-1])
+            ma50 = float(sum(closes[-50:]) / min(50, len(closes))) if len(closes) >= 20 else None
+            ma200 = float(sum(closes[-200:]) / min(200, len(closes))) if len(closes) >= 50 else None
+            return price, ma50, ma200
+    except Exception as e:
+        logger.debug("SPY Finnhub fetch failed: %s", e)
+
+    # Fallback to yfinance for SPY
+    try:
+        hist = yf.Ticker("SPY").history(period="1y")
+        if not hist.empty:
+            price = float(hist["Close"].iloc[-1])
+            ma50 = float(hist["Close"].tail(50).mean()) if len(hist) >= 50 else None
+            ma200 = float(hist["Close"].tail(200).mean()) if len(hist) >= 200 else None
+            return price, ma50, ma200
+    except Exception as e:
+        logger.debug("SPY yfinance fallback failed: %s", e)
+
+    return None, None, None
 
 
 def _unavailable() -> dict:
@@ -80,17 +110,11 @@ def _unavailable() -> dict:
     }
 
 
-# ─── Classification helpers ───────────────────────────────────────────────────
-
 def _vix_label(vix) -> str:
-    if vix is None:
-        return "UNKNOWN"
-    if vix < 15:
-        return "CALM"
-    if vix < 25:
-        return "NORMAL"
-    if vix < 35:
-        return "ELEVATED"
+    if vix is None: return "UNKNOWN"
+    if vix < 15:    return "CALM"
+    if vix < 25:    return "NORMAL"
+    if vix < 35:    return "ELEVATED"
     return "EXTREME"
 
 
@@ -114,7 +138,6 @@ def _trade_verdict(vix, regime) -> str:
 
 
 def _strategy_guidance(vix, regime, vix_label) -> dict:
-    # Options buying (debit): bad when IV is elevated — you pay too much premium
     if vix_label in ("ELEVATED", "EXTREME"):
         buying = "AVOID — IV is high, options are expensive. Wait for VIX to drop before buying calls or puts."
     elif regime == "BEAR":
@@ -124,7 +147,6 @@ def _strategy_guidance(vix, regime, vix_label) -> dict:
     else:
         buying = "NEUTRAL — Sideways market. Favor spread strategies over naked directional buys."
 
-    # Options selling / wheel: great when IV is elevated — you collect more premium
     if vix_label in ("ELEVATED", "EXTREME"):
         selling = "EXCELLENT — High IV means fat premiums. Best time to run the wheel and sell puts."
     elif regime == "BEAR":
@@ -134,7 +156,6 @@ def _strategy_guidance(vix, regime, vix_label) -> dict:
     else:
         selling = "GOOD — Sideways range means puts have low assignment risk if you pick the right strikes."
 
-    # Long-term investing
     if regime == "BULL":
         lt = "GOOD — Uptrend intact. Continue dollar-cost averaging into quality positions."
     elif regime == "BEAR":
@@ -144,38 +165,29 @@ def _strategy_guidance(vix, regime, vix_label) -> dict:
     else:
         lt = "NEUTRAL — Range-bound market. Focus on dividend income and avoid speculative growth buys."
 
-    return {
-        "options_buying": buying,
-        "wheel_and_selling": selling,
-        "long_term": lt,
-    }
+    return {"options_buying": buying, "wheel_and_selling": selling, "long_term": lt}
 
 
 def _summary(vix, vix_label, spy_price, spy_vs_50, spy_vs_200, regime, verdict) -> str:
     vix_str = f"VIX is {vix:.1f} ({vix_label.lower()} fear level)" if vix else "VIX data unavailable"
     spy_str = ""
     if spy_price and spy_vs_50 is not None:
-        direction = "above" if spy_vs_50 >= 0 else "below"
-        spy_str = f" The S&P 500 is {abs(spy_vs_50)}% {direction} its 50-day average"
+        d1 = "above" if spy_vs_50 >= 0 else "below"
+        spy_str = f" The S&P 500 is {abs(spy_vs_50)}% {d1} its 50-day average"
         if spy_vs_200 is not None:
             d2 = "above" if spy_vs_200 >= 0 else "below"
             spy_str += f" and {abs(spy_vs_200)}% {d2} its 200-day average."
         else:
             spy_str += "."
-
     regime_map = {
         "BULL": "Market is in a bull trend — conditions favor staying invested.",
         "BEAR": "Market is in a downtrend — proceed with extra caution.",
         "VOLATILE": "Market is highly volatile — reduce position sizes and be selective.",
         "SIDEWAYS": "Market is moving sideways — range-bound conditions.",
     }
-    regime_str = regime_map.get(regime, "")
-
     verdict_map = {
         "GREEN": "Overall conditions are favorable for trading.",
         "YELLOW": "Exercise caution — scale back position sizes.",
         "RED": "Difficult trading environment — consider standing aside or reducing risk significantly.",
     }
-    verdict_str = verdict_map.get(verdict, "")
-
-    return f"{vix_str}.{spy_str} {regime_str} {verdict_str}".strip()
+    return f"{vix_str}.{spy_str} {regime_map.get(regime,'')} {verdict_map.get(verdict,'')}".strip()

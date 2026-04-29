@@ -1,14 +1,13 @@
 """
 Champions Engine — daily market-open scan.
 
-1. Pre-screens ~50 curated stocks with ONE bulk yfinance download (fast, free).
+1. Pre-screens ~50 curated stocks via Finnhub (reliable API, no IP blocking).
 2. Passes survivors to Claude in ONE batched call.
 3. Stores three champion records (wheel / options / longterm) in the DB.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
-import yfinance as yf
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -26,16 +25,18 @@ UNIVERSE = [
     "F", "GM", "UBER", "NKE", "SNAP", "SOFI", "COIN", "RIVN", "HOOD", "LYFT",
 ]
 
-MIN_AVG_VOLUME = 300_000
 MIN_PRICE = 3.0
+MIN_AVG_VOLUME = 300_000
 RSI_LOW, RSI_HIGH = 20.0, 80.0
+EARNINGS_BUFFER_DAYS = 14
 
 
-def _rsi(closes: pd.Series, period: int = 14) -> float | None:
+def _rsi(closes: list[float], period: int = 14) -> float | None:
     try:
         if len(closes) < period + 1:
             return None
-        delta = closes.diff()
+        s = pd.Series(closes)
+        delta = s.diff()
         gain = delta.clip(lower=0).rolling(period).mean()
         loss = (-delta.clip(upper=0)).rolling(period).mean()
         rs = gain / loss.replace(0, float("nan"))
@@ -45,94 +46,83 @@ def _rsi(closes: pd.Series, period: int = 14) -> float | None:
         return None
 
 
+def _screen_ticker(ticker: str) -> dict | None:
+    """Fetch candle data from Finnhub and apply basic filters. Returns dict or None."""
+    from services.finnhub_client import get_candles, get_quote, get_earnings_this_month
+
+    candles = get_candles(ticker, days=100)
+    if candles.get("s") != "ok" or not candles.get("c"):
+        logger.debug("Champions: no candle data for %s", ticker)
+        return None
+
+    closes = candles["c"]
+    volumes = candles.get("v", [])
+
+    if len(closes) < 20:
+        return None
+
+    price = float(closes[-1])
+    avg_vol = float(sum(volumes[-20:]) / 20) if len(volumes) >= 20 else 0
+
+    if price < MIN_PRICE or avg_vol < MIN_AVG_VOLUME:
+        return None
+
+    rsi = _rsi(closes)
+    if rsi is not None and (rsi < RSI_LOW or rsi > RSI_HIGH):
+        return None
+
+    # Earnings check — skip if earnings within 14 days
+    days_to_earnings = get_earnings_this_month(ticker)
+    if days_to_earnings is not None and days_to_earnings <= EARNINGS_BUFFER_DAYS:
+        logger.debug("Champions: skipping %s — earnings in %d days", ticker, days_to_earnings)
+        return None
+
+    high_60 = max(closes[-60:]) if len(closes) >= 60 else max(closes)
+    low_60 = min(closes[-60:]) if len(closes) >= 60 else min(closes)
+
+    return {
+        "ticker": ticker,
+        "price": round(price, 2),
+        "avg_vol_m": round(avg_vol / 1_000_000, 1),
+        "rsi": rsi,
+        "pct_from_high": round((price - high_60) / high_60 * 100, 1),
+        "pct_from_low": round((price - low_60) / low_60 * 100, 1),
+    }
+
+
 def prescreen() -> tuple[list[dict], str | None]:
     """
-    Single bulk download → compute RSI → filter basics.
+    Calls Finnhub for each ticker (API-keyed, no IP blocking).
     Returns (survivors, error_message).
     """
-    logger.info("Champions: bulk downloading %d tickers", len(UNIVERSE))
-    try:
-        raw = yf.download(
-            UNIVERSE,
-            period="60d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-        )
-    except Exception as e:
-        msg = f"Data download failed: {e}"
-        logger.error("Champions: %s", msg)
-        return [], msg
+    from config import settings
+    if not settings.finnhub_api_key:
+        return [], "FINNHUB_API_KEY is not set — add it to your Render environment variables"
 
-    if raw.empty:
-        msg = "Yahoo Finance returned no data. This can happen due to rate limiting — try again in a few minutes."
-        logger.warning("Champions: %s", msg)
-        return [], msg
-
-    # yfinance returns (field, ticker) MultiIndex for multiple tickers
-    if isinstance(raw.columns, pd.MultiIndex):
-        try:
-            close_df = raw["Close"]
-            volume_df = raw["Volume"]
-        except KeyError as e:
-            msg = f"Unexpected data format from Yahoo Finance: {e}"
-            logger.error("Champions: %s", msg)
-            return [], msg
-    else:
-        close_df = pd.DataFrame({"SINGLE": raw["Close"]})
-        volume_df = pd.DataFrame({"SINGLE": raw["Volume"]})
-
-    # Check if data is actually populated
-    populated = close_df.notna().any().sum()
-    if populated == 0:
-        msg = "All tickers returned empty data. Yahoo Finance may be rate-limiting this server — try again in 5 minutes."
-        logger.warning("Champions: %s", msg)
-        return [], msg
-
-    logger.info("Champions: %d/%d tickers have data", populated, len(UNIVERSE))
-
+    logger.info("Champions: screening %d tickers via Finnhub", len(UNIVERSE))
     survivors = []
+    errors = 0
+
     for ticker in UNIVERSE:
         try:
-            if ticker not in close_df.columns:
-                continue
-            closes = close_df[ticker].dropna()
-            volumes = volume_df[ticker].dropna() if ticker in volume_df.columns else pd.Series(dtype=float)
-
-            if len(closes) < 20:
-                continue
-
-            price = float(closes.iloc[-1])
-            avg_vol = float(volumes.tail(20).mean()) if not volumes.empty else 0
-
-            if price < MIN_PRICE or avg_vol < MIN_AVG_VOLUME:
-                continue
-
-            rsi = _rsi(closes)
-            if rsi is not None and (rsi < RSI_LOW or rsi > RSI_HIGH):
-                continue
-
-            high_60d = float(closes.max())
-            low_60d = float(closes.min())
-            pct_from_high = round((price - high_60d) / high_60d * 100, 1)
-
-            survivors.append({
-                "ticker": ticker,
-                "price": round(price, 2),
-                "avg_vol_m": round(avg_vol / 1_000_000, 1),
-                "rsi": rsi,
-                "pct_from_high": pct_from_high,
-                "pct_from_low": round((price - low_60d) / low_60d * 100, 1),
-            })
+            result = _screen_ticker(ticker)
+            if result:
+                survivors.append(result)
         except Exception as e:
-            logger.debug("Champions pre-screen error for %s: %s", ticker, e)
+            errors += 1
+            logger.debug("Champions: error screening %s: %s", ticker, e)
+
+    logger.info(
+        "Champions: %d/%d passed pre-screen (%d errors)",
+        len(survivors), len(UNIVERSE), errors,
+    )
 
     if not survivors:
-        msg = f"No stocks passed the quality filter ({populated} tickers had data). Market may be unusually volatile."
-        logger.warning("Champions: %s", msg)
-        return [], msg
+        return [], (
+            "No stocks passed the quality filter. "
+            "This may be a Finnhub API issue — check that FINNHUB_API_KEY is set correctly."
+        )
 
-    logger.info("Champions: %d/%d tickers passed pre-screen", len(survivors), len(UNIVERSE))
     return survivors, None
 
 
@@ -146,22 +136,16 @@ def run(db) -> tuple[bool, str | None]:
         return False, err
 
     if len(survivors) < 3:
-        msg = f"Only {len(survivors)} stocks passed screening — need at least 3 to pick champions."
-        logger.warning("Champions: %s", msg)
-        return False, msg
+        return False, f"Only {len(survivors)} stocks passed screening — need at least 3."
 
     analyst = ClaudeAnalyst()
     try:
         champions = analyst.pick_champions(survivors)
     except Exception as e:
-        msg = f"AI analysis failed: {e}"
-        logger.error("Champions: %s", msg, exc_info=True)
-        return False, msg
+        return False, f"AI analysis failed: {e}"
 
     if not champions or len(champions) < 2:
-        msg = "AI returned incomplete results — try again."
-        logger.warning("Champions: %s", msg)
-        return False, msg
+        return False, "AI returned incomplete results — try again."
 
     run_at = datetime.utcnow()
     db.query(Champion).delete()

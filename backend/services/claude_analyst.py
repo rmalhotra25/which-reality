@@ -216,17 +216,22 @@ class ClaudeAnalyst:
             "and why IV makes it attractive right now.\n"
             "Your 'qual_score' is your qualitative judgment (0-100) incorporating stock quality, "
             "news context, and willingness-to-own assessment.\n\n"
+            "For assignment_chance_pct: estimate the probability the put gets assigned "
+            "(roughly delta × 100 — e.g. a 30-delta put = 30%). "
+            "Set assignment_risk to 'LOW' if <25%, 'MODERATE' if 25-40%, 'HIGH' if >40%.\n\n"
             "Return a JSON array of exactly 5 objects:\n"
             "[\n"
             f'  {{"rank":1,"ticker":"MSFT","put_strike":380.0,"put_expiry":"{ex_expiry1}",'
-            '"put_premium":4.20,"iv_rank":52,"qual_score":88,"score":91,"grade":"A",'
+            '"put_premium":4.20,"iv_rank":52,"assignment_chance_pct":28,"assignment_risk":"MODERATE",'
+            '"qual_score":88,"score":91,"grade":"A",'
             '"explanation":"3-4 sentences citing trend, support level, and IV context"}}\n'
             "]\n\n"
             "Scoring rubric for qual_score and score (0-100):\n"
-            "- Technical trend strength (MA, Fib support quality): 35%\n"
+            "- Technical trend strength (MA, Fib support quality): 30%\n"
             "- IV rank / premium yield: 25%\n"
             "- Stock quality / willingness to own: 25%\n"
-            "- RSI and momentum safety: 15%\n"
+            "- Assignment risk (lower = better for conservative wheel): 10%\n"
+            "- RSI and momentum safety: 10%\n"
             "Grade: A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
         )
         raw = self._call(system, user)

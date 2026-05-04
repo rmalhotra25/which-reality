@@ -35,6 +35,8 @@ class WheelRecommendation(Base):
     # Entry details
     pct_otm = Column(Float, nullable=True)         # % OTM for the put strike
     breakeven = Column(Float, nullable=True)        # put_strike - put_premium
+    assignment_chance_pct = Column(Float, nullable=True)   # e.g. 30 → "30% chance you own shares"
+    assignment_risk = Column(String(10), nullable=True)    # LOW / MODERATE / HIGH
     run_at = Column(DateTime(timezone=True), nullable=False, index=True)
     accepted = Column(Boolean, default=False, nullable=False)
     accepted_at = Column(DateTime(timezone=True), nullable=True)

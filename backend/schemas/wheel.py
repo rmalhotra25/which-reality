@@ -21,6 +21,8 @@ class WheelRecommendationSchema(BaseModel):
     quant_components: Optional[str] = None
     pct_otm: Optional[float] = None
     breakeven: Optional[float] = None
+    assignment_chance_pct: Optional[float] = None
+    assignment_risk: Optional[str] = None
     run_at: datetime
     accepted: bool
     accepted_at: Optional[datetime] = None

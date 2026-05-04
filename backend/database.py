@@ -50,3 +50,27 @@ def get_db():
 def init_db():
     from models import recommendation, wheel, account, watchlist, champion  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _migrate_add_columns()
+
+
+def _migrate_add_columns():
+    """Safely add new columns to existing tables without dropping data."""
+    from sqlalchemy import text
+    additions = [
+        ("wheel_recommendations", "assignment_chance_pct", "FLOAT"),
+        ("wheel_recommendations", "assignment_risk",       "VARCHAR(10)"),
+    ]
+    with engine.connect() as conn:
+        for table, col, col_type in additions:
+            try:
+                if _is_postgres:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    ))
+                else:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                    ))
+                conn.commit()
+            except Exception:
+                conn.rollback()

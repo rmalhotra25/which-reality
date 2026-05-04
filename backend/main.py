@@ -14,6 +14,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _auto_run_if_empty() -> None:
+    """Run all analysis engines in a background thread if the DB has no data yet."""
+    import threading
+
+    def _run():
+        import time
+        time.sleep(3)  # let the app finish starting before hammering the DB
+        from database import SessionLocal
+        from models.recommendation import Recommendation
+        db = SessionLocal()
+        try:
+            count = db.query(Recommendation).count()
+            if count > 0:
+                logger.info("Auto-seed: DB already has %d recommendations — skipping", count)
+                return
+            logger.info("Auto-seed: database is empty — running initial analysis now")
+            from services.options_engine import OptionsEngine
+            from services.wheel_engine import WheelEngine
+            from services.longterm_engine import LongTermEngine
+            from services.champions_engine import run as run_champions
+            OptionsEngine(db).run()
+            WheelEngine(db).run()
+            LongTermEngine(db).run()
+            run_champions(db)
+            logger.info("Auto-seed: initial analysis complete")
+        except Exception as e:
+            logger.error("Auto-seed failed: %s", e, exc_info=True)
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from database import init_db
@@ -22,6 +55,7 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialised")
     scheduler = start_scheduler()
+    _auto_run_if_empty()
     yield
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")

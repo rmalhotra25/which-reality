@@ -50,7 +50,11 @@ def get_db():
 def init_db():
     from models import recommendation, wheel, account, watchlist, champion  # noqa: F401
     Base.metadata.create_all(bind=engine)
-    _migrate_add_columns()
+    try:
+        _migrate_add_columns()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Column migration skipped: %s", e)
 
 
 def _migrate_add_columns():

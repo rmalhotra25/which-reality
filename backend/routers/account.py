@@ -10,7 +10,6 @@ from models.wheel import WheelPosition, WheelStatus
 
 router = APIRouter(prefix="/api/account", tags=["Account"])
 
-DEFAULT_BALANCE = 25_000.0
 MAX_POSITION_PCT = 0.10  # never risk more than 10% on a single wheel trade
 
 
@@ -19,14 +18,13 @@ def _get_or_create(db: Session) -> AccountBalance:
     if row:
         return row
     try:
-        row = AccountBalance(id=1, balance=DEFAULT_BALANCE)
+        row = AccountBalance(id=1, balance=0.0)
         db.add(row)
         db.commit()
         db.refresh(row)
         return row
     except Exception:
         db.rollback()
-        # Another request may have inserted concurrently — fetch it
         row = db.query(AccountBalance).filter(AccountBalance.id == 1).first()
         if row:
             return row

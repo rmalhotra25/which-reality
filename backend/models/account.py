@@ -11,7 +11,7 @@ class AccountBalance(Base):
     __tablename__ = "account_balance"
 
     id = Column(Integer, primary_key=True, default=1)
-    balance = Column(Float, nullable=False, default=25000.0)
+    balance = Column(Float, nullable=False, default=0.0)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 

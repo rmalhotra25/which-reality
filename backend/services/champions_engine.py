@@ -46,19 +46,29 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
         return None
 
 
-def _screen_ticker(ticker: str) -> dict | None:
-    """Fetch candle data from Finnhub and apply basic filters. Returns dict or None."""
-    from services.finnhub_client import get_candles, get_quote, get_earnings_this_month
-
+def _get_closes_volumes(ticker: str) -> tuple[list, list]:
+    """OHLCV history: Finnhub candles first, yfinance per-ticker fallback."""
+    from services.finnhub_client import get_candles
     candles = get_candles(ticker, days=100)
-    if candles.get("s") != "ok" or not candles.get("c"):
-        logger.debug("Champions: no candle data for %s", ticker)
-        return None
+    if candles.get("s") == "ok" and candles.get("c"):
+        return candles["c"], candles.get("v", [])
+    # Finnhub free tier doesn't include candles — fall back to yfinance per-ticker
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="6mo")
+        if not hist.empty:
+            return hist["Close"].tolist(), hist["Volume"].tolist()
+    except Exception as e:
+        logger.debug("Champions yfinance fallback failed for %s: %s", ticker, e)
+    return [], []
 
-    closes = candles["c"]
-    volumes = candles.get("v", [])
 
-    if len(closes) < 20:
+def _screen_ticker(ticker: str) -> dict | None:
+    """Fetch price history and apply basic filters. Returns dict or None."""
+    from services.finnhub_client import get_earnings_this_month
+
+    closes, volumes = _get_closes_volumes(ticker)
+    if not closes or len(closes) < 20:
         return None
 
     price = float(closes[-1])
@@ -92,7 +102,7 @@ def _screen_ticker(ticker: str) -> dict | None:
 
 def prescreen() -> tuple[list[dict], str | None]:
     """
-    Calls Finnhub for each ticker (API-keyed, no IP blocking).
+    Screens each ticker: Finnhub candles (paid) or yfinance per-ticker (free fallback).
     Returns (survivors, error_message).
     """
     from config import settings

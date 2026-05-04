@@ -671,10 +671,10 @@ class StockDataService:
 
     def get_call_tiers(self, ticker: str) -> dict | None:
         """
-        Fetch weekly call options chain for covered call income strategy.
+        Fetch call options chain for covered call income strategy.
         Returns three tiers: aggressive (high premium, likely called away),
         balanced (moderate), conservative (keeps shares, lower premium).
-        Uses nearest weekly expiry (4–14 days). Falls back to next available expiry.
+        Prefers 4-30 DTE (weekly or monthly); falls back to nearest available.
         """
         if not _YF_AVAILABLE:
             return None
@@ -682,32 +682,61 @@ class StockDataService:
             t = yf.Ticker(ticker)
             expiries = t.options
             if not expiries:
+                logger.warning("get_call_tiers: no options expiries for %s", ticker)
                 return None
 
             today = date.today()
-            # Prefer weekly (4-14 DTE); fall back to nearest available
+            # Prefer 4-30 DTE to catch both weeklies and monthlies (e.g. SCHD)
             target_expiry = None
             for exp in expiries:
                 days = (date.fromisoformat(exp) - today).days
-                if 4 <= days <= 14:
+                if 4 <= days <= 30:
                     target_expiry = exp
                     break
+            # Fallback: any future expiry up to 60 days
+            if not target_expiry:
+                for exp in expiries:
+                    days = (date.fromisoformat(exp) - today).days
+                    if 1 <= days <= 60:
+                        target_expiry = exp
+                        break
+            # Last resort: nearest available
             if not target_expiry:
                 for exp in expiries:
                     if (date.fromisoformat(exp) - today).days >= 1:
                         target_expiry = exp
                         break
             if not target_expiry:
+                logger.warning("get_call_tiers: no suitable expiry for %s (expiries=%s)", ticker, expiries[:5])
                 return None
 
-            info = t.fast_info
-            price = getattr(info, "last_price", None)
+            # Price: try fast_info first, then Finnhub, then t.info
+            price = None
+            try:
+                price = getattr(t.fast_info, "last_price", None)
+            except Exception:
+                pass
             if not price:
+                try:
+                    from services.finnhub_client import get_quote
+                    q = get_quote(ticker)
+                    price = float(q.get("c") or q.get("pc") or 0) or None
+                except Exception:
+                    pass
+            if not price:
+                try:
+                    info_dict = t.info
+                    price = info_dict.get("regularMarketPrice") or info_dict.get("previousClose")
+                except Exception:
+                    pass
+            if not price:
+                logger.warning("get_call_tiers: could not get price for %s", ticker)
                 return None
 
             chain = t.option_chain(target_expiry)
             calls = chain.calls.copy()
             if calls.empty:
+                logger.warning("get_call_tiers: empty calls chain for %s exp=%s", ticker, target_expiry)
                 return None
 
             exp_date = date.fromisoformat(target_expiry)
@@ -716,27 +745,32 @@ class StockDataService:
 
             calls["_mid"] = calls.apply(
                 lambda r: round((float(r["bid"]) + float(r["ask"])) / 2, 2)
-                          if float(r["bid"]) > 0
+                          if float(r.get("bid", 0) or 0) > 0
                           else float(r.get("lastPrice", 0) or 0),
                 axis=1,
             )
-            calls["_is_live"] = calls["bid"] > 0
-            calls = calls[calls["_mid"] > 0].copy()
+            calls["_is_live"] = calls.get("bid", 0) > 0
+            # Keep rows that have either a mid price OR valid IV (so we can still compute delta)
+            calls_with_mid = calls[calls["_mid"] > 0].copy()
+            calls_with_iv = calls[calls.get("impliedVolatility", pd.Series(dtype=float)) > 0].copy()
+            calls = calls_with_mid if not calls_with_mid.empty else calls_with_iv
             if calls.empty:
+                logger.warning("get_call_tiers: no usable premium data for %s exp=%s", ticker, target_expiry)
                 return None
 
             data_source = "live" if calls["_is_live"].any() else "last_trade"
 
             calls["_delta"] = calls.apply(
-                lambda r: _bs_call_delta(price, r["strike"], float(r["impliedVolatility"]), T),
+                lambda r: _bs_call_delta(price, r["strike"], float(r.get("impliedVolatility") or 0), T),
                 axis=1,
             )
             calls["_theta_daily"] = calls.apply(
-                lambda r: _bs_call_theta_daily(price, r["strike"], float(r["impliedVolatility"]), T),
+                lambda r: _bs_call_theta_daily(price, r["strike"], float(r.get("impliedVolatility") or 0), T),
                 axis=1,
             )
             calls = calls[calls["_delta"].notna()].copy()
             if calls.empty:
+                logger.warning("get_call_tiers: no valid delta computed for %s", ticker)
                 return None
 
             atm_idx = (calls["strike"] - price).abs().idxmin()

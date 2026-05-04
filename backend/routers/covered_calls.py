@@ -43,9 +43,10 @@ def analyze_covered_calls(req: CoveredCallRequest):
         raise HTTPException(
             status_code=503,
             detail=(
-                f"No weekly options chain found for {ticker}. "
-                "Markets may be closed, or this ticker has no listed options. "
-                "Try again during trading hours."
+                f"Could not fetch options data for {ticker}. "
+                "Possible reasons: this ETF/stock has no listed options, "
+                "yfinance is temporarily rate-limited, or all near-term strikes have zero volume. "
+                "Try a different ticker or wait a few minutes and try again."
             ),
         )
 

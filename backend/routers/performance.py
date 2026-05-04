@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models.wheel import WheelPosition
+from models.wheel import WheelPosition, WheelStatus
 
 router = APIRouter(prefix="/api/performance", tags=["Performance"])
 
@@ -11,8 +11,8 @@ router = APIRouter(prefix="/api/performance", tags=["Performance"])
 def get_summary(db: Session = Depends(get_db)):
     positions = db.query(WheelPosition).all()
 
-    closed = [p for p in positions if p.status == "closed" and p.total_pnl is not None]
-    active = [p for p in positions if p.status != "closed"]
+    closed = [p for p in positions if p.status == WheelStatus.closed and p.total_pnl is not None]
+    active = [p for p in positions if p.status != WheelStatus.closed]
 
     total_trades = len(closed)
     wins = [p for p in closed if p.total_pnl > 0]

@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -80,7 +80,7 @@ def score_ticker(ticker: str, db: Session = Depends(get_db)):
         item.score_summary = result.get("summary")
         item.earnings_date = result.get("earnings_date")
         item.earnings_warning = result.get("earnings_warning")
-        item.last_scored = datetime.utcnow()
+        item.last_scored = datetime.now(timezone.utc)
 
         db.commit()
         db.refresh(item)

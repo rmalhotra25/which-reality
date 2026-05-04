@@ -6,7 +6,7 @@ Champions Engine — daily market-open scan.
 3. Stores three champion records (wheel / options / longterm) in the DB.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -157,7 +157,7 @@ def run(db) -> tuple[bool, str | None]:
     if not champions or len(champions) < 2:
         return False, "AI returned incomplete results — try again."
 
-    run_at = datetime.utcnow()
+    run_at = datetime.now(timezone.utc)
     db.query(Champion).delete()
     for strategy, data in champions.items():
         if not data or not data.get("ticker"):

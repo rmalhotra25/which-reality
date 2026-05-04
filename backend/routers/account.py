@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models.account import AccountBalance, AccountTransaction
-from models.wheel import WheelPosition
+from models.wheel import WheelPosition, WheelStatus
 
 router = APIRouter(prefix="/api/account", tags=["Account"])
 
@@ -31,7 +31,7 @@ def _capital_at_risk(db: Session) -> float:
     """
     positions = (
         db.query(WheelPosition)
-        .filter(WheelPosition.status != "closed")
+        .filter(WheelPosition.status != WheelStatus.closed)
         .all()
     )
     total = 0.0
@@ -68,7 +68,7 @@ class DepositBody(BaseModel):
 def deposit(body: DepositBody, db: Session = Depends(get_db)):
     row = _get_or_create(db)
     row.balance = round(row.balance + body.amount, 2)
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(timezone.utc)
 
     txn = AccountTransaction(amount=body.amount, note=body.note or None)
     db.add(txn)
@@ -97,7 +97,7 @@ def set_balance(body: SetBalanceBody, db: Session = Depends(get_db)):
     row = _get_or_create(db)
     diff = round(body.balance - row.balance, 2)
     row.balance = round(body.balance, 2)
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(timezone.utc)
 
     txn = AccountTransaction(amount=diff, note=body.note)
     db.add(txn)

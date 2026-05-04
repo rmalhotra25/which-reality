@@ -226,7 +226,7 @@ def export_positions(db: Session = Depends(get_db)):
             "notes": pos.notes,
             "history": history,
         })
-    return {"exported_at": __import__("datetime").datetime.utcnow().isoformat() + "Z", "positions": result}
+    return {"exported_at": datetime.now(timezone.utc).isoformat(), "positions": result}
 
 
 @router.post("/positions/{pos_id}/call-suggestion/refresh")

@@ -682,6 +682,91 @@ class ClaudeAnalyst:
         return self._parse(raw)
 
     # ------------------------------------------------------------------
+    # Covered calls — weekly income from 100 shares already owned
+    # ------------------------------------------------------------------
+    def suggest_covered_calls(
+        self,
+        ticker: str,
+        current_price: float,
+        call_tiers: dict,
+        cost_basis: float | None = None,
+    ) -> dict:
+        system = (
+            "You are a friendly options income coach helping an everyday investor generate "
+            "weekly income from 100 shares they already own. Explain everything in plain, "
+            "simple English — no jargon, no confusing finance terms. "
+            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
+        )
+
+        def _fmt_tier(t: dict | None, label: str) -> str:
+            if not t:
+                return f"  {label}: No suitable option found\n"
+            below = " [THIN MARKET — premium below 0.3%/week]" if t.get("below_threshold") else ""
+            profit_str = ""
+            if cost_basis and t["strike"] > cost_basis:
+                total = round((t["strike"] - cost_basis + t["mid_premium"]) * 100, 2)
+                profit_str = f" | Total profit if called away: ${total}/contract"
+            return (
+                f"  {label}:{below}\n"
+                f"    Strike=${t['strike']} | Expiry={t['expiry']} ({t['dte']} days)\n"
+                f"    Bid=${t['bid']} / Ask=${t['ask']} | Mid=${t['mid_premium']} "
+                f"(collect ${t['premium_per_contract']} for 100 shares){profit_str}\n"
+                f"    Call-away chance ~{t['call_away_chance_pct']}% | "
+                f"Premium = {t['pct_of_stock_weekly']}% of stock price this week\n"
+                f"    Stock must stay below ${t['strike']} for you to keep shares "
+                f"({t['upside_to_strike_pct']}% upside room)\n"
+                f"    Volume={t['volume']} | Open Interest={t['open_interest']}\n"
+            )
+
+        data_src = call_tiers.get("data_source", "last_trade")
+        src_note = "live bid/ask" if data_src == "live" else "last-trade prices (markets closed)"
+        cost_str = (
+            f"${cost_basis:.2f}/share (${cost_basis * 100:.0f} total cost basis for 100 shares)"
+            if cost_basis else "not provided"
+        )
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        tiers_str = (
+            f"WEEKLY CALL OPTIONS ({src_note}):\n"
+            f"Current price: ${current_price} | ATM IV: {call_tiers.get('atm_iv_pct', '?')}%\n"
+            f"Cost basis: {cost_str}\n\n"
+            + _fmt_tier(call_tiers.get("aggressive"),   "TIER 1 — AGGRESSIVE (~70% call-away chance, highest premium)")
+            + _fmt_tier(call_tiers.get("balanced"),     "TIER 2 — BALANCED (~45% call-away chance, good premium)")
+            + _fmt_tier(call_tiers.get("conservative"), "TIER 3 — CONSERVATIVE (~20% call-away chance, lower premium)")
+        )
+
+        user = (
+            f"Today: {today_str}\n"
+            f"I own 100 shares of {ticker} at ${current_price} and want to sell a weekly covered "
+            f"call to generate income. Give me plain-English explanations of my three options.\n\n"
+            f"{tiers_str}\n"
+            "For each tier explain in simple terms:\n"
+            "- Exactly how much I collect upfront (dollars for 100 shares)\n"
+            "- How likely my shares get called away, and what that means\n"
+            "- What happens if the stock rallies past my strike\n"
+            "- Who this option is best for\n\n"
+            'Return JSON with exactly this structure:\n'
+            '{"iv_environment": "1 sentence: are premiums rich or thin this week and what that means for me",'
+            '"tiers": ['
+            '{"tier": "aggressive",'
+            '"strike": 95.0,'
+            '"expiry": "2026-05-09",'
+            '"dte": 7,'
+            '"premium_per_contract": 180.0,'
+            '"call_away_chance_pct": 70,'
+            '"premium_plain": "You collect $180 upfront for agreeing to sell your 100 shares at $95",'
+            '"callaway_plain": "About a 70-in-100 chance your shares get called away at $95 by Friday",'
+            '"if_called_plain": "If called away: you sell at $95 and keep the $180 premium — total income of $X",'
+            '"if_not_called_plain": "If the stock stays below $95: you keep your shares and the $180 is yours to keep",'
+            '"best_for": "Investors who want maximum income now and are OK selling at $95",'
+            '"thin_market_note": null},'
+            '{"tier": "balanced", ...},'
+            '{"tier": "conservative", ...}]}'
+        )
+        raw = self._call(system, user, max_tokens=1400)
+        return self._parse(raw)
+
+    # ------------------------------------------------------------------
     # Champions — one batched call to pick best stock per strategy
     # ------------------------------------------------------------------
     def pick_champions(self, survivors: list[dict]) -> dict:

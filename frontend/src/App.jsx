@@ -7,10 +7,12 @@ import LongTermTab from './tabs/LongTermTab'
 import StockLookupTab from './tabs/StockLookupTab'
 import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
+import CoveredCallsTab from './tabs/CoveredCallsTab'
 
 const TABS = [
   { id: 'options', label: '📈 Options Trading' },
   { id: 'wheel', label: '🔄 Wheel Strategy' },
+  { id: 'coveredcalls', label: '💰 Covered Calls' },
   { id: 'longterm', label: '🌱 Growth & Income' },
   { id: 'lookup', label: '🔍 Stock Lookup' },
   { id: 'watchlist', label: '👁 Watchlist' },
@@ -75,6 +77,7 @@ export default function App() {
         <main style={styles.content}>
           {activeTab === 'options' && <OptionsTab />}
           {activeTab === 'wheel' && <WheelTab />}
+          {activeTab === 'coveredcalls' && <CoveredCallsTab />}
           {activeTab === 'longterm' && <LongTermTab />}
           {activeTab === 'lookup' && <StockLookupTab />}
           {activeTab === 'watchlist' && <WatchlistTab />}

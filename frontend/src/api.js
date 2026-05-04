@@ -66,5 +66,12 @@ export const api = {
     get: () => request('/api/champions'),
     refresh: () => request('/api/champions/refresh', { method: 'POST' }),
   },
+  coveredCalls: {
+    analyze: (ticker, costBasis = null) =>
+      request('/api/covered-calls/analyze', {
+        method: 'POST',
+        body: { ticker, cost_basis: costBasis },
+      }),
+  },
   getStatus: () => request('/api/status'),
 }

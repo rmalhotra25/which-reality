@@ -233,6 +233,36 @@ def _ncdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def _bs_call_delta(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
+    """Call delta via Black-Scholes. Returns value 0–1 (probability shares get called away)."""
+    try:
+        if T <= 0 or iv <= 0 or price <= 0 or strike <= 0:
+            return None
+        sigma_sqrtT = iv * math.sqrt(T)
+        d1 = (math.log(price / strike) + (r + 0.5 * iv ** 2) * T) / sigma_sqrtT
+        return round(_ncdf(d1), 3)
+    except Exception:
+        return None
+
+
+def _bs_call_theta_daily(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
+    """Daily income per share earned by the call SELLER from time decay. Positive = good."""
+    try:
+        if T <= 0 or iv <= 0 or price <= 0 or strike <= 0:
+            return None
+        sigma_sqrtT = iv * math.sqrt(T)
+        d1 = (math.log(price / strike) + (r + 0.5 * iv ** 2) * T) / sigma_sqrtT
+        d2 = d1 - sigma_sqrtT
+        npdf_d1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
+        theta_annual = (
+            -(price * npdf_d1 * iv) / (2 * math.sqrt(T))
+            - r * strike * math.exp(-r * T) * _ncdf(d2)
+        )
+        return round(-theta_annual / 365.0, 4)
+    except Exception:
+        return None
+
+
 def _bs_put_delta(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
     """Put delta via Black-Scholes. iv is annual vol as fraction (0.28 = 28%)."""
     try:
@@ -637,6 +667,133 @@ class StockDataService:
             }
         except Exception as e:
             logger.warning("get_put_tiers failed for %s: %s", ticker, e)
+            return None
+
+    def get_call_tiers(self, ticker: str) -> dict | None:
+        """
+        Fetch weekly call options chain for covered call income strategy.
+        Returns three tiers: aggressive (high premium, likely called away),
+        balanced (moderate), conservative (keeps shares, lower premium).
+        Uses nearest weekly expiry (4–14 days). Falls back to next available expiry.
+        """
+        if not _YF_AVAILABLE:
+            return None
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return None
+
+            today = date.today()
+            # Prefer weekly (4-14 DTE); fall back to nearest available
+            target_expiry = None
+            for exp in expiries:
+                days = (date.fromisoformat(exp) - today).days
+                if 4 <= days <= 14:
+                    target_expiry = exp
+                    break
+            if not target_expiry:
+                for exp in expiries:
+                    if (date.fromisoformat(exp) - today).days >= 1:
+                        target_expiry = exp
+                        break
+            if not target_expiry:
+                return None
+
+            info = t.fast_info
+            price = getattr(info, "last_price", None)
+            if not price:
+                return None
+
+            chain = t.option_chain(target_expiry)
+            calls = chain.calls.copy()
+            if calls.empty:
+                return None
+
+            exp_date = date.fromisoformat(target_expiry)
+            T = max((exp_date - today).days, 1) / 365.0
+            dte = (exp_date - today).days
+
+            calls["_mid"] = calls.apply(
+                lambda r: round((float(r["bid"]) + float(r["ask"])) / 2, 2)
+                          if float(r["bid"]) > 0
+                          else float(r.get("lastPrice", 0) or 0),
+                axis=1,
+            )
+            calls["_is_live"] = calls["bid"] > 0
+            calls = calls[calls["_mid"] > 0].copy()
+            if calls.empty:
+                return None
+
+            data_source = "live" if calls["_is_live"].any() else "last_trade"
+
+            calls["_delta"] = calls.apply(
+                lambda r: _bs_call_delta(price, r["strike"], float(r["impliedVolatility"]), T),
+                axis=1,
+            )
+            calls["_theta_daily"] = calls.apply(
+                lambda r: _bs_call_theta_daily(price, r["strike"], float(r["impliedVolatility"]), T),
+                axis=1,
+            )
+            calls = calls[calls["_delta"].notna()].copy()
+            if calls.empty:
+                return None
+
+            atm_idx = (calls["strike"] - price).abs().idxmin()
+            atm_row = calls.loc[atm_idx]
+            atm_iv_pct = round(float(atm_row["impliedVolatility"]) * 100, 1)
+
+            # 0.3% of stock price per week — threshold for "meaningful" premium
+            weeks = dte / 7.0
+            min_premium = round(price * 0.003 * weeks, 2)
+
+            def _best_near_delta(target: float) -> dict | None:
+                if calls.empty:
+                    return None
+                idx = (calls["_delta"] - target).abs().idxmin()
+                row = calls.loc[idx]
+                mid = float(row["_mid"])
+                bid = float(row["bid"]) if float(row["bid"]) > 0 else mid
+                ask = float(row["ask"]) if float(row["ask"]) > 0 else mid
+                strike = float(row["strike"])
+                iv_pct = round(float(row["impliedVolatility"]) * 100, 1)
+                delta = round(float(row["_delta"]), 2)
+                theta = row["_theta_daily"]
+                daily_per_contract = round(float(theta) * 100, 2) if theta else None
+                upside_pct = round((strike - price) / price * 100, 1)
+                pct_of_stock = round(mid / price * 100, 2)
+                return {
+                    "strike": strike,
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "bid": bid,
+                    "ask": ask,
+                    "mid_premium": mid,
+                    "premium_per_contract": round(mid * 100, 2),
+                    "iv_pct": iv_pct,
+                    "delta": delta,
+                    "call_away_chance_pct": round(delta * 100),
+                    "daily_income_per_contract": daily_per_contract,
+                    "upside_to_strike_pct": upside_pct,
+                    "pct_of_stock_weekly": pct_of_stock,
+                    "below_threshold": mid < min_premium,
+                    "volume": int(row.get("volume", 0) or 0),
+                    "open_interest": int(row.get("openInterest", 0) or 0),
+                }
+
+            return {
+                "current_price": round(price, 2),
+                "expiry": target_expiry,
+                "dte": dte,
+                "atm_iv_pct": atm_iv_pct,
+                "data_source": data_source,
+                "min_premium_threshold": min_premium,
+                "aggressive": _best_near_delta(0.70),
+                "balanced": _best_near_delta(0.45),
+                "conservative": _best_near_delta(0.20),
+            }
+        except Exception as e:
+            logger.warning("get_call_tiers failed for %s: %s", ticker, e)
             return None
 
     def get_chain_context(self, tickers: list[str]) -> dict:

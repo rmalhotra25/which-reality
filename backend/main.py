@@ -77,11 +77,12 @@ app.add_middleware(
 )
 
 from routers import options, wheel, longterm, lookup  # noqa: E402
-from routers import market, account, performance, watchlist, champions  # noqa: E402
+from routers import market, account, performance, watchlist, champions, covered_calls  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
 app.include_router(longterm.router, prefix="/api/longterm", tags=["Long-Term"])
+app.include_router(covered_calls.router)
 app.include_router(lookup.router)
 app.include_router(market.router)
 app.include_router(account.router)

@@ -23,6 +23,8 @@ UNIVERSE = [
     "ABBV", "LLY", "TMO", "AVGO", "NOW", "ADBE", "QCOM", "TXN", "BMY", "MO",
     # High-volume mid-caps
     "F", "GM", "UBER", "NKE", "SNAP", "SOFI", "COIN", "RIVN", "HOOD", "LYFT",
+    # ETFs with liquid options and meaningful IV for wheel/covered-call strategies
+    "QQQ", "SCHD", "GLD", "SLV", "IWM", "XLE", "EWZ",
 ]
 
 MIN_PRICE = 3.0

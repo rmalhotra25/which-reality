@@ -34,6 +34,8 @@ export const api = {
     customAnalyze: (ticker) =>
       request('/api/wheel/custom-analyze', { method: 'POST', body: { ticker } }),
     exportPositions: () => request('/api/wheel/positions/export'),
+    getRollAlert: (id) => request(`/api/wheel/positions/${id}/roll-alert`),
+    getRollSuggestion: (id) => request(`/api/wheel/positions/${id}/roll-suggestion`, { method: 'POST' }),
   },
   longterm: {
     getRecommendations: () => request('/api/longterm/recommendations'),

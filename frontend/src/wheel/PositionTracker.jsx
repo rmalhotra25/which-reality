@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api'
 
 const STATUS_CONFIG = {
@@ -50,6 +50,20 @@ const s = {
   suggTitle: { color: '#63b3ed', fontWeight: 600, marginBottom: '6px', fontSize: '13px' },
   error: { color: '#fc8181', fontSize: '12px' },
   history: { fontSize: '11px', color: '#4a5568', marginTop: '4px' },
+  rollWarning: {
+    display: 'flex', alignItems: 'flex-start', gap: '10px',
+    padding: '12px 14px', borderRadius: '8px',
+    background: '#3a3000', border: '1px solid #b7791f',
+  },
+  rollDanger: {
+    display: 'flex', alignItems: 'flex-start', gap: '10px',
+    padding: '12px 14px', borderRadius: '8px',
+    background: '#3a1a1a', border: '1px solid #c53030',
+  },
+  rollSuggestionBox: {
+    background: '#1a1f2e', border: '1px solid #553c9a', borderRadius: '8px',
+    padding: '14px', fontSize: '13px', color: '#e2e8f0', lineHeight: 1.7,
+  },
 }
 
 function fmt(val, pre = '$') {
@@ -63,6 +77,17 @@ export default function PositionTracker({ position: initialPos, onUpdated }) {
   const [error, setError] = useState(null)
   const [suggestion, setSuggestion] = useState(null)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
+  const [rollAlert, setRollAlert] = useState(null)
+  const [rollSuggestion, setRollSuggestion] = useState(null)
+  const [loadingRoll, setLoadingRoll] = useState(false)
+
+  useEffect(() => {
+    if (pos.status === 'put_active') {
+      api.wheel.getRollAlert(pos.id)
+        .then(data => { if (data.alert_level !== 'none') setRollAlert(data) })
+        .catch(() => {})
+    }
+  }, [pos.id, pos.status])
   // Inline inputs for call details
   const [callStrike, setCallStrike] = useState('')
   const [callExpiry, setCallExpiry] = useState('')
@@ -129,6 +154,88 @@ export default function PositionTracker({ position: initialPos, onUpdated }) {
           )}
         </div>
       </div>
+
+      {/* Roll Alert — only for put_active when stock is near the strike */}
+      {rollAlert && rollAlert.alert_level !== 'none' && (
+        <div style={rollAlert.alert_level === 'danger' ? s.rollDanger : s.rollWarning}>
+          <span style={{ fontSize: '22px', lineHeight: 1 }}>
+            {rollAlert.alert_level === 'danger' ? '🔴' : '🟡'}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{
+              fontWeight: 700, fontSize: '13px', marginBottom: '4px',
+              color: rollAlert.alert_level === 'danger' ? '#fc8181' : '#f6e05e',
+            }}>
+              {rollAlert.alert_level === 'danger' ? 'CONSIDER ROLLING — HIGH RISK' : 'HEADS UP — GETTING CLOSE'}
+            </div>
+            <div style={{ fontSize: '12px', color: '#e2e8f0', marginBottom: '10px' }}>
+              {rollAlert.message}
+            </div>
+
+            {!rollSuggestion ? (
+              <button
+                style={{ ...s.btn('#553c9a'), fontSize: '12px' }}
+                onClick={async () => {
+                  setLoadingRoll(true)
+                  try {
+                    const data = await api.wheel.getRollSuggestion(pos.id)
+                    setRollSuggestion(data)
+                  } catch (e) {
+                    setError('Roll suggestion failed: ' + e.message)
+                  } finally {
+                    setLoadingRoll(false)
+                  }
+                }}
+                disabled={loadingRoll}
+              >
+                {loadingRoll ? '⏳ Analyzing roll options...' : '🤖 Get Roll Recommendation'}
+              </button>
+            ) : (
+              <div style={s.rollSuggestionBox}>
+                <div style={{ fontWeight: 700, color: '#b794f4', marginBottom: '8px', fontSize: '13px' }}>
+                  {rollSuggestion.should_roll ? '📋 Recommended Roll' : '✋ Hold For Now'}
+                </div>
+                {rollSuggestion.should_roll && rollSuggestion.action_plain && (
+                  <div style={{ fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>
+                    {rollSuggestion.action_plain}
+                  </div>
+                )}
+                {rollSuggestion.new_strike && (
+                  <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '12px', color: '#a0aec0' }}>
+                      New strike: <strong style={{ color: '#fc8181' }}>${rollSuggestion.new_strike}</strong>
+                    </span>
+                    {rollSuggestion.new_expiry && (
+                      <span style={{ fontSize: '12px', color: '#a0aec0' }}>
+                        New expiry: <strong style={{ color: '#e2e8f0' }}>{rollSuggestion.new_expiry}</strong>
+                      </span>
+                    )}
+                    {rollSuggestion.net_description && (
+                      <span style={{ fontSize: '12px', color: '#68d391' }}>
+                        {rollSuggestion.net_description}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <p style={{ fontSize: '12px', color: '#a0aec0', margin: '6px 0 4px' }}>
+                  {rollSuggestion.rationale}
+                </p>
+                {rollSuggestion.if_no_action && (
+                  <p style={{ fontSize: '11px', color: '#718096', margin: '4px 0 0', fontStyle: 'italic' }}>
+                    If you do nothing: {rollSuggestion.if_no_action}
+                  </p>
+                )}
+                <button
+                  style={{ ...s.btn('#4a5568'), fontSize: '11px', marginTop: '10px' }}
+                  onClick={() => setRollSuggestion(null)}
+                >
+                  ↻ Refresh
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Assignment details */}
       {(pos.status === 'assigned' || pos.status === 'call_active' || pos.status === 'closed') && (

@@ -299,6 +299,108 @@ def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
+@router.get("/positions/{pos_id}/roll-alert")
+def get_roll_alert(pos_id: int, db: Session = Depends(get_db)):
+    """
+    Check if the stock has dropped close to the put strike.
+    Uses Finnhub for price (reliable). Only relevant for put_active positions.
+    """
+    pos = db.get(WheelPosition, pos_id)
+    if not pos:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if pos.status != WheelStatus.put_active:
+        return {"alert_level": "none", "current_price": None, "pct_from_strike": None}
+
+    from services.finnhub_client import get_quote
+    q = get_quote(pos.ticker)
+    current_price = q.get("c") or q.get("pc")  # current or prev close
+    if not current_price:
+        return {"alert_level": "none", "current_price": None, "pct_from_strike": None,
+                "message": "Price unavailable"}
+
+    current_price = float(current_price)
+    pct_from_strike = round((current_price - pos.put_strike) / pos.put_strike * 100, 1)
+
+    if pct_from_strike > 5:
+        level = "none"
+        message = None
+    elif pct_from_strike > 2:
+        level = "warning"
+        message = (
+            f"{pos.ticker} is ${round(current_price,2)} — only {pct_from_strike}% above your "
+            f"${pos.put_strike} strike. Getting close — worth monitoring."
+        )
+    else:
+        level = "danger"
+        if pct_from_strike <= 0:
+            message = (
+                f"⚠ {pos.ticker} is ${round(current_price,2)} — below your ${pos.put_strike} strike. "
+                "Assignment is likely. Consider rolling to avoid owning shares at a loss."
+            )
+        else:
+            message = (
+                f"⚠ {pos.ticker} is ${round(current_price,2)} — only {pct_from_strike}% above your "
+                f"${pos.put_strike} strike. High assignment risk. Consider rolling now."
+            )
+
+    return {
+        "alert_level": level,
+        "current_price": current_price,
+        "put_strike": pos.put_strike,
+        "pct_from_strike": pct_from_strike,
+        "message": message,
+    }
+
+
+@router.post("/positions/{pos_id}/roll-suggestion")
+def get_roll_suggestion(pos_id: int, db: Session = Depends(get_db)):
+    """
+    Generate a specific roll recommendation using current options chain + Claude.
+    Uses yfinance for options chain (no free Finnhub alternative).
+    """
+    pos = db.get(WheelPosition, pos_id)
+    if not pos:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if pos.status != WheelStatus.put_active:
+        raise HTTPException(status_code=400, detail="Roll suggestions only apply to put_active positions")
+
+    from services.finnhub_client import get_quote
+    from services.stock_data import StockDataService
+    from services.claude_analyst import ClaudeAnalyst
+
+    # Current price via Finnhub
+    q = get_quote(pos.ticker)
+    current_price = float(q.get("c") or q.get("pc") or 0)
+    if not current_price:
+        raise HTTPException(status_code=503, detail="Could not fetch current price")
+
+    # Options chain via yfinance
+    stock_data = StockDataService()
+    put_tiers = stock_data.get_put_tiers(pos.ticker)
+    if not put_tiers:
+        raise HTTPException(
+            status_code=503,
+            detail="Options chain unavailable. Markets may be closed — try again during trading hours."
+        )
+
+    analyst = ClaudeAnalyst()
+    try:
+        result = analyst.suggest_roll(
+            ticker=pos.ticker,
+            current_price=current_price,
+            put_strike=pos.put_strike,
+            put_expiry=pos.put_expiry,
+            premium_received=pos.put_premium_rcvd,
+            put_tiers=put_tiers,
+        )
+        result["current_price"] = current_price
+        result["data_source"] = put_tiers.get("data_source", "last_trade")
+        return result
+    except Exception as e:
+        logger.error("Roll suggestion failed for pos %d: %s", pos_id, e)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+
+
 @router.post("/refresh")
 def refresh_wheel():
     def _run():

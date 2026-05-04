@@ -614,6 +614,68 @@ class ClaudeAnalyst:
         return result
 
     # ------------------------------------------------------------------
+    # Roll suggestion for put_active wheel positions
+    # ------------------------------------------------------------------
+    def suggest_roll(
+        self,
+        ticker: str,
+        current_price: float,
+        put_strike: float,
+        put_expiry: str,
+        premium_received: float | None,
+        put_tiers: dict,
+    ) -> dict:
+        pct_from_strike = round((current_price - put_strike) / put_strike * 100, 1)
+        premium_str = f"${premium_received:.2f}/share (${premium_received*100:.0f}/contract)" if premium_received else "unknown"
+
+        def _fmt_tier(t: dict | None, label: str) -> str:
+            if not t:
+                return f"  {label}: not available\n"
+            net = round(t["mid_premium"] - (premium_received or 0), 2) if premium_received else None
+            net_str = f" | net credit vs current: ${net:.2f}" if net and net > 0 else (f" | net debit: ${abs(net):.2f}" if net else "")
+            return (
+                f"  {label}: Strike=${t['strike']} Expiry={t['expiry']} ({t['dte']} DTE)\n"
+                f"    Premium mid=${t['mid_premium']} (collect ${t['premium_per_contract']}/contract){net_str}\n"
+                f"    Assignment chance ~{t['assignment_chance_pct']}% | Breakeven=${t['breakeven']}\n"
+            )
+
+        tiers_str = (
+            f"Available puts to roll into (current price ${current_price}):\n"
+            + _fmt_tier(put_tiers.get("likely"),   "Higher premium (~45% assignment chance)")
+            + _fmt_tier(put_tiers.get("moderate"), "Balanced (~30% assignment chance)")
+            + _fmt_tier(put_tiers.get("unlikely"), "Conservative (~16% assignment chance)")
+        )
+
+        system = (
+            "You are a friendly options income coach helping an everyday investor manage a Wheel Strategy position. "
+            "Explain everything in plain English — no jargon. "
+            "Respond ONLY with a valid JSON object — no prose, no markdown."
+        )
+        user = (
+            f"My open position: I sold a ${put_strike} put on {ticker} expiring {put_expiry}. "
+            f"I collected {premium_str} in premium.\n"
+            f"Today {ticker} is trading at ${current_price} — that's {pct_from_strike}% above my strike.\n\n"
+            f"{tiers_str}\n"
+            "Should I roll this put? If yes, tell me exactly what to do in plain English.\n"
+            "A roll means: buy back my current put (to close it), then sell a new put at a lower strike "
+            "and/or later expiry to collect more premium and give myself more breathing room.\n\n"
+            "Return JSON with these fields:\n"
+            '{"should_roll": true,'
+            '"urgency": "low|medium|high",'
+            '"action_plain": "One clear sentence: exactly what to do (e.g. Roll your $190 put down to $185, '
+            'push the expiry to May 16)",'
+            '"new_strike": 185.0,'
+            '"new_expiry": "2026-05-16",'
+            '"estimated_net": 0.45,'
+            '"net_description": "Plain English: e.g. You collect an extra $45 per contract by rolling",'
+            '"rationale": "2-3 sentences in plain English explaining why this roll makes sense right now — '
+            'what risk it reduces and what it costs you.",'
+            '"if_no_action": "1 sentence: what happens if you do nothing"}'
+        )
+        raw = self._call(system, user, max_tokens=600)
+        return self._parse(raw)
+
+    # ------------------------------------------------------------------
     # Champions — one batched call to pick best stock per strategy
     # ------------------------------------------------------------------
     def pick_champions(self, survivors: list[dict]) -> dict:

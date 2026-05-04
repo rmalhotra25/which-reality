@@ -48,13 +48,19 @@ def get_db():
 
 
 def init_db():
+    import logging
+    _log = logging.getLogger(__name__)
+    if _is_postgres:
+        _log.info("DATABASE: connected to PostgreSQL (Neon) — data is persistent ✓")
+    else:
+        _log.warning("DATABASE: using SQLite at %s — data will be lost on redeploy! Set DATABASE_URL to fix this.", _url)
+
     from models import recommendation, wheel, account, watchlist, champion  # noqa: F401
     Base.metadata.create_all(bind=engine)
     try:
         _migrate_add_columns()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("Column migration skipped: %s", e)
+        _log.warning("Column migration skipped: %s", e)
 
 
 def _migrate_add_columns():

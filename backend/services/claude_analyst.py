@@ -13,14 +13,20 @@ MODEL = "claude-sonnet-4-6"
 
 
 def _clean_json(text: str) -> str:
-    """Extract the outermost JSON object or array from the response."""
+    """Extract the outermost JSON object or array, whichever comes first."""
     text = re.sub(r"```(?:json)?|```", "", text).strip()
-    # Find outermost { } or [ ] so trailing prose doesn't break json.loads
-    for start_ch, end_ch in [('{', '}'), ('[', ']')]:
-        start = text.find(start_ch)
-        end = text.rfind(end_ch)
-        if start != -1 and end > start:
-            return text[start:end + 1]
+    obj = text.find('{')
+    arr = text.find('[')
+    # Pick whichever opening bracket appears first
+    if obj == -1 and arr == -1:
+        return text
+    if obj == -1 or (arr != -1 and arr < obj):
+        start, end_ch = arr, ']'
+    else:
+        start, end_ch = obj, '}'
+    end = text.rfind(end_ch)
+    if end > start:
+        return text[start:end + 1]
     return text
 
 

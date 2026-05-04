@@ -16,12 +16,21 @@ MAX_POSITION_PCT = 0.10  # never risk more than 10% on a single wheel trade
 
 def _get_or_create(db: Session) -> AccountBalance:
     row = db.query(AccountBalance).filter(AccountBalance.id == 1).first()
-    if not row:
+    if row:
+        return row
+    try:
         row = AccountBalance(id=1, balance=DEFAULT_BALANCE)
         db.add(row)
         db.commit()
         db.refresh(row)
-    return row
+        return row
+    except Exception:
+        db.rollback()
+        # Another request may have inserted concurrently — fetch it
+        row = db.query(AccountBalance).filter(AccountBalance.id == 1).first()
+        if row:
+            return row
+        raise
 
 
 def _capital_at_risk(db: Session) -> float:

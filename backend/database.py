@@ -8,8 +8,16 @@ def _build_url() -> str:
     """
     Use DATABASE_URL (PostgreSQL) when provided — this is the persistent store on Render.
     Fall back to SQLite for local development.
+
+    Checks os.environ first, then pydantic settings (which also reads env vars),
+    so it works regardless of how the variable is injected.
     """
+    # Primary: raw os.environ (always reflects Render/system env vars at startup)
     database_url = os.environ.get("DATABASE_URL", "").strip()
+
+    # Secondary: pydantic settings value (also reads env vars, belt-and-suspenders)
+    if not database_url:
+        database_url = (settings.database_url or "").strip()
 
     if database_url:
         # Render Postgres gives postgres:// but SQLAlchemy needs postgresql://
@@ -50,10 +58,22 @@ def get_db():
 def init_db():
     import logging
     _log = logging.getLogger(__name__)
+
+    # Diagnostic: show what DATABASE_URL was found (first 30 chars only)
+    _raw_env = os.environ.get("DATABASE_URL", "")
+    if _raw_env:
+        _log.info("DATABASE: DATABASE_URL env var found, starts with: %s...", _raw_env[:30])
+    else:
+        _log.warning("DATABASE: DATABASE_URL env var is NOT set in os.environ")
+
     if _is_postgres:
         _log.info("DATABASE: connected to PostgreSQL (Neon) — data is persistent ✓")
     else:
-        _log.warning("DATABASE: using SQLite at %s — data will be lost on redeploy! Set DATABASE_URL to fix this.", _url)
+        _log.warning(
+            "DATABASE: using SQLite at %s — data will be lost on redeploy! "
+            "Set DATABASE_URL=postgresql://... in your Render environment variables.",
+            _url,
+        )
 
     from models import recommendation, wheel, account, watchlist, champion  # noqa: F401
     Base.metadata.create_all(bind=engine)

@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, Float, String, DateTime
 from database import Base
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class WatchlistItem(Base):
@@ -9,7 +13,7 @@ class WatchlistItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), unique=True, nullable=False)
     notes = Column(String(500), nullable=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=_utcnow)
 
     # Cached multi-strategy scores (refreshed on demand)
     wheel_score = Column(Float, nullable=True)

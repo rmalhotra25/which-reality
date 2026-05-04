@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, Float, String, DateTime
 from database import Base
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class AccountBalance(Base):
@@ -8,13 +12,13 @@ class AccountBalance(Base):
 
     id = Column(Integer, primary_key=True, default=1)
     balance = Column(Float, nullable=False, default=25000.0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class AccountTransaction(Base):
     __tablename__ = "account_transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    amount = Column(Float, nullable=False)       # positive = deposit, negative = withdrawal
+    amount = Column(Float, nullable=False)
     note = Column(String(300), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)

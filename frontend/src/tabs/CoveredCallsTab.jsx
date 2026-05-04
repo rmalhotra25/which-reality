@@ -317,7 +317,7 @@ export default function CoveredCallsTab() {
       <div style={s.header}>
         <div style={s.title}>Covered Call Income Generator</div>
         <div style={s.subtitle}>
-          Own 100 shares? Generate three weekly call strategies to earn income from your position.
+          Own 100 shares? Generate three call strategies to earn income — works with weekly and monthly options.
         </div>
       </div>
 
@@ -382,6 +382,17 @@ export default function CoveredCallsTab() {
               <div style={s.metaValue}>{result.expiry} ({result.dte}d)</div>
             </div>
             <div style={s.metaItem}>
+              <div style={s.metaLabel}>Option Cycle</div>
+              <div style={{
+                ...s.metaValue,
+                color: result.options_type === 'monthly' ? '#f6e05e' : '#68d391',
+                fontSize: '13px',
+                fontWeight: 700,
+              }}>
+                {result.options_type === 'monthly' ? '📅 Monthly' : '📆 Weekly'}
+              </div>
+            </div>
+            <div style={s.metaItem}>
               <div style={s.metaLabel}>ATM IV</div>
               <div style={s.metaValue}>{result.atm_iv_pct ?? '—'}%</div>
             </div>
@@ -390,6 +401,12 @@ export default function CoveredCallsTab() {
             )}
           </div>
 
+          {result.options_type === 'monthly' && (
+            <div style={{ ...s.dataSourceNote, color: '#f6e05e', marginBottom: '8px' }}>
+              📅 {result.ticker} uses monthly options — no weekly options are listed for this ticker.
+              These strategies expire on {result.expiry}.
+            </div>
+          )}
           {result.data_source === 'last_trade' && (
             <div style={s.dataSourceNote}>
               ℹ Markets closed — using last-trade prices. Live bid/ask available during market hours.

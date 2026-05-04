@@ -744,16 +744,21 @@ class StockDataService:
             dte = (exp_date - today).days
 
             calls["_mid"] = calls.apply(
-                lambda r: round((float(r["bid"]) + float(r["ask"])) / 2, 2)
-                          if float(r.get("bid", 0) or 0) > 0
-                          else float(r.get("lastPrice", 0) or 0),
+                lambda r: (
+                    round((float(r.get("bid") or 0) + float(r.get("ask") or 0)) / 2, 2)
+                    if float(r.get("bid") or 0) > 0
+                    else float(r.get("lastPrice") or 0)
+                ),
                 axis=1,
             )
-            calls["_is_live"] = calls.get("bid", 0) > 0
-            # Keep rows that have either a mid price OR valid IV (so we can still compute delta)
+            calls["_is_live"] = calls["bid"].gt(0) if "bid" in calls.columns else False
+
+            # Keep rows with a real mid price; fall back to any row with valid IV
             calls_with_mid = calls[calls["_mid"] > 0].copy()
-            calls_with_iv = calls[calls.get("impliedVolatility", pd.Series(dtype=float)) > 0].copy()
-            calls = calls_with_mid if not calls_with_mid.empty else calls_with_iv
+            if not calls_with_mid.empty:
+                calls = calls_with_mid
+            elif "impliedVolatility" in calls.columns:
+                calls = calls[calls["impliedVolatility"].fillna(0) > 0].copy()
             if calls.empty:
                 logger.warning("get_call_tiers: no usable premium data for %s exp=%s", ticker, target_expiry)
                 return None
@@ -775,11 +780,13 @@ class StockDataService:
 
             atm_idx = (calls["strike"] - price).abs().idxmin()
             atm_row = calls.loc[atm_idx]
-            atm_iv_pct = round(float(atm_row["impliedVolatility"]) * 100, 1)
+            atm_iv_pct = round(float(atm_row.get("impliedVolatility") or 0) * 100, 1)
 
             # 0.3% of stock price per week — threshold for "meaningful" premium
             weeks = dte / 7.0
             min_premium = round(price * 0.003 * weeks, 2)
+            # Weekly = ≤14 DTE; monthly = >14 DTE
+            options_type = "weekly" if dte <= 14 else "monthly"
 
             def _best_near_delta(target: float) -> dict | None:
                 if calls.empty:
@@ -787,15 +794,17 @@ class StockDataService:
                 idx = (calls["_delta"] - target).abs().idxmin()
                 row = calls.loc[idx]
                 mid = float(row["_mid"])
-                bid = float(row["bid"]) if float(row["bid"]) > 0 else mid
-                ask = float(row["ask"]) if float(row["ask"]) > 0 else mid
+                bid = float(row.get("bid") or 0)
+                ask = float(row.get("ask") or 0)
+                bid = bid if bid > 0 else mid
+                ask = ask if ask > 0 else mid
                 strike = float(row["strike"])
-                iv_pct = round(float(row["impliedVolatility"]) * 100, 1)
+                iv_pct = round(float(row.get("impliedVolatility") or 0) * 100, 1)
                 delta = round(float(row["_delta"]), 2)
                 theta = row["_theta_daily"]
                 daily_per_contract = round(float(theta) * 100, 2) if theta else None
                 upside_pct = round((strike - price) / price * 100, 1)
-                pct_of_stock = round(mid / price * 100, 2)
+                pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
                 return {
                     "strike": strike,
                     "expiry": target_expiry,
@@ -811,14 +820,15 @@ class StockDataService:
                     "upside_to_strike_pct": upside_pct,
                     "pct_of_stock_weekly": pct_of_stock,
                     "below_threshold": mid < min_premium,
-                    "volume": int(row.get("volume", 0) or 0),
-                    "open_interest": int(row.get("openInterest", 0) or 0),
+                    "volume": int(row.get("volume") or 0),
+                    "open_interest": int(row.get("openInterest") or 0),
                 }
 
             return {
                 "current_price": round(price, 2),
                 "expiry": target_expiry,
                 "dte": dte,
+                "options_type": options_type,
                 "atm_iv_pct": atm_iv_pct,
                 "data_source": data_source,
                 "min_premium_threshold": min_premium,

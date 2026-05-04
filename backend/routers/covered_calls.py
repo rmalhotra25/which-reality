@@ -63,6 +63,7 @@ def analyze_covered_calls(req: CoveredCallRequest):
         result["expiry"] = call_tiers.get("expiry")
         result["dte"] = call_tiers.get("dte")
         result["atm_iv_pct"] = call_tiers.get("atm_iv_pct")
+        result["options_type"] = call_tiers.get("options_type", "weekly")
         return result
     except Exception as e:
         logger.error("Covered call analysis failed for %s: %s", ticker, e)

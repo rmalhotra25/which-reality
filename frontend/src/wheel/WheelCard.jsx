@@ -5,6 +5,12 @@ import DualScorePanel from '../components/DualScorePanel'
 import TradingViewWidget from '../components/TradingViewWidget'
 import AcceptModal from './AcceptModal'
 
+const RISK_CONFIG = {
+  LOW:      { label: 'Low chance of owning shares',      color: '#c6f6d5', bg: '#1a3a2a', border: '#2f855a', dot: '#68d391', icon: '🟢' },
+  MODERATE: { label: 'Moderate chance of owning shares', color: '#fefcbf', bg: '#3a3000', border: '#b7791f', dot: '#f6e05e', icon: '🟡' },
+  HIGH:     { label: 'High chance of owning shares',     color: '#fed7d7', bg: '#3a1a1a', border: '#c53030', dot: '#fc8181', icon: '🔴' },
+}
+
 const s = {
   card: {
     background: '#1a1f2e',
@@ -58,6 +64,35 @@ const s = {
   },
 }
 
+function AssignmentBadge({ chance, risk }) {
+  const cfg = RISK_CONFIG[risk] || RISK_CONFIG.MODERATE
+  const pct = chance != null ? Math.round(chance) : null
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      padding: '10px 14px',
+      background: cfg.bg,
+      border: `1px solid ${cfg.border}`,
+      borderRadius: '8px',
+    }}>
+      <span style={{ fontSize: '20px', lineHeight: 1 }}>{cfg.icon}</span>
+      <div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: cfg.color }}>
+          {risk ? `${risk} ASSIGNMENT RISK` : 'ASSIGNMENT RISK UNKNOWN'}
+        </div>
+        <div style={{ fontSize: '12px', color: cfg.color, opacity: 0.85, marginTop: '2px' }}>
+          {pct != null
+            ? `~${pct} in 100 chance you end up buying 100 shares`
+            : cfg.label}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function WheelCard({ rec, onAccepted }) {
   const [showModal, setShowModal] = useState(false)
 
@@ -86,6 +121,8 @@ export default function WheelCard({ rec, onAccepted }) {
           <ScoreBar score={rec.score} />
         </div>
       )}
+
+      <AssignmentBadge chance={rec.assignment_chance_pct} risk={rec.assignment_risk} />
 
       <TradingViewWidget ticker={rec.ticker} />
 

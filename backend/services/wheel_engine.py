@@ -136,6 +136,8 @@ class WheelEngine:
                 quant_components=json.dumps(qs_data.get("components", {})),
                 pct_otm=pct_otm,
                 breakeven=breakeven,
+                assignment_chance_pct=rec.get("assignment_chance_pct"),
+                assignment_risk=rec.get("assignment_risk"),
                 run_at=run_at,
             )
             self.db.add(obj)

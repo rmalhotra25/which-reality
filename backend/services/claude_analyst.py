@@ -817,68 +817,86 @@ class ClaudeAnalyst:
     # ------------------------------------------------------------------
     # Day Trade Scanner — rank top movers into high-confidence plays
     # ------------------------------------------------------------------
-    def scan_day_trades(self, candidates: list[dict]) -> list[dict]:
+    def scan_day_trades(self, candidates: list[dict], spy_change: float | None = None) -> list[dict]:
         from datetime import datetime, timezone
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        spy_ctx = f"SPY is {'+' if (spy_change or 0) >= 0 else ''}{spy_change}% today." if spy_change is not None else ""
 
         lines = []
         for c in candidates:
             news_str = " | ".join(c.get("news", [])[:2]) or "No recent news"
             arrow = "▲" if c["change_pct"] >= 0 else "▼"
+
+            # Technical indicators
+            ta_parts = []
+            if c.get("rsi") is not None:
+                rsi_label = "overbought" if c["rsi"] > 70 else ("oversold" if c["rsi"] < 30 else "neutral")
+                ta_parts.append(f"RSI={c['rsi']}({rsi_label})")
+            if c.get("atr") is not None:
+                ta_parts.append(f"ATR={c['atr']}")
+            if c.get("ma20") is not None:
+                rel = "above" if c["price"] > c["ma20"] else "below"
+                ta_parts.append(f"20MA={c['ma20']}({rel})")
+            if c.get("vs_spy") is not None:
+                ta_parts.append(f"vsS&P={'+' if c['vs_spy'] >= 0 else ''}{c['vs_spy']}%")
+
+            # Short interest
             dtc = c.get("days_to_cover")
             svr = c.get("short_volume_ratio_pct")
-            short_str = ""
-            if dtc is not None or svr is not None:
-                parts = []
-                if dtc is not None:
-                    parts.append(f"DTC={dtc}d")
-                if svr is not None:
-                    parts.append(f"ShortVol={svr}%")
-                short_str = f" | Short: {', '.join(parts)}"
+            if dtc is not None:
+                ta_parts.append(f"DTC={dtc}d")
+            if svr is not None:
+                ta_parts.append(f"ShortVol={svr}%")
+
+            ta_str = " | " + ", ".join(ta_parts) if ta_parts else ""
+
             lines.append(
                 f"{c['ticker']}: ${c['price']} ({arrow}{abs(c['change_pct'])}% today) | "
-                f"Vol: {c['volume_m']}M ({c['vol_ratio']}x yesterday) | "
+                f"Vol: {c['volume_m']}M ({c['vol_ratio']}x avg) | "
                 f"O:{c['open']} H:{c['high']} L:{c['low']} VWAP:{c['vwap']}"
-                f"{short_str} | News: {news_str}"
+                f"{ta_str} | News: {news_str}"
             )
 
         stocks_block = "\n".join(lines)
 
         system = (
             "You are an elite day trader and technical analyst at a prop trading firm. "
-            "Your job is to identify the highest-confidence trade setups from today's movers. "
+            "Analyze the provided movers and identify the best trade setups. "
+            "You MUST always return between 3 and 5 plays — never return an empty list. "
+            "If conditions are mixed, rank by best risk/reward and pick the top setups anyway. "
+            "Use RSI to avoid chasing overbought entries; use ATR for stop sizing. "
             "Be specific with entry zones, targets, and stops. "
-            "Prioritize setups with clear catalysts, high volume conviction, and favorable risk/reward. "
             "Return ONLY valid JSON — no prose, no markdown."
         )
         user = (
-            f"Today: {today_str}\n"
-            f"Top movers right now (15-min delayed Massive data):\n\n"
+            f"Today: {today_str}. {spy_ctx}\n\n"
+            f"Top movers (yfinance daily data, RSI-14 + ATR-14 enriched):\n\n"
             f"{stocks_block}\n\n"
-            "Identify the top 3-5 highest-confidence plays. Consider:\n"
-            "- Momentum continuation: high vol ratio + clear direction + catalyst\n"
-            "- VWAP reclaim/rejection: price crossing VWAP with volume\n"
-            "- Short squeeze: high DTC (days-to-cover) + stock moving up fast = shorts trapped\n"
-            "  (DTC > 3 = elevated squeeze risk; DTC > 7 = significant squeeze potential)\n"
-            "- Gap fill: stock gapped and may revert to prev close\n"
-            "- Reversal: stock down big but showing signs of bounce\n"
-            "- Breakout: stock breaking above day's high with volume\n\n"
-            "Do NOT chase extended moves without pullback entry. Be realistic.\n\n"
+            "Select the 3–5 best setups. Prioritize:\n"
+            "1. Momentum continuation: vol_ratio ≥ 2x + clear direction + catalyst\n"
+            "2. VWAP reclaim/hold: price above VWAP with volume, clean level\n"
+            "3. Oversold bounce: RSI < 35 + down on volume — reversal entry near low\n"
+            "4. Breakout: stock breaking prior high/resistance with vol surge\n"
+            "5. Short squeeze: high DTC + stock ripping — shorts trapped\n\n"
+            "Use ATR for stop sizing (1–1.5× ATR below entry for longs). "
+            "RSI > 75 = avoid chasing, prefer pullback entry. "
+            "Always return 3–5 plays even if conviction is mixed — rate those lower confidence.\n\n"
             "Return JSON only:\n"
             '{"plays": ['
             '{"ticker": "NVDA",'
             '"direction": "long",'
             '"setup": "Momentum breakout",'
             '"confidence": "high",'
-            '"entry_zone": "$88.50 - $89.00",'
+            '"entry_zone": "$88.50–$89.00",'
             '"target": "$93.00",'
             '"stop_loss": "$86.50",'
             '"timeframe": "intraday",'
             '"risk_reward": "2.5:1",'
             '"catalyst": "One sentence: what is driving this move",'
-            '"reasoning": "2-3 sentences: why this is high confidence and what to watch for"}'
+            '"reasoning": "2-3 sentences: why this setup and what to watch"}'
             "]}"
         )
-        raw = self._call(system, user, max_tokens=1500)
+        raw = self._call(system, user, max_tokens=2000)
         result = self._parse(raw)
         return result.get("plays", [])

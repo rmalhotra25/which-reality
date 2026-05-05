@@ -11,14 +11,14 @@ import CoveredCallsTab from './tabs/CoveredCallsTab'
 import DayTradeTab from './tabs/DayTradeTab'
 
 const TABS = [
-  { id: 'daytrade', label: '⚡ Day Scanner' },
-  { id: 'options', label: '📈 Options Trading' },
-  { id: 'wheel', label: '🔄 Wheel Strategy' },
+  { id: 'daytrade',     label: '⚡ Day Scanner' },
+  { id: 'options',      label: '📈 Options Trading' },
+  { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
-  { id: 'longterm', label: '🌱 Growth & Income' },
-  { id: 'lookup', label: '🔍 Stock Lookup' },
-  { id: 'watchlist', label: '👁 Watchlist' },
-  { id: 'performance', label: '🏆 Performance' },
+  { id: 'longterm',     label: '🌱 Growth & Income' },
+  { id: 'lookup',       label: '🔍 Stock Lookup' },
+  { id: 'watchlist',    label: '👁 Watchlist' },
+  { id: 'performance',  label: '🏆 Performance' },
 ]
 
 const styles = {
@@ -32,12 +32,13 @@ const styles = {
   header: {
     background: 'linear-gradient(135deg, #1a1f2e 0%, #16213e 100%)',
     borderBottom: '1px solid #2d3748',
-    padding: '14px 24px',
+    padding: '12px 20px',
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
+    gap: '14px',
     flexShrink: 0,
   },
+  logoGroup: { display: 'flex', flexDirection: 'column' },
   logo: {
     fontSize: '22px',
     fontWeight: 700,
@@ -47,46 +48,57 @@ const styles = {
   subtitle: {
     fontSize: '12px',
     color: '#718096',
-    marginTop: '2px',
+    marginTop: '1px',
   },
-  body: {
-    display: 'flex',
-    flex: 1,
-    minHeight: 0,
+  activeLabel: {
+    marginLeft: 'auto',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: '#a0aec0',
+    whiteSpace: 'nowrap',
   },
   content: {
     flex: 1,
     padding: '24px',
     overflowY: 'auto',
-    minWidth: 0,
   },
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('options')
+  const [activeTab, setActiveTab] = useState('daytrade')
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? ''
 
   return (
     <div style={styles.app}>
       <header style={styles.header}>
-        <div>
+        <TabNav
+          tabs={TABS}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          open={menuOpen}
+          onToggle={setMenuOpen}
+        />
+        <div style={styles.logoGroup}>
           <div style={styles.logo}>TradeIQ</div>
           <div style={styles.subtitle}>AI-powered trading recommendations</div>
         </div>
+        <span style={styles.activeLabel}>{activeLabel}</span>
       </header>
+
       <MarketBanner />
-      <div style={styles.body}>
-        <TabNav tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
-        <main style={styles.content}>
-          {activeTab === 'daytrade' && <DayTradeTab />}
-          {activeTab === 'options' && <OptionsTab />}
-          {activeTab === 'wheel' && <WheelTab />}
-          {activeTab === 'coveredcalls' && <CoveredCallsTab />}
-          {activeTab === 'longterm' && <LongTermTab />}
-          {activeTab === 'lookup' && <StockLookupTab />}
-          {activeTab === 'watchlist' && <WatchlistTab />}
-          {activeTab === 'performance' && <PerformanceTab />}
-        </main>
-      </div>
+
+      <main style={styles.content}>
+        {activeTab === 'daytrade'     && <DayTradeTab />}
+        {activeTab === 'options'      && <OptionsTab />}
+        {activeTab === 'wheel'        && <WheelTab />}
+        {activeTab === 'coveredcalls' && <CoveredCallsTab />}
+        {activeTab === 'longterm'     && <LongTermTab />}
+        {activeTab === 'lookup'       && <StockLookupTab />}
+        {activeTab === 'watchlist'    && <WatchlistTab />}
+        {activeTab === 'performance'  && <PerformanceTab />}
+      </main>
     </div>
   )
 }

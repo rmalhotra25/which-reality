@@ -1,5 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api'
+
+const MARKET_STATUS = {
+  open:        { label: '● MARKET OPEN',      color: '#68d391', bg: '#071a0a', border: '#276749' },
+  after_hours: { label: '◐ AFTER HOURS',      color: '#f6e05e', bg: '#1a1400', border: '#b7791f' },
+  pre_market:  { label: '◑ PRE-MARKET',       color: '#90cdf4', bg: '#0a1220', border: '#2b6cb0' },
+  closed:      { label: '○ MARKET CLOSED',    color: '#718096', bg: '#131825', border: '#2d3748' },
+}
 
 const CONFIDENCE_COLORS = {
   high:   { bg: '#071a0a', border: '#276749', text: '#68d391', badge: '#0d2218' },
@@ -33,6 +40,20 @@ const s = {
   header: { marginBottom: '24px' },
   title: { fontSize: '20px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' },
   subtitle: { fontSize: '13px', color: '#718096' },
+
+  statusBar: {
+    display: 'flex', alignItems: 'center', gap: '10px',
+    marginBottom: '16px', flexWrap: 'wrap',
+  },
+  marketBadge: (label) => {
+    const cfg = MARKET_STATUS[label] ?? MARKET_STATUS.closed
+    return {
+      padding: '5px 14px', fontSize: '12px', fontWeight: 700,
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      color: cfg.color, borderRadius: '20px',
+    }
+  },
+  serverTime: { fontSize: '11px', color: '#4a5568' },
 
   toolbar: {
     display: 'flex', alignItems: 'center', gap: '12px',
@@ -118,6 +139,23 @@ const s = {
   rrLabel: { fontSize: '11px', color: '#718096', fontWeight: 600 },
   rrValue: { fontSize: '16px', fontWeight: 800, color: '#e2e8f0' },
 
+  shortBox: (squeeze) => ({
+    display: 'flex', gap: '8px', flexWrap: 'wrap',
+    background: squeeze ? 'rgba(107,70,193,0.1)' : 'rgba(0,0,0,0.2)',
+    border: `1px solid ${squeeze ? '#6b46c1' : '#2d3748'}`,
+    borderRadius: '6px', padding: '7px 10px', alignItems: 'center',
+  }),
+  shortLabel: { fontSize: '10px', color: '#718096', fontWeight: 600, textTransform: 'uppercase' },
+  shortValue: (squeeze) => ({
+    fontSize: '13px', fontWeight: 700,
+    color: squeeze ? '#b794f4' : '#a0aec0',
+  }),
+  squeezeAlert: {
+    fontSize: '11px', color: '#b794f4', fontWeight: 700,
+    background: 'rgba(107,70,193,0.15)', border: '1px solid #6b46c1',
+    borderRadius: '4px', padding: '2px 8px',
+  },
+
   catalystBox: {
     fontSize: '12px', color: '#90cdf4',
     background: 'rgba(43,108,176,0.08)',
@@ -148,11 +186,16 @@ const s = {
   }),
 }
 
-function PlayCard({ play }) {
+function PlayCard({ play, shortData }) {
   const conf = (play.confidence || 'medium').toLowerCase()
   const tf = (play.timeframe || '').toLowerCase()
   const tfColors = TIMEFRAME_COLORS[tf] ?? TIMEFRAME_COLORS.swing
   const dirLong = play.direction === 'long'
+
+  // Find short data for this play's ticker from top_movers
+  const dtc = shortData?.days_to_cover ?? null
+  const svr = shortData?.short_volume_ratio_pct ?? null
+  const squeezeRisk = dtc != null && dtc > 3 && dirLong
 
   return (
     <div style={s.card(conf)}>
@@ -170,6 +213,7 @@ function PlayCard({ play }) {
             text: CONFIDENCE_COLORS[conf].text,
           })}
           {badge(tf || 'intraday', tfColors)}
+          {squeezeRisk && badge('🔥 Squeeze Risk', { bg: 'rgba(107,70,193,0.15)', border: '#6b46c1', text: '#b794f4' })}
         </div>
       </div>
 
@@ -193,6 +237,26 @@ function PlayCard({ play }) {
             </div>
           </div>
         </div>
+
+        {/* Short Interest */}
+        {(dtc != null || svr != null) && (
+          <div style={s.shortBox(squeezeRisk)}>
+            <span style={s.shortLabel}>Short:</span>
+            {dtc != null && (
+              <span style={s.shortValue(squeezeRisk)}>
+                {dtc}d to cover
+              </span>
+            )}
+            {svr != null && (
+              <span style={s.shortValue(svr > 50)}>
+                {svr}% of vol today shorted
+              </span>
+            )}
+            {squeezeRisk && (
+              <span style={s.squeezeAlert}>⚡ squeeze potential</span>
+            )}
+          </div>
+        )}
 
         {/* Risk/Reward */}
         {play.risk_reward && (
@@ -223,6 +287,11 @@ export default function DayTradeTab() {
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
   const [scannedAt, setScannedAt] = useState(null)
+  const [marketStatus, setMarketStatus] = useState(null)
+
+  useEffect(() => {
+    api.scanner.marketStatus().then(setMarketStatus).catch(() => {})
+  }, [])
 
   const runScan = async () => {
     setLoading(true)
@@ -231,6 +300,7 @@ export default function DayTradeTab() {
       const data = await api.scanner.scan()
       setResult(data)
       setScannedAt(new Date())
+      if (data.market_status) setMarketStatus(data.market_status)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -241,6 +311,20 @@ export default function DayTradeTab() {
   const plays = result?.plays ?? []
   const movers = result?.top_movers ?? []
 
+  // Build a map of ticker -> short data from top_movers
+  const shortMap = {}
+  movers.forEach(m => {
+    if (m.days_to_cover != null || m.short_volume_ratio_pct != null) {
+      shortMap[m.ticker] = {
+        days_to_cover: m.days_to_cover,
+        short_volume_ratio_pct: m.short_volume_ratio_pct,
+      }
+    }
+  })
+
+  const status = marketStatus ?? result?.market_status
+  const statusCfg = status ? (MARKET_STATUS[status.label] ?? MARKET_STATUS.closed) : null
+
   return (
     <div>
       <div style={s.header}>
@@ -249,6 +333,22 @@ export default function DayTradeTab() {
           Scans today's top movers and uses AI to surface the highest-confidence intraday and swing plays.
         </div>
       </div>
+
+      {statusCfg && (
+        <div style={s.statusBar}>
+          <span style={s.marketBadge(status.label)}>{statusCfg.label}</span>
+          {status.server_time && (
+            <span style={s.serverTime}>
+              as of {new Date(status.server_time).toLocaleTimeString()}
+            </span>
+          )}
+          {!status.is_open && (
+            <span style={{ fontSize: '11px', color: '#4a5568' }}>
+              Data is delayed — scan during market hours for best results
+            </span>
+          )}
+        </div>
+      )}
 
       <div style={s.toolbar}>
         <button style={s.scanBtn(loading)} onClick={runScan} disabled={loading}>
@@ -281,13 +381,13 @@ export default function DayTradeTab() {
         <>
           <div style={s.grid}>
             {plays.map((play, i) => (
-              <PlayCard key={`${play.ticker}-${i}`} play={play} />
+              <PlayCard key={`${play.ticker}-${i}`} play={play} shortData={shortMap[play.ticker]} />
             ))}
           </div>
 
           <div style={s.disclaimer}>
             AI analysis only — not financial advice. Always verify entries with your broker and use your own risk management.
-            Data is 15-minute delayed on the free Polygon.io plan.
+            Data is 15-minute delayed on the Massive free tier.
           </div>
         </>
       )}

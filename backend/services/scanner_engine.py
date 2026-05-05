@@ -1,24 +1,25 @@
 """
-Day Trade Scanner — powered by Polygon.io.
+Day Trade Scanner — powered by Massive (Polygon.io).
 
 Flow:
-1. Fetch top gainers + losers from Polygon snapshot
+1. Fetch market status + top gainers/losers from Massive snapshot
 2. Filter by price, volume, and minimum % move
-3. Enrich top candidates with recent news headlines
+3. Enrich top candidates with news + short interest data (parallel)
 4. Pass to Claude for high-confidence play selection
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
 MIN_PRICE = 5.0
 MAX_PRICE = 500.0
 MIN_VOLUME = 500_000
-MIN_CHANGE_PCT = 2.0  # only stocks moving at least 2% qualify
+MIN_CHANGE_PCT = 2.0
 
 
 def _extract(t: dict) -> dict | None:
-    """Parse a Polygon snapshot ticker object into a clean dict."""
+    """Parse a Massive snapshot ticker object into a clean dict."""
     try:
         ticker = t.get("ticker", "")
         change_pct = t.get("todaysChangePerc", 0) or 0
@@ -60,10 +61,38 @@ def _extract(t: dict) -> dict | None:
         return None
 
 
+def _enrich_candidate(c: dict) -> dict:
+    """Fetch news + short data for one candidate. Safe — never raises."""
+    from services.polygon_client import get_news, get_short_data
+    ticker = c["ticker"]
+
+    try:
+        news = get_news(ticker, limit=3)
+        c["news"] = [n.get("title", "") for n in news if n.get("title")]
+    except Exception:
+        c["news"] = []
+
+    try:
+        short = get_short_data(ticker)
+        c["days_to_cover"] = short.get("days_to_cover")
+        c["short_volume_ratio_pct"] = short.get("short_volume_ratio_pct")
+    except Exception:
+        c["days_to_cover"] = None
+        c["short_volume_ratio_pct"] = None
+
+    return c
+
+
 def run_scan() -> dict:
     """Run the day trade scan and return Claude's top plays."""
-    from services.polygon_client import get_movers, get_news
+    from services.polygon_client import get_movers, get_market_status
     from services.claude_analyst import ClaudeAnalyst
+
+    market_status = None
+    try:
+        market_status = get_market_status()
+    except Exception as e:
+        logger.warning("market_status fetch failed: %s", e)
 
     gainers_raw = get_movers("gainers", limit=25)
     losers_raw = get_movers("losers", limit=15)
@@ -84,6 +113,7 @@ def run_scan() -> dict:
         return {
             "plays": [],
             "candidates_scanned": 0,
+            "market_status": market_status,
             "error": "No qualifying movers found. Market may be closed or data unavailable.",
         }
 
@@ -91,13 +121,13 @@ def run_scan() -> dict:
     candidates.sort(key=lambda x: x["vol_ratio"], reverse=True)
     top = candidates[:15]
 
-    # Enrich with news
-    for c in top:
-        try:
-            news = get_news(c["ticker"], limit=3)
-            c["news"] = [n.get("title", "") for n in news if n.get("title")]
-        except Exception:
-            c["news"] = []
+    # Enrich with news + short data in parallel
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_enrich_candidate, c): c for c in top}
+        top = [f.result() for f in as_completed(futures)]
+
+    # Re-sort after enrichment (order may have shifted)
+    top.sort(key=lambda x: x["vol_ratio"], reverse=True)
 
     analyst = ClaudeAnalyst()
     plays = analyst.scan_day_trades(top)
@@ -106,5 +136,6 @@ def run_scan() -> dict:
         "plays": plays,
         "candidates_scanned": len(candidates),
         "top_movers": top,
-        "data_note": "15-minute delayed data (Polygon.io free tier)",
+        "market_status": market_status,
+        "data_note": "15-minute delayed data (Massive free tier)",
     }

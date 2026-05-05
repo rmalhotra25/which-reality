@@ -76,6 +76,7 @@ export const api = {
   },
   scanner: {
     scan: () => request('/api/scanner/scan'),
+    marketStatus: () => request('/api/scanner/market-status'),
   },
   getStatus: () => request('/api/status'),
 }

@@ -1,5 +1,4 @@
 import logging
-from datetime import date, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +9,30 @@ def _client():
     if not settings.polygon_api_key:
         raise RuntimeError("POLYGON_API_KEY is not configured")
     return RESTClient(settings.polygon_api_key)
+
+
+def get_market_status() -> dict:
+    """Current trading status of US equity markets."""
+    c = _client()
+    s = c.get_market_status()
+    is_open = (s.market or "").lower() == "open"
+    after_hours = s.after_hours or False
+    early_hours = s.early_hours or False
+    if is_open:
+        label = "open"
+    elif after_hours:
+        label = "after_hours"
+    elif early_hours:
+        label = "pre_market"
+    else:
+        label = "closed"
+    return {
+        "label": label,
+        "is_open": is_open,
+        "after_hours": after_hours,
+        "early_hours": early_hours,
+        "server_time": s.server_time,
+    }
 
 
 def get_movers(direction: str = "gainers", limit: int = 25) -> list[dict]:
@@ -38,6 +61,33 @@ def get_movers(direction: str = "gainers", limit: int = 25) -> list[dict]:
                 "v": prev.volume if prev else None,
             },
         })
+    return result
+
+
+def get_short_data(ticker: str) -> dict:
+    """Most recent short interest and short volume ratio for a ticker."""
+    c = _client()
+    result = {}
+
+    try:
+        items = list(c.list_short_interest(ticker=ticker, limit=1, order="desc"))
+        if items:
+            si = items[0]
+            result["short_interest"] = si.short_interest
+            result["days_to_cover"] = round(float(si.days_to_cover), 1) if si.days_to_cover else None
+            result["settlement_date"] = si.settlement_date
+    except Exception as e:
+        logger.debug("short_interest failed for %s: %s", ticker, e)
+
+    try:
+        vols = list(c.list_short_volume(ticker=ticker, limit=1, order="desc"))
+        if vols:
+            sv = vols[0]
+            if sv.short_volume_ratio is not None:
+                result["short_volume_ratio_pct"] = round(float(sv.short_volume_ratio) * 100, 1)
+    except Exception as e:
+        logger.debug("short_volume failed for %s: %s", ticker, e)
+
     return result
 
 

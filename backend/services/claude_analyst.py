@@ -825,11 +825,21 @@ class ClaudeAnalyst:
         for c in candidates:
             news_str = " | ".join(c.get("news", [])[:2]) or "No recent news"
             arrow = "▲" if c["change_pct"] >= 0 else "▼"
+            dtc = c.get("days_to_cover")
+            svr = c.get("short_volume_ratio_pct")
+            short_str = ""
+            if dtc is not None or svr is not None:
+                parts = []
+                if dtc is not None:
+                    parts.append(f"DTC={dtc}d")
+                if svr is not None:
+                    parts.append(f"ShortVol={svr}%")
+                short_str = f" | Short: {', '.join(parts)}"
             lines.append(
                 f"{c['ticker']}: ${c['price']} ({arrow}{abs(c['change_pct'])}% today) | "
                 f"Vol: {c['volume_m']}M ({c['vol_ratio']}x yesterday) | "
-                f"O:{c['open']} H:{c['high']} L:{c['low']} VWAP:{c['vwap']} | "
-                f"News: {news_str}"
+                f"O:{c['open']} H:{c['high']} L:{c['low']} VWAP:{c['vwap']}"
+                f"{short_str} | News: {news_str}"
             )
 
         stocks_block = "\n".join(lines)
@@ -843,13 +853,15 @@ class ClaudeAnalyst:
         )
         user = (
             f"Today: {today_str}\n"
-            f"Top movers right now (15-min delayed Polygon.io data):\n\n"
+            f"Top movers right now (15-min delayed Massive data):\n\n"
             f"{stocks_block}\n\n"
             "Identify the top 3-5 highest-confidence plays. Consider:\n"
             "- Momentum continuation: high vol ratio + clear direction + catalyst\n"
             "- VWAP reclaim/rejection: price crossing VWAP with volume\n"
+            "- Short squeeze: high DTC (days-to-cover) + stock moving up fast = shorts trapped\n"
+            "  (DTC > 3 = elevated squeeze risk; DTC > 7 = significant squeeze potential)\n"
             "- Gap fill: stock gapped and may revert to prev close\n"
-            "- Reversal: stock down big but showing signs of bounce (losers list)\n"
+            "- Reversal: stock down big but showing signs of bounce\n"
             "- Breakout: stock breaking above day's high with volume\n\n"
             "Do NOT chase extended moves without pullback entry. Be realistic.\n\n"
             "Return JSON only:\n"

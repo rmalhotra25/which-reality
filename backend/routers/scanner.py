@@ -6,9 +6,22 @@ router = APIRouter(prefix="/api/scanner", tags=["Day Trade Scanner"])
 logger = logging.getLogger(__name__)
 
 
+@router.get("/market-status")
+def market_status():
+    """Current US equity market trading status."""
+    from config import settings
+    if not settings.polygon_api_key:
+        raise HTTPException(status_code=503, detail="POLYGON_API_KEY is not configured.")
+    try:
+        from services.polygon_client import get_market_status
+        return get_market_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/scan")
 def run_scan():
-    """Scan top movers via Polygon.io and return Claude's high-confidence day trade plays."""
+    """Scan top movers via Massive and return Claude's high-confidence day trade plays."""
     from config import settings
     if not settings.polygon_api_key:
         raise HTTPException(

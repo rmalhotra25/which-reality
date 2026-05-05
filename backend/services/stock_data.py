@@ -233,6 +233,25 @@ def _ncdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def _historical_volatility(ticker: str, days: int = 30) -> float | None:
+    """Annualised historical volatility from recent daily closes. Used as IV fallback."""
+    if not _YF_AVAILABLE:
+        return None
+    try:
+        hist = yf.download(ticker, period="60d", interval="1d", progress=False, auto_adjust=True)
+        closes = hist["Close"]
+        if hasattr(closes, "columns"):  # multi-ticker download returns DataFrame
+            closes = closes.iloc[:, 0]
+        closes = closes.dropna()
+        if len(closes) < 10:
+            return None
+        returns = closes.pct_change().dropna()
+        hv = float(returns.std() * (252 ** 0.5))
+        return hv if hv > 0 else None
+    except Exception:
+        return None
+
+
 def _bs_call_delta(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
     """Call delta via Black-Scholes. Returns value 0–1 (probability shares get called away)."""
     try:
@@ -764,6 +783,17 @@ class StockDataService:
                 return None
 
             data_source = "live" if calls["_is_live"].any() else "last_trade"
+
+            # If most rows have IV=0 (newly listed options), fall back to historical vol
+            mean_iv = calls["impliedVolatility"].fillna(0).mean() if "impliedVolatility" in calls.columns else 0
+            if mean_iv < 0.01:
+                hv = _historical_volatility(ticker)
+                if hv:
+                    logger.info("get_call_tiers: using HV=%.2f for %s (chain IV near zero)", hv, ticker)
+                    calls["impliedVolatility"] = hv
+                else:
+                    logger.warning("get_call_tiers: no valid IV or HV for %s", ticker)
+                    return None
 
             calls["_delta"] = calls.apply(
                 lambda r: _bs_call_delta(price, r["strike"], float(r.get("impliedVolatility") or 0), T),

@@ -190,6 +190,7 @@ function PlayCard({ play, shortData }) {
   const conf = (play.confidence || 'medium').toLowerCase()
   const tf = (play.timeframe || '').toLowerCase()
   const tfColors = TIMEFRAME_COLORS[tf] ?? TIMEFRAME_COLORS.swing
+  const confColors = CONFIDENCE_COLORS[conf] ?? CONFIDENCE_COLORS.medium
   const dirLong = play.direction === 'long'
 
   const dtc = shortData?.days_to_cover ?? null
@@ -210,9 +211,9 @@ function PlayCard({ play, shortData }) {
             text: dirLong ? '#68d391' : '#fc8181',
           })}
           {badge(play.setup || 'Setup', {
-            bg: CONFIDENCE_COLORS[conf].badge,
-            border: CONFIDENCE_COLORS[conf].border,
-            text: CONFIDENCE_COLORS[conf].text,
+            bg: confColors.badge,
+            border: confColors.border,
+            text: confColors.text,
           })}
           {badge(tf || 'intraday', tfColors)}
           {squeezeRisk && badge('🔥 Squeeze Risk', { bg: 'rgba(107,70,193,0.15)', border: '#6b46c1', text: '#b794f4' })}

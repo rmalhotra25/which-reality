@@ -1,133 +1,158 @@
 """
-Day Trade Scanner — powered by Massive (Polygon.io).
+Day Trade Scanner — yfinance-based universe scan.
 
 Flow:
-1. Fetch market status + top gainers/losers from Massive snapshot
-2. Filter by price, volume, and minimum % move
-3. Enrich top candidates with news + short interest data (parallel)
-4. Pass to Claude for high-confidence play selection
+1. Fetch market status from Massive (free tier)
+2. Batch-download OHLCV for a curated 150-stock universe via yfinance
+3. Filter for biggest movers by % change and volume surge
+4. Enrich top candidates with news headlines from Massive (free tier)
+5. Pass to Claude for high-confidence play selection
 """
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pandas as pd
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
 MIN_PRICE = 5.0
-MAX_PRICE = 500.0
-MIN_VOLUME = 500_000
+MAX_PRICE = 600.0
+MIN_VOLUME = 300_000
 MIN_CHANGE_PCT = 2.0
 
+SCAN_UNIVERSE = [
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "ORCL",
+    # Semiconductors
+    "AMD", "INTC", "QCOM", "TXN", "MU", "SMCI", "ARM",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "V", "MA", "PYPL", "SQ",
+    # High-IV momentum / retail favorites
+    "PLTR", "COIN", "HOOD", "SOFI", "RIVN", "SHOP", "SNAP", "UBER", "LYFT",
+    "MSTR", "RBLX", "DUOL", "DKNG", "PENN",
+    # Biotech / pharma
+    "LLY", "ABBV", "PFE", "MRNA", "BNTX", "REGN", "BIIB", "GILD",
+    # Energy
+    "XOM", "CVX", "OXY", "SLB", "HAL",
+    # Consumer / retail
+    "COST", "HD", "WMT", "NKE", "MCD", "SBUX", "CMG", "AMZN",
+    # Media / streaming
+    "NFLX", "DIS", "SPOT", "ROKU",
+    # Software / cloud
+    "CRM", "NOW", "ADBE", "SNOW", "DDOG", "ZM", "OKTA", "CRWD", "S",
+    # EV / clean energy
+    "RIVN", "LCID", "NIO", "XPEV", "LI", "PLUG", "FSLR",
+    # Other high-volume
+    "F", "GM", "BA", "GE", "T", "VZ", "NFLX", "C", "WFC",
+    # ETFs with options + high volume
+    "SPY", "QQQ", "IWM", "ARKK", "XLE", "GLD", "SLV", "SOXL", "TQQQ", "SQQQ",
+]
+# Deduplicate while preserving order
+_seen = set()
+SCAN_UNIVERSE = [t for t in SCAN_UNIVERSE if not (t in _seen or _seen.add(t))]
 
-def _extract(t: dict) -> dict | None:
-    """Parse a Massive snapshot ticker object into a clean dict."""
+
+def _fetch_movers() -> list[dict]:
+    """Download last 5 days of OHLCV for the universe and find today's biggest movers."""
     try:
-        ticker = t.get("ticker", "")
-        change_pct = t.get("todaysChangePerc", 0) or 0
-        day = t.get("day") or {}
-        prev = t.get("prevDay") or {}
-
-        price = day.get("c") or day.get("vw") or 0
-        volume = day.get("v") or 0
-        high = day.get("h") or price
-        low = day.get("l") or price
-        open_price = day.get("o") or price
-        vwap = day.get("vw") or price
-        prev_close = prev.get("c") or price
-        prev_vol = prev.get("v") or volume
-
-        if not price or price < MIN_PRICE or price > MAX_PRICE:
-            return None
-        if volume < MIN_VOLUME:
-            return None
-        if abs(change_pct) < MIN_CHANGE_PCT:
-            return None
-
-        vol_ratio = round(volume / prev_vol, 1) if prev_vol > 0 else 1.0
-
-        return {
-            "ticker": ticker,
-            "price": round(float(price), 2),
-            "change_pct": round(float(change_pct), 2),
-            "volume_m": round(float(volume) / 1_000_000, 1),
-            "vol_ratio": vol_ratio,
-            "high": round(float(high), 2),
-            "low": round(float(low), 2),
-            "open": round(float(open_price), 2),
-            "vwap": round(float(vwap), 2),
-            "prev_close": round(float(prev_close), 2),
-        }
+        raw = yf.download(
+            SCAN_UNIVERSE,
+            period="5d",
+            interval="1d",
+            progress=False,
+            threads=True,
+            auto_adjust=True,
+        )
     except Exception as e:
-        logger.debug("_extract error for %s: %s", t.get("ticker"), e)
-        return None
+        logger.error("yfinance batch download failed: %s", e)
+        return []
 
+    candidates = []
+    for ticker in SCAN_UNIVERSE:
+        try:
+            close = raw["Close"][ticker].dropna()
+            volume = raw["Volume"][ticker].dropna()
+            high = raw["High"][ticker].dropna()
+            low = raw["Low"][ticker].dropna()
+            open_ = raw["Open"][ticker].dropna()
 
-def _enrich_candidate(c: dict) -> dict:
-    """Fetch news + short data for one candidate. Safe — never raises."""
-    from services.polygon_client import get_news, get_short_data
-    ticker = c["ticker"]
+            if len(close) < 2 or len(volume) < 2:
+                continue
 
-    try:
-        news = get_news(ticker, limit=3)
-        c["news"] = [n.get("title", "") for n in news if n.get("title")]
-    except Exception:
-        c["news"] = []
+            price = float(close.iloc[-1])
+            prev_close = float(close.iloc[-2])
+            vol_today = float(volume.iloc[-1])
+            vol_prev = float(volume.iloc[-2]) if len(volume) >= 2 else vol_today
 
-    try:
-        short = get_short_data(ticker)
-        c["days_to_cover"] = short.get("days_to_cover")
-        c["short_volume_ratio_pct"] = short.get("short_volume_ratio_pct")
-    except Exception:
-        c["days_to_cover"] = None
-        c["short_volume_ratio_pct"] = None
+            if price < MIN_PRICE or price > MAX_PRICE:
+                continue
+            if vol_today < MIN_VOLUME:
+                continue
 
-    return c
+            change_pct = (price - prev_close) / prev_close * 100
+            if abs(change_pct) < MIN_CHANGE_PCT:
+                continue
+
+            vol_ratio = round(vol_today / vol_prev, 1) if vol_prev > 0 else 1.0
+            day_high = float(high.iloc[-1])
+            day_low = float(low.iloc[-1])
+            day_open = float(open_.iloc[-1])
+            vwap = round((day_high + day_low + price) / 3, 2)
+
+            candidates.append({
+                "ticker": ticker,
+                "price": round(price, 2),
+                "change_pct": round(change_pct, 2),
+                "volume_m": round(vol_today / 1_000_000, 1),
+                "vol_ratio": vol_ratio,
+                "high": round(day_high, 2),
+                "low": round(day_low, 2),
+                "open": round(day_open, 2),
+                "vwap": vwap,
+                "prev_close": round(prev_close, 2),
+                "direction": "up" if change_pct > 0 else "down",
+            })
+        except Exception as e:
+            logger.debug("skipping %s: %s", ticker, e)
+
+    return candidates
 
 
 def run_scan() -> dict:
     """Run the day trade scan and return Claude's top plays."""
-    from services.polygon_client import get_movers, get_market_status
     from services.claude_analyst import ClaudeAnalyst
 
     market_status = None
     try:
+        from services.polygon_client import get_market_status
         market_status = get_market_status()
     except Exception as e:
         logger.warning("market_status fetch failed: %s", e)
 
-    gainers_raw = get_movers("gainers", limit=25)
-    losers_raw = get_movers("losers", limit=15)
-
-    candidates = []
-    for t in gainers_raw:
-        d = _extract(t)
-        if d:
-            d["direction"] = "up"
-            candidates.append(d)
-    for t in losers_raw:
-        d = _extract(t)
-        if d:
-            d["direction"] = "down"
-            candidates.append(d)
+    candidates = _fetch_movers()
 
     if not candidates:
         return {
             "plays": [],
             "candidates_scanned": 0,
             "market_status": market_status,
-            "error": "No qualifying movers found. Market may be closed or data unavailable.",
+            "error": "No qualifying movers found. Market may be closed or all moves are below threshold.",
         }
 
-    # Sort by volume ratio — highest conviction moves first
-    candidates.sort(key=lambda x: x["vol_ratio"], reverse=True)
+    # Sort by vol_ratio first (conviction), then by abs change
+    candidates.sort(key=lambda x: (x["vol_ratio"], abs(x["change_pct"])), reverse=True)
     top = candidates[:15]
 
-    # Enrich with news + short data in parallel
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(_enrich_candidate, c): c for c in top}
-        top = [f.result() for f in as_completed(futures)]
-
-    # Re-sort after enrichment (order may have shifted)
-    top.sort(key=lambda x: x["vol_ratio"], reverse=True)
+    # Enrich with news headlines from Massive (graceful — free tier)
+    for c in top:
+        try:
+            from services.polygon_client import get_news
+            news = get_news(c["ticker"], limit=3)
+            c["news"] = [n.get("title", "") for n in news if n.get("title")]
+        except Exception:
+            c["news"] = []
+        c["days_to_cover"] = None
+        c["short_volume_ratio_pct"] = None
 
     analyst = ClaudeAnalyst()
     plays = analyst.scan_day_trades(top)
@@ -137,5 +162,5 @@ def run_scan() -> dict:
         "candidates_scanned": len(candidates),
         "top_movers": top,
         "market_status": market_status,
-        "data_note": "15-minute delayed data (Massive free tier)",
+        "data_note": f"Scanned {len(SCAN_UNIVERSE)}-stock universe · yfinance daily data",
     }

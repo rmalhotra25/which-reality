@@ -54,6 +54,39 @@ def remove_ticker(ticker: str, db: Session = Depends(get_db)):
     return {"deleted": ticker}
 
 
+@router.post("/{ticker}/quick-score")
+def quick_score_ticker(ticker: str):
+    """Score any ticker without requiring it to be on the watchlist — no DB writes."""
+    ticker = ticker.upper()
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(400, "Invalid ticker symbol")
+    try:
+        from services.stock_data import get_stock_info
+        from services.claude_analyst import ClaudeAnalyst
+
+        info = get_stock_info(ticker)
+        analyst = ClaudeAnalyst()
+        result = analyst.score_watchlist_ticker(ticker, info)
+        return {
+            "ticker": ticker,
+            "wheel_score": result.get("wheel_score"),
+            "wheel_grade": result.get("wheel_grade"),
+            "wheel_note": result.get("wheel_note"),
+            "options_score": result.get("options_score"),
+            "options_grade": result.get("options_grade"),
+            "options_note": result.get("options_note"),
+            "longterm_score": result.get("longterm_score"),
+            "longterm_grade": result.get("longterm_grade"),
+            "longterm_note": result.get("longterm_note"),
+            "best_strategy": result.get("best_strategy"),
+            "summary": result.get("summary"),
+            "earnings_warning": result.get("earnings_warning"),
+        }
+    except Exception as e:
+        logger.error("quick score failed for %s: %s", ticker, e)
+        raise HTTPException(500, str(e))
+
+
 @router.post("/{ticker}/score")
 def score_ticker(ticker: str, db: Session = Depends(get_db)):
     """Run a fresh multi-strategy score for a watchlist ticker."""

@@ -61,6 +61,7 @@ export const api = {
     add: (ticker, notes = '') => request('/api/watchlist', { method: 'POST', body: { ticker, notes } }),
     remove: (ticker) => request(`/api/watchlist/${ticker}`, { method: 'DELETE' }),
     score: (ticker) => request(`/api/watchlist/${ticker}/score`, { method: 'POST' }),
+    quickScore: (ticker) => request(`/api/watchlist/${ticker}/quick-score`, { method: 'POST' }),
   },
   champions: {
     get: () => request('/api/champions'),

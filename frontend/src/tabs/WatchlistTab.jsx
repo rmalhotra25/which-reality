@@ -52,6 +52,7 @@ const s = {
   champFooter: {
     display: 'flex', justifyContent: 'space-between',
     alignItems: 'center', marginTop: '4px',
+    flexWrap: 'wrap', gap: '6px',
   },
   addToWatchlistBtn: (strategy) => ({
     padding: '5px 12px', fontSize: '11px', fontWeight: 600,
@@ -60,6 +61,36 @@ const s = {
     color: CHAMPION_COLORS[strategy]?.label ?? '#718096',
     borderRadius: '5px', cursor: 'pointer',
   }),
+  deepScoreBtn: {
+    padding: '5px 12px', fontSize: '11px', fontWeight: 600,
+    background: '#1a1f2e', border: '1px solid #2d3748',
+    color: '#90cdf4', borderRadius: '5px', cursor: 'pointer',
+  },
+  deepScorePanel: {
+    marginTop: '4px', borderTop: '1px solid #2d3748',
+    paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px',
+  },
+  deepScoreRow: {
+    display: 'flex', alignItems: 'center', gap: '8px',
+  },
+  deepScoreLabel: {
+    fontSize: '10px', color: '#718096', textTransform: 'uppercase',
+    letterSpacing: '0.04em', minWidth: '72px',
+  },
+  deepScoreNote: {
+    fontSize: '11px', color: '#718096', fontStyle: 'italic',
+  },
+  deepScoreSummary: {
+    fontSize: '12px', color: '#a0aec0', lineHeight: 1.6,
+    background: 'rgba(0,0,0,0.2)', borderRadius: '6px', padding: '8px 10px',
+  },
+  deepScoreWarning: {
+    fontSize: '11px', color: '#f6ad55', background: '#1a1209',
+    border: '1px solid #744210', borderRadius: '5px', padding: '6px 10px',
+  },
+  champDisclaimer: {
+    fontSize: '11px', color: '#4a5568', fontStyle: 'italic', marginTop: '4px',
+  },
   refreshBtn: {
     padding: '6px 14px', background: 'transparent',
     border: '1px solid #2d3748', borderRadius: '6px',
@@ -156,6 +187,7 @@ function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
   const [data, setData] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [elapsed, setElapsed] = useState(0)
+  const [deepScores, setDeepScores] = useState({})   // { [ticker]: result | 'loading' | 'error' }
 
   const load = async () => {
     try {
@@ -202,6 +234,16 @@ function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
     }
   }
 
+  const handleDeepScore = async (ticker) => {
+    setDeepScores(prev => ({ ...prev, [ticker]: 'loading' }))
+    try {
+      const result = await api.watchlist.quickScore(ticker)
+      setDeepScores(prev => ({ ...prev, [ticker]: result }))
+    } catch (e) {
+      setDeepScores(prev => ({ ...prev, [ticker]: 'error' }))
+    }
+  }
+
   const champions = data?.champions || []
   const runAt = data?.run_at ? new Date(data.run_at).toLocaleString() : null
 
@@ -238,42 +280,88 @@ function ChampionsSection({ watchlistTickers, onAddToWatchlist }) {
           </small>
         </div>
       ) : (
-        <div style={s.championsGrid}>
-          {champions.map((c) => {
-            const alreadyAdded = watchlistTickers.has(c.ticker)
-            return (
-              <div key={c.strategy} style={s.championCard(c.strategy)}>
-                <div style={s.champStratLabel(c.strategy)}>
-                  {STRATEGY_LABELS[c.strategy] || c.strategy} Champion
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <span style={s.champTicker}>{c.ticker}</span>
-                  <GradeChip grade={c.grade} />
-                </div>
-                {c.score != null && (
-                  <ScoreBar score={c.score} />
-                )}
-                {c.reason && (
-                  <div style={s.champReason}>{c.reason}</div>
-                )}
-                <div style={s.champFooter}>
-                  {c.survivors_count && (
-                    <span style={s.champScore}>
-                      Best of {c.survivors_count} qualifying stocks
-                    </span>
+        <>
+          <div style={s.champDisclaimer}>
+            Champions are chosen by relative comparison within today's screened universe — not absolute scoring.
+            Click <strong>Deep Score</strong> on any card for a full independent analysis.
+          </div>
+          <div style={s.championsGrid}>
+            {champions.map((c) => {
+              const alreadyAdded = watchlistTickers.has(c.ticker)
+              const ds = deepScores[c.ticker]
+              const dsLoading = ds === 'loading'
+              const dsError = ds === 'error'
+              const dsResult = ds && ds !== 'loading' && ds !== 'error' ? ds : null
+
+              return (
+                <div key={c.strategy} style={s.championCard(c.strategy)}>
+                  <div style={s.champStratLabel(c.strategy)}>
+                    {STRATEGY_LABELS[c.strategy] || c.strategy} Champion
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={s.champTicker}>{c.ticker}</span>
+                    <GradeChip grade={c.grade} />
+                  </div>
+                  {c.score != null && (
+                    <ScoreBar score={c.score} />
                   )}
-                  <button
-                    style={s.addToWatchlistBtn(c.strategy)}
-                    onClick={() => onAddToWatchlist(c.ticker)}
-                    disabled={alreadyAdded}
-                  >
-                    {alreadyAdded ? '✓ In Watchlist' : '+ Add to Watchlist'}
-                  </button>
+                  {c.reason && (
+                    <div style={s.champReason}>{c.reason}</div>
+                  )}
+                  <div style={s.champFooter}>
+                    {c.survivors_count && (
+                      <span style={s.champScore}>
+                        Best of {c.survivors_count} qualifying stocks
+                      </span>
+                    )}
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      <button
+                        style={s.deepScoreBtn}
+                        onClick={() => handleDeepScore(c.ticker)}
+                        disabled={dsLoading}
+                      >
+                        {dsLoading ? '⏳ Scoring…' : dsResult ? '↻ Re-score' : '📊 Deep Score'}
+                      </button>
+                      <button
+                        style={s.addToWatchlistBtn(c.strategy)}
+                        onClick={() => onAddToWatchlist(c.ticker)}
+                        disabled={alreadyAdded}
+                      >
+                        {alreadyAdded ? '✓ In Watchlist' : '+ Add to Watchlist'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {dsError && (
+                    <div style={s.deepScoreWarning}>⚠ Score failed — try again in a moment.</div>
+                  )}
+
+                  {dsResult && (
+                    <div style={s.deepScorePanel}>
+                      {dsResult.earnings_warning && (
+                        <div style={s.deepScoreWarning}>{dsResult.earnings_warning}</div>
+                      )}
+                      {[
+                        { key: 'wheel', label: 'Wheel', score: dsResult.wheel_score, grade: dsResult.wheel_grade },
+                        { key: 'options', label: 'Options', score: dsResult.options_score, grade: dsResult.options_grade },
+                        { key: 'longterm', label: 'Long-Term', score: dsResult.longterm_score, grade: dsResult.longterm_grade },
+                      ].filter(r => r.score != null).map(r => (
+                        <div key={r.key} style={s.deepScoreRow}>
+                          <span style={s.deepScoreLabel}>{r.label}</span>
+                          <div style={{ flex: 1 }}><ScoreBar score={r.score} /></div>
+                          <GradeChip grade={r.grade} />
+                        </div>
+                      ))}
+                      {dsResult.summary && (
+                        <div style={s.deepScoreSummary}>{dsResult.summary}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        </>
       )}
     </div>
   )

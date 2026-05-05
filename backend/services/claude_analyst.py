@@ -813,3 +813,60 @@ class ClaudeAnalyst:
         )
         raw = self._call(system, user, max_tokens=500)
         return self._parse(raw)
+
+    # ------------------------------------------------------------------
+    # Day Trade Scanner — rank top movers into high-confidence plays
+    # ------------------------------------------------------------------
+    def scan_day_trades(self, candidates: list[dict]) -> list[dict]:
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        lines = []
+        for c in candidates:
+            news_str = " | ".join(c.get("news", [])[:2]) or "No recent news"
+            arrow = "▲" if c["change_pct"] >= 0 else "▼"
+            lines.append(
+                f"{c['ticker']}: ${c['price']} ({arrow}{abs(c['change_pct'])}% today) | "
+                f"Vol: {c['volume_m']}M ({c['vol_ratio']}x yesterday) | "
+                f"O:{c['open']} H:{c['high']} L:{c['low']} VWAP:{c['vwap']} | "
+                f"News: {news_str}"
+            )
+
+        stocks_block = "\n".join(lines)
+
+        system = (
+            "You are an elite day trader and technical analyst at a prop trading firm. "
+            "Your job is to identify the highest-confidence trade setups from today's movers. "
+            "Be specific with entry zones, targets, and stops. "
+            "Prioritize setups with clear catalysts, high volume conviction, and favorable risk/reward. "
+            "Return ONLY valid JSON — no prose, no markdown."
+        )
+        user = (
+            f"Today: {today_str}\n"
+            f"Top movers right now (15-min delayed Polygon.io data):\n\n"
+            f"{stocks_block}\n\n"
+            "Identify the top 3-5 highest-confidence plays. Consider:\n"
+            "- Momentum continuation: high vol ratio + clear direction + catalyst\n"
+            "- VWAP reclaim/rejection: price crossing VWAP with volume\n"
+            "- Gap fill: stock gapped and may revert to prev close\n"
+            "- Reversal: stock down big but showing signs of bounce (losers list)\n"
+            "- Breakout: stock breaking above day's high with volume\n\n"
+            "Do NOT chase extended moves without pullback entry. Be realistic.\n\n"
+            "Return JSON only:\n"
+            '{"plays": ['
+            '{"ticker": "NVDA",'
+            '"direction": "long",'
+            '"setup": "Momentum breakout",'
+            '"confidence": "high",'
+            '"entry_zone": "$88.50 - $89.00",'
+            '"target": "$93.00",'
+            '"stop_loss": "$86.50",'
+            '"timeframe": "intraday",'
+            '"risk_reward": "2.5:1",'
+            '"catalyst": "One sentence: what is driving this move",'
+            '"reasoning": "2-3 sentences: why this is high confidence and what to watch for"}'
+            "]}"
+        )
+        raw = self._call(system, user, max_tokens=1500)
+        result = self._parse(raw)
+        return result.get("plays", [])

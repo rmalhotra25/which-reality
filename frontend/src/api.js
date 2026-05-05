@@ -74,5 +74,8 @@ export const api = {
         body: { ticker, cost_basis: costBasis },
       }),
   },
+  scanner: {
+    scan: () => request('/api/scanner/scan'),
+  },
   getStatus: () => request('/api/status'),
 }

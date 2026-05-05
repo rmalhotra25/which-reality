@@ -8,8 +8,10 @@ import StockLookupTab from './tabs/StockLookupTab'
 import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
+import DayTradeTab from './tabs/DayTradeTab'
 
 const TABS = [
+  { id: 'daytrade', label: '⚡ Day Scanner' },
   { id: 'options', label: '📈 Options Trading' },
   { id: 'wheel', label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
@@ -75,6 +77,7 @@ export default function App() {
       <div style={styles.body}>
         <TabNav tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
         <main style={styles.content}>
+          {activeTab === 'daytrade' && <DayTradeTab />}
           {activeTab === 'options' && <OptionsTab />}
           {activeTab === 'wheel' && <WheelTab />}
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}

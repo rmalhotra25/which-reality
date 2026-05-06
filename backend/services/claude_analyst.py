@@ -882,3 +882,93 @@ class ClaudeAnalyst:
         raw = self._call(system, user, max_tokens=1500)
         result = self._parse(raw)
         return result.get("plays", [])
+
+    def interpret_options_flow(
+        self, alerts: list[dict], sentiment_ratio: int, overall: str
+    ) -> list[dict]:
+        """Interpret unusual options flow and add narrative context to each alert."""
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        lines = []
+        for a in alerts:
+            notional_k = round(a.get("notional", 0) / 1_000)
+            pct_otm = a.get("pct_otm", 0)
+            itm_otm = f"{abs(pct_otm)}% {'OTM' if pct_otm >= 0 else 'ITM'}"
+            opt_type = (a.get("option_type") or "call").upper()
+            vol_oi = a.get("vol_oi_ratio", 0)
+            oi = a.get("open_interest", 0)
+            ratio_str = "NEW (no prior OI)" if a.get("is_new_contract") else f"{vol_oi}x"
+            earnings = a.get("earnings_context")
+            earnings_str = f" | {earnings}" if earnings else ""
+            # Premium richness context
+            prem_parts = []
+            if a.get("breakeven"):
+                prem_parts.append(f"BE=${a['breakeven']}")
+            if a.get("pct_move_needed") is not None:
+                prem_parts.append(f"needs {a['pct_move_needed']}% move")
+            if a.get("iv_pct"):
+                prem_parts.append(f"IV={a['iv_pct']}%")
+            if a.get("hv_pct"):
+                prem_parts.append(f"HV={a['hv_pct']}%")
+            if a.get("premium_rating"):
+                prem_parts.append(f"premium={a['premium_rating']}")
+            richness_str = f" | {', '.join(prem_parts)}" if prem_parts else ""
+            lines.append(
+                f"{a.get('ticker','?')} ${a.get('strike','?')} {opt_type} "
+                f"exp {a.get('expiry','?')} ({a.get('dte','?')}d) | "
+                f"Vol:{a.get('volume',0):,} OI:{oi:,} Ratio:{ratio_str} | "
+                f"${notional_k}K notional | {itm_otm} | Stock=${a.get('price','?')}"
+                f"{richness_str}{earnings_str}"
+            )
+        flow_block = "\n".join(lines)
+
+        system = (
+            "You are an expert options flow analyst at a prop trading desk. "
+            "Interpret unusual options activity — high vol/OI ratios mean fresh positioning. "
+            "'NEW (no prior OI)' means a brand-new contract with zero prior open interest — very significant. "
+            "Large OTM prints are directional bets. Near-ATM prints could be hedges or income plays. "
+            "CRITICAL: If earnings context is provided (e.g. 'Earnings 2d ago'), factor that in — "
+            "post-earnings flow is repositioning, NOT an earnings play. Pre-earnings flow is often a straddle or directional bet. "
+            "When premium=RICH (IV >> HV), the option buyer is paying a large premium — they need a big move to profit. "
+            "When premium=CHEAP, IV is below historical volatility — relatively inexpensive. "
+            "Use break-even and % move needed to assess whether the flow is realistic or a long shot. "
+            "Be direct and concise. A day trader needs actionable takeaways, not theory. "
+            "Return ONLY valid JSON — no prose, no markdown."
+        )
+        user = (
+            f"Today: {today_str}\n"
+            f"Flow summary: {sentiment_ratio}% call volume vs puts = overall {overall} bias\n\n"
+            f"Unusual contracts (sorted by notional premium, biggest bets first):\n\n"
+            f"{flow_block}\n\n"
+            "For EACH alert, return all original fields plus these five new fields:\n"
+            "- interpretation: what this flow likely means given any earnings context\n"
+            "- implied_target: specific price target implied by the bet (e.g. '$115+ by May 15')\n"
+            "- confidence: high / medium / low\n"
+            "- action_note: one sentence for a day trader watching this stock\n"
+            "- recommendation: 'BUY' or 'AVOID' plus one specific condition (e.g. 'BUY if stock breaks $880 with volume — flow is real. AVOID if IV is RICH and stock is flat at open')\n\n"
+            "Return JSON only:\n"
+            '{"alerts": [{'
+            '"ticker": "NVDA", "option_type": "call", "strike": 900.0, '
+            '"expiry": "2026-05-10", "dte": 5, "volume": 15420, "open_interest": 1200, '
+            '"vol_oi_ratio": 12.8, "is_new_contract": false, "mid_premium": 2.50, '
+            '"notional": 3855000, "pct_otm": 2.9, "price": 875.0, "sentiment": "bullish", '
+            '"earnings_context": null, "breakeven": 902.50, "pct_move_needed": 3.1, '
+            '"iv_pct": 55.0, "hv_pct": 42.0, "iv_hv_ratio": 1.31, "premium_rating": "FAIR", '
+            '"interpretation": "Aggressive sweep — fresh bullish positioning ahead of a catalyst", '
+            '"implied_target": "$900+ by May 10", '
+            '"confidence": "high", '
+            '"action_note": "Watch for break above $880 with volume — flow confirms upside bias", '
+            '"recommendation": "BUY if stock breaks $880 with volume confirmation. AVOID if market opens flat — premium decay will hurt quickly."'
+            "}]}"
+        )
+        raw = self._call(system, user, max_tokens=3500)
+        try:
+            result = self._parse(raw)
+            interpreted = result.get("alerts", [])
+            if interpreted:
+                return interpreted
+            logger.warning("interpret_options_flow: Claude returned empty alerts list")
+        except Exception as e:
+            logger.warning("interpret_options_flow: parse failed (%s), returning raw alerts", e)
+        return alerts

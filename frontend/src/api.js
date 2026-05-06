@@ -78,5 +78,8 @@ export const api = {
     scan: () => request('/api/scanner/scan'),
     marketStatus: () => request('/api/scanner/market-status'),
   },
+  flow: {
+    scan: () => request('/api/flow/scan'),
+  },
   getStatus: () => request('/api/status'),
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Component } from 'react'
 import TabNav from './components/TabNav'
 import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
@@ -9,9 +9,11 @@ import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import DayTradeTab from './tabs/DayTradeTab'
+import OptionsFlowTab from './tabs/OptionsFlowTab'
 
 const TABS = [
   { id: 'daytrade',     label: '⚡ Day Scanner' },
+  { id: 'flow',         label: '🌊 Options Flow' },
   { id: 'options',      label: '📈 Options Trading' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
@@ -20,6 +22,28 @@ const TABS = [
   { id: 'watchlist',    label: '👁 Watchlist' },
   { id: 'performance',  label: '🏆 Performance' },
 ]
+
+class TabErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(e) { return { error: e } }
+  render() {
+    if (this.state.error) return (
+      <div style={{ padding: '32px', color: '#fc8181', background: '#2d1515', borderRadius: '8px', margin: '24px' }}>
+        <strong>Something went wrong rendering this tab.</strong>
+        <div style={{ fontSize: '12px', marginTop: '8px', color: '#a0aec0' }}>
+          {this.state.error?.message || 'Unknown error'}
+        </div>
+        <button
+          onClick={() => this.setState({ error: null })}
+          style={{ marginTop: '12px', padding: '6px 16px', background: '#2b6cb0', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+        >
+          Retry
+        </button>
+      </div>
+    )
+    return this.props.children
+  }
+}
 
 const styles = {
   app: {
@@ -90,14 +114,17 @@ export default function App() {
       <MarketBanner />
 
       <main style={styles.content}>
-        {activeTab === 'daytrade'     && <DayTradeTab />}
-        {activeTab === 'options'      && <OptionsTab />}
-        {activeTab === 'wheel'        && <WheelTab />}
-        {activeTab === 'coveredcalls' && <CoveredCallsTab />}
-        {activeTab === 'longterm'     && <LongTermTab />}
-        {activeTab === 'lookup'       && <StockLookupTab />}
-        {activeTab === 'watchlist'    && <WatchlistTab />}
-        {activeTab === 'performance'  && <PerformanceTab />}
+        <TabErrorBoundary key={activeTab}>
+          {activeTab === 'daytrade'     && <DayTradeTab />}
+          {activeTab === 'flow'         && <OptionsFlowTab />}
+          {activeTab === 'options'      && <OptionsTab />}
+          {activeTab === 'wheel'        && <WheelTab />}
+          {activeTab === 'coveredcalls' && <CoveredCallsTab />}
+          {activeTab === 'longterm'     && <LongTermTab />}
+          {activeTab === 'lookup'       && <StockLookupTab />}
+          {activeTab === 'watchlist'    && <WatchlistTab />}
+          {activeTab === 'performance'  && <PerformanceTab />}
+        </TabErrorBoundary>
       </main>
     </div>
   )

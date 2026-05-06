@@ -31,7 +31,7 @@ const TIER_CONFIG = {
   },
 }
 
-const QUICK_TICKERS = ['SCHD', 'VTI', 'QQQM', 'AVUV', 'VXUS', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA']
+const QUICK_TICKERS = ['BMNR', 'SCHD', 'VTI', 'QQQM', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'COIN', 'PLTR']
 
 const s = {
   header: { marginBottom: '24px' },

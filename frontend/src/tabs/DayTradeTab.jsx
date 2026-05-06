@@ -190,12 +190,15 @@ function PlayCard({ play, shortData }) {
   const conf = (play.confidence || 'medium').toLowerCase()
   const tf = (play.timeframe || '').toLowerCase()
   const tfColors = TIMEFRAME_COLORS[tf] ?? TIMEFRAME_COLORS.swing
+  const confColors = CONFIDENCE_COLORS[conf] ?? CONFIDENCE_COLORS.medium
   const dirLong = play.direction === 'long'
 
-  // Find short data for this play's ticker from top_movers
   const dtc = shortData?.days_to_cover ?? null
   const svr = shortData?.short_volume_ratio_pct ?? null
   const squeezeRisk = dtc != null && dtc > 3 && dirLong
+  const rsi = shortData?.rsi ?? null
+  const atr = shortData?.atr ?? null
+  const vsspy = shortData?.vs_spy ?? null
 
   return (
     <div style={s.card(conf)}>
@@ -208,9 +211,9 @@ function PlayCard({ play, shortData }) {
             text: dirLong ? '#68d391' : '#fc8181',
           })}
           {badge(play.setup || 'Setup', {
-            bg: CONFIDENCE_COLORS[conf].badge,
-            border: CONFIDENCE_COLORS[conf].border,
-            text: CONFIDENCE_COLORS[conf].text,
+            bg: confColors.badge,
+            border: confColors.border,
+            text: confColors.text,
           })}
           {badge(tf || 'intraday', tfColors)}
           {squeezeRisk && badge('🔥 Squeeze Risk', { bg: 'rgba(107,70,193,0.15)', border: '#6b46c1', text: '#b794f4' })}
@@ -254,6 +257,37 @@ function PlayCard({ play, shortData }) {
             )}
             {squeezeRisk && (
               <span style={s.squeezeAlert}>⚡ squeeze potential</span>
+            )}
+          </div>
+        )}
+
+        {/* Technicals row */}
+        {(rsi != null || atr != null || vsspy != null) && (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {rsi != null && (
+              <span style={{
+                padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '20px',
+                background: rsi > 70 ? '#2d1515' : rsi < 30 ? '#071a0a' : '#131825',
+                border: `1px solid ${rsi > 70 ? '#742a2a' : rsi < 30 ? '#276749' : '#2d3748'}`,
+                color: rsi > 70 ? '#fc8181' : rsi < 30 ? '#68d391' : '#718096',
+              }}>
+                RSI {rsi}{rsi > 70 ? ' ⚠' : rsi < 30 ? ' ↩' : ''}
+              </span>
+            )}
+            {atr != null && (
+              <span style={{ padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '20px', background: '#131825', border: '1px solid #2d3748', color: '#718096' }}>
+                ATR ${atr}
+              </span>
+            )}
+            {vsspy != null && (
+              <span style={{
+                padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '20px',
+                background: vsspy >= 0 ? '#071a0a' : '#1f0a0a',
+                border: `1px solid ${vsspy >= 0 ? '#276749' : '#742a2a'}`,
+                color: vsspy >= 0 ? '#68d391' : '#fc8181',
+              }}>
+                vs S&P {vsspy >= 0 ? '+' : ''}{vsspy}%
+              </span>
             )}
           </div>
         )}
@@ -311,14 +345,15 @@ export default function DayTradeTab() {
   const plays = result?.plays ?? []
   const movers = result?.top_movers ?? []
 
-  // Build a map of ticker -> short data from top_movers
+  // Build a map of ticker -> enriched data from top_movers
   const shortMap = {}
   movers.forEach(m => {
-    if (m.days_to_cover != null || m.short_volume_ratio_pct != null) {
-      shortMap[m.ticker] = {
-        days_to_cover: m.days_to_cover,
-        short_volume_ratio_pct: m.short_volume_ratio_pct,
-      }
+    shortMap[m.ticker] = {
+      days_to_cover: m.days_to_cover ?? null,
+      short_volume_ratio_pct: m.short_volume_ratio_pct ?? null,
+      rsi: m.rsi ?? null,
+      atr: m.atr ?? null,
+      vs_spy: m.vs_spy ?? null,
     }
   })
 
@@ -340,6 +375,16 @@ export default function DayTradeTab() {
           {status.server_time && (
             <span style={s.serverTime}>
               as of {new Date(status.server_time).toLocaleTimeString()}
+            </span>
+          )}
+          {result?.spy_change != null && (
+            <span style={{
+              padding: '4px 12px', fontSize: '12px', fontWeight: 700, borderRadius: '20px',
+              background: result.spy_change >= 0 ? '#071a0a' : '#1f0a0a',
+              border: `1px solid ${result.spy_change >= 0 ? '#276749' : '#742a2a'}`,
+              color: result.spy_change >= 0 ? '#68d391' : '#fc8181',
+            }}>
+              SPY {result.spy_change >= 0 ? '+' : ''}{result.spy_change}%
             </span>
           )}
           {!status.is_open && (
@@ -394,8 +439,17 @@ export default function DayTradeTab() {
 
       {plays.length === 0 && result && !loading && (
         <div style={s.emptyState}>
-          No high-confidence plays found in this scan.
-          Try again during active market hours when volume is higher.
+          <div style={{ marginBottom: '8px', fontWeight: 600, color: '#a0aec0' }}>
+            No plays returned for this scan.
+          </div>
+          <div style={{ fontSize: '12px', color: '#4a5568', lineHeight: 1.6 }}>
+            {result.candidates_scanned > 0
+              ? `Screened ${result.candidates_scanned} movers — Claude did not find high-confidence setups at current levels.`
+              : 'No movers met the scan thresholds. Market may be quiet or closed.'}
+            <br />
+            {result.spy_change != null && `S&P 500 is ${result.spy_change >= 0 ? '+' : ''}${result.spy_change}% today. `}
+            Best results during active market hours (9:30am–4pm ET).
+          </div>
         </div>
       )}
 

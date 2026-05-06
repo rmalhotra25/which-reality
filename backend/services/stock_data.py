@@ -233,6 +233,25 @@ def _ncdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def _historical_volatility(ticker: str, days: int = 30) -> float | None:
+    """Annualised historical volatility from recent daily closes. Used as IV fallback."""
+    if not _YF_AVAILABLE:
+        return None
+    try:
+        hist = yf.download(ticker, period="60d", interval="1d", progress=False, auto_adjust=True)
+        closes = hist["Close"]
+        if hasattr(closes, "columns"):  # multi-ticker download returns DataFrame
+            closes = closes.iloc[:, 0]
+        closes = closes.dropna()
+        if len(closes) < 10:
+            return None
+        returns = closes.pct_change().dropna()
+        hv = float(returns.std() * (252 ** 0.5))
+        return hv if hv > 0 else None
+    except Exception:
+        return None
+
+
 def _bs_call_delta(price: float, strike: float, iv: float, T: float, r: float = 0.045) -> float | None:
     """Call delta via Black-Scholes. Returns value 0–1 (probability shares get called away)."""
     try:
@@ -669,7 +688,66 @@ class StockDataService:
             logger.warning("get_put_tiers failed for %s: %s", ticker, e)
             return None
 
-    def get_call_tiers(self, ticker: str) -> dict | None:
+    def snap_put_strike(self, ticker: str, suggested_strike: float, prefer_dte: tuple = (14, 45)) -> dict | None:
+        """
+        Given Claude's mathematically-suggested put strike, fetch the real options chain
+        and return the nearest tradeable strike along with its real bid/ask/mid.
+        Returns None if chain is unavailable.
+        """
+        if not _YF_AVAILABLE:
+            return None
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return None
+
+            today = date.today()
+            min_dte, max_dte = prefer_dte
+            target_expiry = None
+            for exp in expiries:
+                days = (date.fromisoformat(exp) - today).days
+                if min_dte <= days <= max_dte:
+                    target_expiry = exp
+                    break
+            if not target_expiry:
+                for exp in expiries:
+                    if (date.fromisoformat(exp) - today).days >= 7:
+                        target_expiry = exp
+                        break
+            if not target_expiry:
+                return None
+
+            chain = t.option_chain(target_expiry)
+            puts = chain.puts.copy()
+            if puts.empty:
+                return None
+
+            # Find nearest real strike to suggested
+            nearest_idx = (puts["strike"] - suggested_strike).abs().idxmin()
+            row = puts.loc[nearest_idx]
+            strike = float(row["strike"])
+            bid = float(row.get("bid") or 0)
+            ask = float(row.get("ask") or 0)
+            last = float(row.get("lastPrice") or 0)
+            mid = round((bid + ask) / 2, 2) if bid > 0 else last
+
+            dte = (date.fromisoformat(target_expiry) - today).days
+            return {
+                "strike": strike,
+                "expiry": target_expiry,
+                "dte": dte,
+                "mid_premium": mid,
+                "bid": bid,
+                "ask": ask,
+                "volume": int(row.get("volume") or 0),
+                "open_interest": int(row.get("openInterest") or 0),
+            }
+        except Exception as e:
+            logger.debug("snap_put_strike failed for %s: %s", ticker, e)
+            return None
+
+
         """
         Fetch call options chain for covered call income strategy.
         Returns three tiers: aggressive (high premium, likely called away),
@@ -764,6 +842,17 @@ class StockDataService:
                 return None
 
             data_source = "live" if calls["_is_live"].any() else "last_trade"
+
+            # If most rows have IV=0 (newly listed options), fall back to historical vol
+            mean_iv = calls["impliedVolatility"].fillna(0).mean() if "impliedVolatility" in calls.columns else 0
+            if mean_iv < 0.01:
+                hv = _historical_volatility(ticker)
+                if hv:
+                    logger.info("get_call_tiers: using HV=%.2f for %s (chain IV near zero)", hv, ticker)
+                    calls["impliedVolatility"] = hv
+                else:
+                    logger.warning("get_call_tiers: no valid IV or HV for %s", ticker)
+                    return None
 
             calls["_delta"] = calls.apply(
                 lambda r: _bs_call_delta(price, r["strike"], float(r.get("impliedVolatility") or 0), T),

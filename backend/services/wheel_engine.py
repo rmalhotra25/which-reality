@@ -98,6 +98,26 @@ class WheelEngine:
                     quant_scores[ticker] = {**qs, "entry_exit": ee}
 
             recs = self.analyst.analyze_wheel(news_str, screening_str, quant_scores=quant_scores)
+
+            # Snap each Claude-suggested strike to the nearest real chain strike
+            for rec in recs:
+                ticker = str(rec.get("ticker", "")).upper()
+                suggested = rec.get("put_strike")
+                if suggested:
+                    try:
+                        snapped = self.stock_data.snap_put_strike(ticker, float(suggested))
+                        if snapped:
+                            rec["put_strike"] = snapped["strike"]
+                            rec["put_expiry"] = snapped["expiry"]
+                            if snapped["mid_premium"] > 0:
+                                rec["put_premium"] = snapped["mid_premium"]
+                            logger.info(
+                                "WheelEngine: snapped %s strike %.2f → %.2f (exp %s)",
+                                ticker, suggested, snapped["strike"], snapped["expiry"],
+                            )
+                    except Exception as snap_err:
+                        logger.debug("snap_put_strike skipped for %s: %s", ticker, snap_err)
+
             self._store(recs, run_at, quant_scores)
             run_status.set_success("wheel")
             logger.info("WheelEngine: stored %d recommendations", len(recs))

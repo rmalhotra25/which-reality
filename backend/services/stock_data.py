@@ -688,7 +688,66 @@ class StockDataService:
             logger.warning("get_put_tiers failed for %s: %s", ticker, e)
             return None
 
-    def get_call_tiers(self, ticker: str) -> dict | None:
+    def snap_put_strike(self, ticker: str, suggested_strike: float, prefer_dte: tuple = (14, 45)) -> dict | None:
+        """
+        Given Claude's mathematically-suggested put strike, fetch the real options chain
+        and return the nearest tradeable strike along with its real bid/ask/mid.
+        Returns None if chain is unavailable.
+        """
+        if not _YF_AVAILABLE:
+            return None
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return None
+
+            today = date.today()
+            min_dte, max_dte = prefer_dte
+            target_expiry = None
+            for exp in expiries:
+                days = (date.fromisoformat(exp) - today).days
+                if min_dte <= days <= max_dte:
+                    target_expiry = exp
+                    break
+            if not target_expiry:
+                for exp in expiries:
+                    if (date.fromisoformat(exp) - today).days >= 7:
+                        target_expiry = exp
+                        break
+            if not target_expiry:
+                return None
+
+            chain = t.option_chain(target_expiry)
+            puts = chain.puts.copy()
+            if puts.empty:
+                return None
+
+            # Find nearest real strike to suggested
+            nearest_idx = (puts["strike"] - suggested_strike).abs().idxmin()
+            row = puts.loc[nearest_idx]
+            strike = float(row["strike"])
+            bid = float(row.get("bid") or 0)
+            ask = float(row.get("ask") or 0)
+            last = float(row.get("lastPrice") or 0)
+            mid = round((bid + ask) / 2, 2) if bid > 0 else last
+
+            dte = (date.fromisoformat(target_expiry) - today).days
+            return {
+                "strike": strike,
+                "expiry": target_expiry,
+                "dte": dte,
+                "mid_premium": mid,
+                "bid": bid,
+                "ask": ask,
+                "volume": int(row.get("volume") or 0),
+                "open_interest": int(row.get("openInterest") or 0),
+            }
+        except Exception as e:
+            logger.debug("snap_put_strike failed for %s: %s", ticker, e)
+            return None
+
+
         """
         Fetch call options chain for covered call income strategy.
         Returns three tiers: aggressive (high premium, likely called away),

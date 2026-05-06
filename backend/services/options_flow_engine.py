@@ -12,6 +12,8 @@ This gives the same signal as paid flow services for the most liquid names —
 without needing the Massive options tier.
 """
 import logging
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
@@ -42,8 +44,13 @@ MIN_VOL_OI_RATIO = 3.0
 MIN_NOTIONAL = 25_000
 
 
+MAX_ALERTS_PER_TICKER = 2  # prevent one stock dominating results
+
+
 def _fetch_ticker_flow(ticker: str) -> list[dict]:
     """Return unusual flow alerts for a single ticker."""
+    # Small random stagger so parallel workers don't all hit Yahoo simultaneously
+    time.sleep(random.uniform(0.1, 0.6))
     try:
         t = yf.Ticker(ticker)
         expiries = t.options
@@ -121,7 +128,9 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                         "pct_otm": pct_otm,
                         "sentiment": "bullish" if opt_type == "call" else "bearish",
                     })
-        return alerts
+        # Cap per ticker so one name can't flood results
+        alerts.sort(key=lambda x: x["notional"], reverse=True)
+        return alerts[:MAX_ALERTS_PER_TICKER]
     except Exception as e:
         logger.debug("flow scan failed for %s: %s", ticker, e)
         return []
@@ -133,11 +142,16 @@ def run_flow_scan() -> dict:
 
     all_alerts: list[dict] = []
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(_fetch_ticker_flow, t): t for t in FLOW_UNIVERSE}
-        for fut in as_completed(futures, timeout=60):
+    # Shuffle so different tickers surface first each scan (avoids rate-limit bias toward same names)
+    universe = FLOW_UNIVERSE[:]
+    random.shuffle(universe)
+
+    # Lower concurrency to avoid Yahoo Finance rate limiting
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
+        for fut in as_completed(futures, timeout=90):
             try:
-                all_alerts.extend(fut.result(timeout=20))
+                all_alerts.extend(fut.result(timeout=25))
             except Exception:
                 pass
 

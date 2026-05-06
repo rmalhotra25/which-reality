@@ -140,21 +140,23 @@ function FlowCard({ alert }) {
   const sent = alert.sentiment || 'bullish'
   const conf = (alert.confidence || 'medium').toLowerCase()
   const confColors = CONF_COLORS[conf] ?? CONF_COLORS.medium
-  const otmLabel = alert.pct_otm >= 0
-    ? `${alert.pct_otm}% OTM`
-    : `${Math.abs(alert.pct_otm)}% ITM`
+  const pct_otm = alert.pct_otm ?? 0
+  const otmLabel = pct_otm >= 0 ? `${pct_otm}% OTM` : `${Math.abs(pct_otm)}% ITM`
+  const volOiRatio = alert.vol_oi_ratio ?? 0
+  const volOiLabel = alert.is_new_contract ? 'NEW ✦' : `${volOiRatio}×`
+  const volOiColor = alert.is_new_contract ? '#b794f4' : volOiRatio >= 10 ? '#f6e05e' : '#e2e8f0'
 
   return (
     <div style={s.card(sent)}>
       <div style={s.cardHeader(sent)}>
         <div style={s.tickerRow}>
-          <span style={s.ticker}>{alert.ticker}</span>
+          <span style={s.ticker}>{alert.ticker || '—'}</span>
           <span style={s.dirBadge(sent)}>
             {sent === 'bullish' ? '▲ CALLS' : '▼ PUTS'}
           </span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
-          <span style={s.price}>${alert.price}</span>
+          <span style={s.price}>${alert.price ?? '—'}</span>
           <span style={{
             padding: '2px 8px', fontSize: '10px', fontWeight: 700, borderRadius: '20px',
             background: confColors.bg, border: `1px solid ${confColors.border}`, color: confColors.text,
@@ -165,12 +167,23 @@ function FlowCard({ alert }) {
       </div>
 
       <div style={s.cardBody}>
+        {/* Earnings context banner */}
+        {alert.earnings_context && (
+          <div style={{
+            fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '6px',
+            background: 'rgba(246,224,94,0.08)', border: '1px solid rgba(183,121,31,0.4)',
+            color: '#f6e05e',
+          }}>
+            📅 {alert.earnings_context}
+          </div>
+        )}
+
         {/* Contract details */}
         <div style={s.contractRow}>
           <span style={s.contractBadge(sent)}>
-            ${alert.strike} {alert.option_type?.toUpperCase()} {alert.expiry}
+            ${alert.strike ?? '—'} {(alert.option_type || 'call').toUpperCase()} {alert.expiry ?? '—'}
           </span>
-          <span style={s.dteBadge}>{alert.dte}d to exp</span>
+          <span style={s.dteBadge}>{alert.dte ?? '—'}d to exp</span>
           <span style={s.otmBadge}>{otmLabel}</span>
         </div>
 
@@ -179,18 +192,18 @@ function FlowCard({ alert }) {
           <div style={s.stat}>
             <div style={s.statLabel}>Notional</div>
             <div style={{ ...s.statValue, ...s.notionalBig(sent) }}>
-              {fmt(alert.notional)}
+              {fmt(alert.notional ?? 0)}
             </div>
           </div>
           <div style={s.stat}>
             <div style={s.statLabel}>Vol / OI</div>
-            <div style={{ ...s.statValue, color: alert.vol_oi_ratio >= 10 ? '#f6e05e' : '#e2e8f0' }}>
-              {alert.vol_oi_ratio >= 999 ? 'New!' : `${alert.vol_oi_ratio}×`}
+            <div style={{ ...s.statValue, color: volOiColor }}>
+              {volOiLabel}
             </div>
           </div>
           <div style={s.stat}>
             <div style={s.statLabel}>Volume</div>
-            <div style={s.statValue}>{alert.volume?.toLocaleString()}</div>
+            <div style={s.statValue}>{(alert.volume ?? 0).toLocaleString()}</div>
           </div>
         </div>
 

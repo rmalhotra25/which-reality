@@ -910,19 +910,31 @@ class ClaudeAnalyst:
 
         lines = []
         for a in alerts:
-            notional_k = round(a["notional"] / 1_000)
-            itm_otm = f"{abs(a['pct_otm'])}% {'OTM' if a['pct_otm'] >= 0 else 'ITM'}"
+            notional_k = round(a.get("notional", 0) / 1_000)
+            pct_otm = a.get("pct_otm", 0)
+            itm_otm = f"{abs(pct_otm)}% {'OTM' if pct_otm >= 0 else 'ITM'}"
+            opt_type = (a.get("option_type") or "call").upper()
+            vol_oi = a.get("vol_oi_ratio", 0)
+            oi = a.get("open_interest", 0)
+            ratio_str = "NEW (no prior OI)" if a.get("is_new_contract") else f"{vol_oi}x"
+            earnings = a.get("earnings_context")
+            earnings_str = f" | {earnings}" if earnings else ""
             lines.append(
-                f"{a['ticker']} ${a['strike']} {a['option_type'].upper()} exp {a['expiry']} ({a['dte']}d) | "
-                f"Vol:{a['volume']:,} OI:{a['open_interest']:,} Ratio:{a['vol_oi_ratio']}x | "
-                f"${notional_k}K notional | {itm_otm} | Stock=${a['price']}"
+                f"{a.get('ticker','?')} ${a.get('strike','?')} {opt_type} "
+                f"exp {a.get('expiry','?')} ({a.get('dte','?')}d) | "
+                f"Vol:{a.get('volume',0):,} OI:{oi:,} Ratio:{ratio_str} | "
+                f"${notional_k}K notional | {itm_otm} | Stock=${a.get('price','?')}"
+                f"{earnings_str}"
             )
         flow_block = "\n".join(lines)
 
         system = (
             "You are an expert options flow analyst at a prop trading desk. "
-            "Interpret unusual options activity — high vol/OI ratios mean fresh positioning, not rolls. "
+            "Interpret unusual options activity — high vol/OI ratios mean fresh positioning. "
+            "'NEW (no prior OI)' means a brand-new contract with zero prior open interest — very significant. "
             "Large OTM prints are directional bets. Near-ATM prints could be hedges or income plays. "
+            "CRITICAL: If earnings context is provided (e.g. 'Earnings 2d ago'), factor that in — "
+            "post-earnings flow is repositioning, NOT an earnings play. Pre-earnings flow is often a straddle or directional bet. "
             "Be direct and concise. A day trader needs actionable takeaways, not theory. "
             "Return ONLY valid JSON — no prose, no markdown."
         )
@@ -931,17 +943,18 @@ class ClaudeAnalyst:
             f"Flow summary: {sentiment_ratio}% call volume vs puts = overall {overall} bias\n\n"
             f"Unusual contracts (sorted by notional premium, biggest bets first):\n\n"
             f"{flow_block}\n\n"
-            "For each alert return:\n"
-            "- interpretation: what the flow likely means (directional bet, hedge, earnings play, sweep)\n"
-            "- implied_target: what price move is being bet on (e.g. '$900+ by May 10')\n"
+            "For EACH alert, return all original fields plus these four new fields:\n"
+            "- interpretation: what this flow likely means given any earnings context\n"
+            "- implied_target: specific price target implied by the bet (e.g. '$115+ by May 15')\n"
             "- confidence: high / medium / low\n"
-            "- action_note: one sentence — what should a day trader do with this information\n\n"
-            "Return JSON only — preserve all original fields and ADD the four fields above:\n"
+            "- action_note: one sentence for a day trader watching this stock\n\n"
+            "Return JSON only:\n"
             '{"alerts": [{'
             '"ticker": "NVDA", "option_type": "call", "strike": 900.0, '
             '"expiry": "2026-05-10", "dte": 5, "volume": 15420, "open_interest": 1200, '
-            '"vol_oi_ratio": 12.8, "mid_premium": 2.50, "notional": 3855000, '
-            '"pct_otm": 2.9, "price": 875.0, "sentiment": "bullish", '
+            '"vol_oi_ratio": 12.8, "is_new_contract": false, "mid_premium": 2.50, '
+            '"notional": 3855000, "pct_otm": 2.9, "price": 875.0, "sentiment": "bullish", '
+            '"earnings_context": null, '
             '"interpretation": "Aggressive sweep — fresh bullish positioning ahead of a catalyst", '
             '"implied_target": "$900+ by May 10", '
             '"confidence": "high", '
@@ -954,6 +967,7 @@ class ClaudeAnalyst:
             interpreted = result.get("alerts", [])
             if interpreted:
                 return interpreted
-        except Exception:
-            pass
-        return alerts  # fall back to raw alerts if Claude parse fails
+            logger.warning("interpret_options_flow: Claude returned empty alerts list")
+        except Exception as e:
+            logger.warning("interpret_options_flow: parse failed (%s), returning raw alerts", e)
+        return alerts

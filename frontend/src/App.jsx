@@ -9,9 +9,11 @@ import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import DayTradeTab from './tabs/DayTradeTab'
+import OptionsFlowTab from './tabs/OptionsFlowTab'
 
 const TABS = [
   { id: 'daytrade',     label: '⚡ Day Scanner' },
+  { id: 'flow',         label: '🌊 Options Flow' },
   { id: 'options',      label: '📈 Options Trading' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
@@ -114,6 +116,7 @@ export default function App() {
       <main style={styles.content}>
         <TabErrorBoundary key={activeTab}>
           {activeTab === 'daytrade'     && <DayTradeTab />}
+          {activeTab === 'flow'         && <OptionsFlowTab />}
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}

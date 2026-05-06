@@ -900,3 +900,60 @@ class ClaudeAnalyst:
         raw = self._call(system, user, max_tokens=2000)
         result = self._parse(raw)
         return result.get("plays", [])
+
+    def interpret_options_flow(
+        self, alerts: list[dict], sentiment_ratio: int, overall: str
+    ) -> list[dict]:
+        """Interpret unusual options flow and add narrative context to each alert."""
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        lines = []
+        for a in alerts:
+            notional_k = round(a["notional"] / 1_000)
+            itm_otm = f"{abs(a['pct_otm'])}% {'OTM' if a['pct_otm'] >= 0 else 'ITM'}"
+            lines.append(
+                f"{a['ticker']} ${a['strike']} {a['option_type'].upper()} exp {a['expiry']} ({a['dte']}d) | "
+                f"Vol:{a['volume']:,} OI:{a['open_interest']:,} Ratio:{a['vol_oi_ratio']}x | "
+                f"${notional_k}K notional | {itm_otm} | Stock=${a['price']}"
+            )
+        flow_block = "\n".join(lines)
+
+        system = (
+            "You are an expert options flow analyst at a prop trading desk. "
+            "Interpret unusual options activity — high vol/OI ratios mean fresh positioning, not rolls. "
+            "Large OTM prints are directional bets. Near-ATM prints could be hedges or income plays. "
+            "Be direct and concise. A day trader needs actionable takeaways, not theory. "
+            "Return ONLY valid JSON — no prose, no markdown."
+        )
+        user = (
+            f"Today: {today_str}\n"
+            f"Flow summary: {sentiment_ratio}% call volume vs puts = overall {overall} bias\n\n"
+            f"Unusual contracts (sorted by notional premium, biggest bets first):\n\n"
+            f"{flow_block}\n\n"
+            "For each alert return:\n"
+            "- interpretation: what the flow likely means (directional bet, hedge, earnings play, sweep)\n"
+            "- implied_target: what price move is being bet on (e.g. '$900+ by May 10')\n"
+            "- confidence: high / medium / low\n"
+            "- action_note: one sentence — what should a day trader do with this information\n\n"
+            "Return JSON only — preserve all original fields and ADD the four fields above:\n"
+            '{"alerts": [{'
+            '"ticker": "NVDA", "option_type": "call", "strike": 900.0, '
+            '"expiry": "2026-05-10", "dte": 5, "volume": 15420, "open_interest": 1200, '
+            '"vol_oi_ratio": 12.8, "mid_premium": 2.50, "notional": 3855000, '
+            '"pct_otm": 2.9, "price": 875.0, "sentiment": "bullish", '
+            '"interpretation": "Aggressive sweep — fresh bullish positioning ahead of a catalyst", '
+            '"implied_target": "$900+ by May 10", '
+            '"confidence": "high", '
+            '"action_note": "Watch for break above $880 with volume — flow confirms upside bias"'
+            "}]}"
+        )
+        raw = self._call(system, user, max_tokens=2500)
+        try:
+            result = self._parse(raw)
+            interpreted = result.get("alerts", [])
+            if interpreted:
+                return interpreted
+        except Exception:
+            pass
+        return alerts  # fall back to raw alerts if Claude parse fails

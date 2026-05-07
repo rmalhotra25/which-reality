@@ -473,10 +473,40 @@ class StockDataService:
         return result
 
     def get_options_data(self, tickers: list[str]) -> dict:
-        if not _YF_AVAILABLE:
-            return {}
         result = {}
         for ticker in tickers:
+            # Try Polygon first for live IV
+            try:
+                from services.polygon_client import get_options_chain_snapshot
+                snaps = get_options_chain_snapshot(ticker, dte_max=7)
+                if snaps:
+                    price = None
+                    for s in snaps:
+                        if s.underlying_asset and s.underlying_asset.price:
+                            price = float(s.underlying_asset.price)
+                            break
+                    if price:
+                        atm = min(
+                            (s for s in snaps if s.details and s.implied_volatility and s.details.contract_type == "call"),
+                            key=lambda s: abs(float(s.details.strike_price or 0) - price),
+                            default=None,
+                        )
+                        if atm and atm.implied_volatility:
+                            iv = round(float(atm.implied_volatility) * 100, 1)
+                            expiry = str(atm.details.expiration_date)
+                            result[ticker] = {
+                                "nearest_expiry": expiry,
+                                "atm_iv": iv,
+                                "iv_rank_approx": min(100, round(iv / 0.5, 1)),
+                                "data_source": "polygon_live",
+                            }
+                            continue
+            except Exception:
+                pass
+
+            # yfinance fallback
+            if not _YF_AVAILABLE:
+                continue
             try:
                 t = yf.Ticker(ticker)
                 expiries = t.options
@@ -568,12 +598,164 @@ class StockDataService:
                 technicals[ticker].update(options[ticker])
         return technicals
 
+    def _polygon_options_chain(
+        self, ticker: str, contract_type: str, dte_min: int, dte_max: int
+    ) -> tuple[list[dict], float | None]:
+        """
+        Fetch options chain from Polygon with real Greeks and live quotes.
+        Returns (list_of_option_dicts, underlying_price). Falls back to [] on error.
+        Each dict: strike, expiry, dte, bid, ask, mid, iv_pct, delta, delta_abs,
+                   theta_seller (positive = seller income per share/day), gamma, vega,
+                   volume, open_interest.
+        """
+        try:
+            from services.polygon_client import get_options_chain_snapshot
+            snapshots = get_options_chain_snapshot(ticker, dte_max=dte_max, contract_type=contract_type)
+            if not snapshots:
+                return [], None
+
+            today = date.today()
+            underlying_price = None
+            result = []
+
+            for snap in snapshots:
+                if not snap.details:
+                    continue
+                if not underlying_price and snap.underlying_asset and snap.underlying_asset.price:
+                    underlying_price = float(snap.underlying_asset.price)
+                try:
+                    exp = str(snap.details.expiration_date)
+                    dte = (date.fromisoformat(exp) - today).days
+                    if dte < dte_min or dte > dte_max:
+                        continue
+                    strike = float(snap.details.strike_price or 0)
+                    if strike <= 0:
+                        continue
+
+                    bid = ask = mid = 0.0
+                    if snap.last_quote:
+                        bid = float(snap.last_quote.bid or 0)
+                        ask = float(snap.last_quote.ask or 0)
+                        mp = snap.last_quote.midpoint
+                        mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
+                    if mid <= 0 and snap.last_trade:
+                        mid = float(snap.last_trade.price or 0)
+                    if mid <= 0:
+                        continue
+
+                    iv_pct = round(float(snap.implied_volatility or 0) * 100, 1)
+
+                    # Real Greeks from Polygon; BS fallback when market closed
+                    delta = gamma = theta_holder = vega = None
+                    if snap.greeks:
+                        delta = float(snap.greeks.delta) if snap.greeks.delta is not None else None
+                        gamma = float(snap.greeks.gamma) if snap.greeks.gamma is not None else None
+                        theta_holder = float(snap.greeks.theta) if snap.greeks.theta is not None else None
+                        vega = float(snap.greeks.vega) if snap.greeks.vega is not None else None
+
+                    if delta is None and iv_pct > 0 and underlying_price:
+                        T = max(dte, 1) / 365
+                        iv_dec = iv_pct / 100
+                        if contract_type == "call":
+                            delta = _bs_call_delta(underlying_price, strike, iv_dec, T)
+                            theta_holder = -(_bs_call_theta_daily(underlying_price, strike, iv_dec, T) or 0)
+                        else:
+                            delta = _bs_put_delta(underlying_price, strike, iv_dec, T)
+                            theta_holder = -(_bs_put_theta_daily(underlying_price, strike, iv_dec, T) or 0)
+
+                    if delta is None:
+                        continue
+
+                    # theta_seller = income to the seller per share per day (positive)
+                    theta_seller = round(abs(theta_holder), 4) if theta_holder is not None else None
+
+                    result.append({
+                        "strike": strike,
+                        "expiry": exp,
+                        "dte": dte,
+                        "bid": round(bid, 2),
+                        "ask": round(ask, 2),
+                        "mid": round(mid, 2),
+                        "iv_pct": iv_pct,
+                        "delta": delta,
+                        "delta_abs": abs(delta),
+                        "theta_seller": theta_seller,
+                        "gamma": gamma,
+                        "vega": vega,
+                        "volume": int(snap.day.volume or 0) if snap.day else 0,
+                        "open_interest": int(snap.open_interest or 0),
+                    })
+                except Exception:
+                    continue
+
+            return result, underlying_price
+        except Exception as e:
+            logger.debug("_polygon_options_chain failed for %s: %s", ticker, e)
+            return [], None
+
     def get_put_tiers(self, ticker: str) -> dict | None:
         """
         Fetch real put options chain and return three tiers for wheel strategy analysis.
-        Tiers are based on assignment probability (delta), with real bid/ask from yfinance.
-        Returns None if options data is unavailable.
+        Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
+        # --- Polygon path (preferred) ---
+        try:
+            puts, price = self._polygon_options_chain(ticker, "put", 14, 45)
+            if puts and price:
+                today = date.today()
+                # Pick expiry closest to 21 DTE (sweet spot for wheel)
+                expiries = sorted(set(p["expiry"] for p in puts))
+                target_expiry = min(expiries, key=lambda e: abs((date.fromisoformat(e) - today).days - 21))
+                puts = [p for p in puts if p["expiry"] == target_expiry]
+                if not puts:
+                    raise ValueError("no puts for target expiry")
+                dte = (date.fromisoformat(target_expiry) - today).days
+                atm = min(puts, key=lambda p: abs(p["strike"] - price))
+                atm_iv_pct = atm["iv_pct"]
+
+                def _poly_tier(target_delta_abs: float) -> dict | None:
+                    best = min(puts, key=lambda p: abs(p["delta_abs"] - target_delta_abs))
+                    if abs(best["delta_abs"] - target_delta_abs) > 0.15:
+                        return None
+                    mid = best["mid"]
+                    strike = best["strike"]
+                    breakeven = round(strike - mid, 2)
+                    drop_pct = round((price - breakeven) / price * 100, 1)
+                    ann_return = round((mid / strike) * (365 / dte) * 100, 1) if strike > 0 and dte > 0 else None
+                    daily_income = round((best["theta_seller"] or 0) * 100, 2)
+                    return {
+                        "strike": strike,
+                        "expiry": target_expiry,
+                        "dte": dte,
+                        "bid": best["bid"],
+                        "ask": best["ask"],
+                        "mid_premium": mid,
+                        "premium_per_contract": round(mid * 100, 2),
+                        "iv_pct": best["iv_pct"],
+                        "delta_abs": round(best["delta_abs"], 2),
+                        "assignment_chance_pct": round(best["delta_abs"] * 100),
+                        "daily_income_per_contract": daily_income,
+                        "breakeven": breakeven,
+                        "drop_to_breakeven_pct": drop_pct,
+                        "annualized_return_pct": ann_return,
+                        "volume": best["volume"],
+                        "open_interest": best["open_interest"],
+                    }
+
+                return {
+                    "current_price": round(price, 2),
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "atm_iv_pct": atm_iv_pct,
+                    "data_source": "polygon_live",
+                    "likely": _poly_tier(0.45),
+                    "moderate": _poly_tier(0.30),
+                    "unlikely": _poly_tier(0.16),
+                }
+        except Exception as e:
+            logger.debug("get_put_tiers Polygon path failed for %s: %s", ticker, e)
+
+        # --- yfinance fallback ---
         if not _YF_AVAILABLE:
             return None
         try:
@@ -690,10 +872,29 @@ class StockDataService:
 
     def snap_put_strike(self, ticker: str, suggested_strike: float, prefer_dte: tuple = (14, 45)) -> dict | None:
         """
-        Given Claude's mathematically-suggested put strike, fetch the real options chain
-        and return the nearest tradeable strike along with its real bid/ask/mid.
-        Returns None if chain is unavailable.
+        Given Claude's suggested put strike, snap to the nearest real tradeable strike.
+        Uses Polygon real-time data when available; falls back to yfinance.
         """
+        min_dte, max_dte = prefer_dte
+        # --- Polygon path (preferred) ---
+        try:
+            puts, price = self._polygon_options_chain(ticker, "put", min_dte, max_dte)
+            if puts:
+                best = min(puts, key=lambda p: abs(p["strike"] - suggested_strike))
+                return {
+                    "strike": best["strike"],
+                    "expiry": best["expiry"],
+                    "dte": best["dte"],
+                    "mid_premium": best["mid"],
+                    "bid": best["bid"],
+                    "ask": best["ask"],
+                    "volume": best["volume"],
+                    "open_interest": best["open_interest"],
+                }
+        except Exception as e:
+            logger.debug("snap_put_strike Polygon path failed for %s: %s", ticker, e)
+
+        # --- yfinance fallback ---
         if not _YF_AVAILABLE:
             return None
         try:
@@ -748,12 +949,74 @@ class StockDataService:
             return None
 
 
+    def get_call_tiers(self, ticker: str) -> dict | None:
         """
         Fetch call options chain for covered call income strategy.
-        Returns three tiers: aggressive (high premium, likely called away),
-        balanced (moderate), conservative (keeps shares, lower premium).
-        Prefers 4-30 DTE (weekly or monthly); falls back to nearest available.
+        Returns three tiers: aggressive, balanced, conservative.
+        Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
+        # --- Polygon path (preferred) ---
+        try:
+            calls, price = self._polygon_options_chain(ticker, "call", 4, 30)
+            if calls and price:
+                today = date.today()
+                # Pick expiry closest to 14 DTE (weekly/bi-weekly sweet spot for covered calls)
+                expiries = sorted(set(c["expiry"] for c in calls))
+                target_expiry = min(expiries, key=lambda e: abs((date.fromisoformat(e) - today).days - 14))
+                calls = [c for c in calls if c["expiry"] == target_expiry]
+                if not calls:
+                    raise ValueError("no calls for target expiry")
+                dte = (date.fromisoformat(target_expiry) - today).days
+                atm = min(calls, key=lambda c: abs(c["strike"] - price))
+                atm_iv_pct = atm["iv_pct"]
+                options_type = "weekly" if dte <= 14 else "monthly"
+                weeks = dte / 7.0
+                min_premium = round(price * 0.003 * weeks, 2)
+
+                def _poly_call_tier(target_delta: float) -> dict | None:
+                    best = min(calls, key=lambda c: abs(c["delta"] - target_delta))
+                    if abs(best["delta"] - target_delta) > 0.20:
+                        return None
+                    mid = best["mid"]
+                    strike = best["strike"]
+                    daily_income = round((best["theta_seller"] or 0) * 100, 2)
+                    upside_pct = round((strike - price) / price * 100, 1)
+                    pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
+                    return {
+                        "strike": strike,
+                        "expiry": target_expiry,
+                        "dte": dte,
+                        "bid": best["bid"],
+                        "ask": best["ask"],
+                        "mid_premium": mid,
+                        "premium_per_contract": round(mid * 100, 2),
+                        "iv_pct": best["iv_pct"],
+                        "delta": round(best["delta"], 2),
+                        "call_away_chance_pct": round(best["delta"] * 100),
+                        "daily_income_per_contract": daily_income,
+                        "upside_to_strike_pct": upside_pct,
+                        "pct_of_stock_weekly": pct_of_stock,
+                        "below_threshold": mid < min_premium,
+                        "volume": best["volume"],
+                        "open_interest": best["open_interest"],
+                    }
+
+                return {
+                    "current_price": round(price, 2),
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "options_type": options_type,
+                    "atm_iv_pct": atm_iv_pct,
+                    "data_source": "polygon_live",
+                    "min_premium_threshold": min_premium,
+                    "aggressive": _poly_call_tier(0.70),
+                    "balanced": _poly_call_tier(0.45),
+                    "conservative": _poly_call_tier(0.20),
+                }
+        except Exception as e:
+            logger.debug("get_call_tiers Polygon path failed for %s: %s", ticker, e)
+
+        # --- yfinance fallback ---
         if not _YF_AVAILABLE:
             return None
         try:

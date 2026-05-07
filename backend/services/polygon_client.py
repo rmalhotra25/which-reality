@@ -8,7 +8,7 @@ def _client():
     from massive.rest import RESTClient
     if not settings.polygon_api_key:
         raise RuntimeError("POLYGON_API_KEY is not configured")
-    return RESTClient(settings.polygon_api_key, read_timeout=30.0, connect_timeout=10.0)
+    return RESTClient(settings.polygon_api_key, read_timeout=30.0, connect_timeout=10.0, pagination=False)
 
 
 def get_market_status() -> dict:

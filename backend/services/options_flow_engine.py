@@ -87,7 +87,7 @@ def _compute_hv(ticker: str) -> float | None:
 
 def _fetch_ticker_flow(ticker: str) -> list[dict]:
     """Return unusual flow alerts for a single ticker using Polygon real-time data."""
-    time.sleep(random.uniform(0.05, 0.25))
+    time.sleep(random.uniform(0.2, 0.8))
     try:
         from services.polygon_client import get_options_chain_snapshot
         snapshots = get_options_chain_snapshot(ticker, dte_max=45)
@@ -254,7 +254,7 @@ def run_flow_scan() -> dict:
     universe = FLOW_UNIVERSE[:]
     random.shuffle(universe)
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
         for fut in as_completed(futures, timeout=90):
             try:

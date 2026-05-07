@@ -218,13 +218,29 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
         alerts.sort(key=lambda x: x["notional"], reverse=True)
         return alerts[:MAX_ALERTS_PER_TICKER]
     except Exception as e:
-        logger.debug("flow scan failed for %s: %s", ticker, e)
+        logger.warning("flow scan failed for %s: %s", ticker, e)
         return []
 
 
 def run_flow_scan() -> dict:
     """Scan the options universe and return AI-interpreted unusual flow alerts."""
     from services.claude_analyst import ClaudeAnalyst
+
+    # Quick API connectivity check before spinning up the thread pool
+    try:
+        from services.polygon_client import get_options_chain_snapshot
+        test = get_options_chain_snapshot("SPY", dte_max=7)
+        if test is None:
+            raise RuntimeError("Polygon returned None for SPY snapshot")
+    except Exception as e:
+        err = str(e)
+        logger.warning("Polygon API check failed: %s", err)
+        return {
+            "alerts": [],
+            "tickers_scanned": 0,
+            "total_alerts_found": 0,
+            "error": f"Polygon API connection failed: {err}. Check that POLYGON_API_KEY is set and the Options plan is active.",
+        }
 
     all_alerts: list[dict] = []
 

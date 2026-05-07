@@ -10,6 +10,7 @@ Flow:
 6. Pass enriched candidates to Claude for high-confidence play selection
 """
 import logging
+from datetime import date
 
 import pandas as pd
 import yfinance as yf
@@ -171,6 +172,63 @@ def _fetch_movers() -> tuple[list[dict], float | None]:
     return candidates, spy_change
 
 
+def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggested_expiry: str) -> dict | None:
+    """Fetch real bid/ask from yfinance for the closest available strike/expiry."""
+    try:
+        t = yf.Ticker(ticker)
+        price = getattr(t.fast_info, "last_price", None)
+        if not price or price <= 0:
+            return None
+        expiries = t.options
+        if not expiries:
+            return None
+
+        # Find closest expiry
+        try:
+            target_dt = date.fromisoformat(suggested_expiry)
+        except Exception:
+            target_dt = date.today()
+        best_exp = min(expiries, key=lambda e: abs((date.fromisoformat(e) - target_dt).days))
+
+        chain = t.option_chain(best_exp)
+        df = chain.calls if option_type.upper() == "CALL" else chain.puts
+        if df.empty:
+            return None
+
+        strikes = df["strike"].values
+        nearest_strike = float(strikes[abs(strikes - suggested_strike).argmin()])
+        row = df[df["strike"] == nearest_strike].iloc[0]
+
+        bid = float(row.get("bid") or 0)
+        ask = float(row.get("ask") or 0)
+        last = float(row.get("lastPrice") or 0)
+        mid = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else last
+        if mid <= 0:
+            return None
+
+        dte = (date.fromisoformat(best_exp) - date.today()).days
+        if option_type.upper() == "CALL":
+            breakeven = round(nearest_strike + mid, 2)
+        else:
+            breakeven = round(nearest_strike - mid, 2)
+        pct_move = round(abs(breakeven - price) / price * 100, 1)
+
+        return {
+            "option_type": option_type.upper(),
+            "strike": nearest_strike,
+            "expiry": best_exp,
+            "dte": dte,
+            "entry_premium": mid,
+            "bid": bid,
+            "ask": ask,
+            "breakeven_stock": breakeven,
+            "pct_move_needed": pct_move,
+        }
+    except Exception as e:
+        logger.debug("snap_option failed for %s: %s", ticker, e)
+        return None
+
+
 def run_scan() -> dict:
     """Run the day trade scan and return Claude's top plays."""
     from services.claude_analyst import ClaudeAnalyst
@@ -208,6 +266,23 @@ def run_scan() -> dict:
 
     analyst = ClaudeAnalyst()
     plays = analyst.scan_day_trades(top, spy_change=spy_change)
+
+    # Snap each option suggestion to real chain data
+    for play in plays:
+        op = play.get("option_play")
+        if not op or not op.get("option_type") or not op.get("strike"):
+            continue
+        snapped = _snap_option(
+            play.get("ticker", ""),
+            op["option_type"],
+            float(op["strike"]),
+            op.get("expiry", ""),
+        )
+        if snapped:
+            # Preserve Claude's target/stop estimates; replace entry with real market data
+            snapped["target_premium"] = op.get("target_premium")
+            snapped["stop_premium"] = op.get("stop_premium")
+            play["option_play"] = snapped
 
     return {
         "plays": plays,

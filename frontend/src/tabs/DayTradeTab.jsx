@@ -167,6 +167,40 @@ const s = {
     fontSize: '13px', color: '#a0aec0', lineHeight: 1.65,
   },
 
+  optionsBox: {
+    background: 'rgba(43,108,176,0.07)',
+    border: '1px solid rgba(43,108,176,0.25)',
+    borderRadius: '8px',
+    padding: '10px 14px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  optionsTitle: {
+    fontSize: '10px', color: '#63b3ed', fontWeight: 700,
+    textTransform: 'uppercase', letterSpacing: '0.05em',
+  },
+  optionsContract: {
+    fontSize: '13px', fontWeight: 800, color: '#e2e8f0',
+  },
+  optionsGrid: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
+    gap: '6px',
+  },
+  optStat: {
+    background: 'rgba(0,0,0,0.25)', borderRadius: '5px', padding: '5px 8px',
+  },
+  optLabel: {
+    fontSize: '9px', color: '#4a5568', textTransform: 'uppercase',
+    letterSpacing: '0.05em', fontWeight: 600,
+  },
+  optValue: (color) => ({
+    fontSize: '13px', fontWeight: 700, marginTop: '1px', color: color || '#e2e8f0',
+  }),
+  optBreakeven: {
+    fontSize: '11px', color: '#718096',
+  },
+
   disclaimer: { fontSize: '11px', color: '#4a5568', marginTop: '16px' },
 
   moversWrap: { marginTop: '28px' },
@@ -297,6 +331,49 @@ function PlayCard({ play, shortData }) {
           <div style={s.rrBox}>
             <span style={s.rrLabel}>Risk / Reward</span>
             <span style={s.rrValue}>{play.risk_reward}</span>
+          </div>
+        )}
+
+        {/* Options Entry */}
+        {play.option_play && (
+          <div style={s.optionsBox}>
+            <div style={s.optionsTitle}>📋 Options Entry</div>
+            <div style={s.optionsContract}>
+              ${play.option_play.strike} {play.option_play.option_type} &nbsp;·&nbsp; exp {play.option_play.expiry}
+              {play.option_play.dte != null && ` (${play.option_play.dte}d)`}
+            </div>
+            <div style={s.optionsGrid}>
+              <div style={s.optStat}>
+                <div style={s.optLabel}>Buy for</div>
+                <div style={s.optValue('#90cdf4')}>
+                  ${play.option_play.entry_premium ?? '—'}
+                </div>
+              </div>
+              <div style={s.optStat}>
+                <div style={s.optLabel}>Target</div>
+                <div style={s.optValue('#68d391')}>
+                  {play.option_play.target_premium != null ? `$${play.option_play.target_premium}` : '—'}
+                </div>
+              </div>
+              <div style={s.optStat}>
+                <div style={s.optLabel}>Stop</div>
+                <div style={s.optValue('#fc8181')}>
+                  {play.option_play.stop_premium != null ? `$${play.option_play.stop_premium}` : '—'}
+                </div>
+              </div>
+              <div style={s.optStat}>
+                <div style={s.optLabel}>BE Stock</div>
+                <div style={s.optValue('#f6e05e')}>
+                  ${play.option_play.breakeven_stock ?? '—'}
+                </div>
+              </div>
+            </div>
+            {play.option_play.bid != null && play.option_play.ask != null && (
+              <div style={s.optBreakeven}>
+                Bid ${play.option_play.bid} / Ask ${play.option_play.ask}
+                {play.option_play.pct_move_needed != null && ` · stock needs ${play.option_play.pct_move_needed}% move`}
+              </div>
+            )}
           </div>
         )}
 

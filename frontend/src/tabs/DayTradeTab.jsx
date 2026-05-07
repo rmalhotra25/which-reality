@@ -200,6 +200,25 @@ const s = {
   optBreakeven: {
     fontSize: '11px', color: '#718096',
   },
+  likelihoodBadge: (label) => {
+    const cfg = {
+      likely:      { bg: 'rgba(104,211,145,0.1)',  border: 'rgba(39,103,73,0.5)',  color: '#68d391', icon: '✅' },
+      possible:    { bg: 'rgba(246,224,94,0.08)',  border: 'rgba(183,121,31,0.4)', color: '#f6e05e', icon: '⚠️' },
+      speculative: { bg: 'rgba(252,129,129,0.08)', border: 'rgba(116,42,42,0.4)', color: '#fc8181', icon: '🎲' },
+    }[label] ?? { bg: 'rgba(0,0,0,0.2)', border: '#2d3748', color: '#718096', icon: '◆' }
+    return {
+      display: 'flex', alignItems: 'center', gap: '8px',
+      padding: '6px 10px', borderRadius: '6px',
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+    }
+  },
+  likelihoodText: (label) => {
+    const colors = { likely: '#68d391', possible: '#f6e05e', speculative: '#fc8181' }
+    return { fontSize: '12px', fontWeight: 700, color: colors[label] ?? '#718096' }
+  },
+  likelihoodMeta: {
+    fontSize: '11px', color: '#718096', marginLeft: 'auto',
+  },
 
   disclaimer: { fontSize: '11px', color: '#4a5568', marginTop: '16px' },
 
@@ -368,10 +387,26 @@ function PlayCard({ play, shortData }) {
                 </div>
               </div>
             </div>
-            {play.option_play.bid != null && play.option_play.ask != null && (
+            {(play.option_play.likelihood || play.option_play.delta != null || play.option_play.move_feasibility != null) && (
+              <div style={s.likelihoodBadge(play.option_play.likelihood)}>
+                <span style={s.likelihoodText(play.option_play.likelihood)}>
+                  {play.option_play.likelihood === 'likely' ? '✅ LIKELY'
+                   : play.option_play.likelihood === 'possible' ? '⚠ POSSIBLE'
+                   : play.option_play.likelihood === 'speculative' ? '🎲 SPECULATIVE'
+                   : '◆ UNKNOWN'}
+                </span>
+                <span style={s.likelihoodMeta}>
+                  {play.option_play.delta != null && `Δ${Math.abs(play.option_play.delta)} (~${Math.round(Math.abs(play.option_play.delta) * 100)}% ITM)`}
+                  {play.option_play.delta != null && play.option_play.move_feasibility != null && '  ·  '}
+                  {play.option_play.move_feasibility != null && `${play.option_play.move_feasibility}× daily ATR needed`}
+                </span>
+              </div>
+            )}
+            {(play.option_play.bid != null || play.option_play.pct_move_needed != null) && (
               <div style={s.optBreakeven}>
-                Bid ${play.option_play.bid} / Ask ${play.option_play.ask}
-                {play.option_play.pct_move_needed != null && ` · stock needs ${play.option_play.pct_move_needed}% move`}
+                {play.option_play.bid != null && play.option_play.ask != null && `Bid $${play.option_play.bid} / Ask $${play.option_play.ask}`}
+                {play.option_play.bid != null && play.option_play.pct_move_needed != null && ' · '}
+                {play.option_play.pct_move_needed != null && `stock needs ${play.option_play.pct_move_needed}% move`}
               </div>
             )}
           </div>

@@ -10,6 +10,7 @@ Flow:
 6. Pass enriched candidates to Claude for high-confidence play selection
 """
 import logging
+import math
 from datetime import date
 
 import pandas as pd
@@ -172,6 +173,21 @@ def _fetch_movers() -> tuple[list[dict], float | None]:
     return candidates, spy_change
 
 
+def _norm_cdf(x: float) -> float:
+    return (1.0 + math.erf(x / math.sqrt(2))) / 2
+
+
+def _bs_delta(S: float, K: float, T_years: float, sigma: float, option_type: str, r: float = 0.05) -> float | None:
+    """Black-Scholes delta (≈ probability of expiring ITM)."""
+    if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return None
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T_years) / (sigma * math.sqrt(T_years))
+        return round(_norm_cdf(d1) if option_type == "CALL" else _norm_cdf(d1) - 1, 2)
+    except Exception:
+        return None
+
+
 def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggested_expiry: str) -> dict | None:
     """Fetch real bid/ask from yfinance for the closest available strike/expiry."""
     try:
@@ -213,6 +229,12 @@ def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggest
             breakeven = round(nearest_strike - mid, 2)
         pct_move = round(abs(breakeven - price) / price * 100, 1)
 
+        # Delta via Black-Scholes using chain IV
+        iv_raw = row.get("impliedVolatility")
+        iv = float(iv_raw) if iv_raw and float(iv_raw) > 0 else None
+        T_years = max(dte, 1) / 365
+        delta = _bs_delta(price, nearest_strike, T_years, iv, option_type.upper()) if iv else None
+
         return {
             "option_type": option_type.upper(),
             "strike": nearest_strike,
@@ -223,6 +245,8 @@ def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggest
             "ask": ask,
             "breakeven_stock": breakeven,
             "pct_move_needed": pct_move,
+            "delta": delta,
+            "iv_pct": round(iv * 100, 1) if iv else None,
         }
     except Exception as e:
         logger.debug("snap_option failed for %s: %s", ticker, e)
@@ -282,6 +306,35 @@ def run_scan() -> dict:
             # Preserve Claude's target/stop estimates; replace entry with real market data
             snapped["target_premium"] = op.get("target_premium")
             snapped["stop_premium"] = op.get("stop_premium")
+
+            # Move feasibility: pct move needed ÷ ATR% (how many typical daily ranges)
+            mover = next((m for m in top if m["ticker"] == play.get("ticker")), None)
+            if mover and mover.get("atr") and mover.get("price") and snapped.get("pct_move_needed"):
+                atr_pct = mover["atr"] / mover["price"] * 100
+                if atr_pct > 0:
+                    feasibility = round(snapped["pct_move_needed"] / atr_pct, 1)
+                    snapped["move_feasibility"] = feasibility
+
+            # Combined likelihood label from delta + feasibility
+            delta = snapped.get("delta")
+            feas = snapped.get("move_feasibility")
+            abs_delta = abs(delta) if delta is not None else None
+
+            if abs_delta is not None and feas is not None:
+                if abs_delta >= 0.45 and feas <= 1.0:
+                    label = "likely"
+                elif abs_delta >= 0.30 and feas <= 1.8:
+                    label = "possible"
+                else:
+                    label = "speculative"
+            elif abs_delta is not None:
+                label = "likely" if abs_delta >= 0.45 else ("possible" if abs_delta >= 0.30 else "speculative")
+            elif feas is not None:
+                label = "likely" if feas <= 1.0 else ("possible" if feas <= 1.8 else "speculative")
+            else:
+                label = None
+            snapped["likelihood"] = label
+
             play["option_play"] = snapped
 
     return {

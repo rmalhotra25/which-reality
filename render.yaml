@@ -9,6 +9,8 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false          # enter in Render dashboard — required for AI analysis
+      - key: POLYGON_API_KEY
+        sync: false          # enter in Render dashboard — required for options data (Massive/Polygon)
       - key: FINNHUB_API_KEY
         sync: false          # enter in Render dashboard — free key from finnhub.io
       - key: DATABASE_URL

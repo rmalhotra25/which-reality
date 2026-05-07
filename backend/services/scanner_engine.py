@@ -376,8 +376,60 @@ def run_scan() -> dict:
             snapped["likelihood"] = label
             play["option_play"] = snapped
         else:
-            # Snap failed — keep Claude's estimates with a basic likelihood from delta alone
-            op.setdefault("likelihood", None)
+            # Snap failed — compute likelihood from Claude's estimates + mover ATR/price
+            mover = next((m for m in top if m["ticker"] == play.get("ticker")), None)
+            strike = float(op.get("strike") or 0)
+            expiry_str = op.get("expiry", "")
+            opt_type = (op.get("option_type") or "CALL").upper()
+
+            dte = 7
+            try:
+                dte = max(1, (date.fromisoformat(expiry_str) - date.today()).days)
+            except Exception:
+                pass
+            op["dte"] = dte
+
+            delta = None
+            feas = None
+            if mover and mover.get("atr") and mover.get("price") and strike > 0:
+                price = mover["price"]
+                atr_daily = mover["atr"] / price
+                # Rough annualised vol from ATR (ATR ≈ 1.25× daily std for many stocks)
+                iv_est = atr_daily * (252 ** 0.5) * 0.8
+                delta = _bs_delta(price, strike, dte / 365, iv_est, opt_type)
+
+                entry = float(op.get("entry_premium") or 0)
+                if entry > 0:
+                    if opt_type == "CALL":
+                        breakeven = round(strike + entry, 2)
+                        pct_move = round((breakeven - price) / price * 100, 1)
+                    else:
+                        breakeven = round(strike - entry, 2)
+                        pct_move = round((price - breakeven) / price * 100, 1)
+                    op.setdefault("breakeven_stock", breakeven)
+                    op.setdefault("pct_move_needed", pct_move)
+                    atr_pct = atr_daily * 100
+                    if atr_pct > 0:
+                        feas = round(pct_move / atr_pct, 1)
+                        op["move_feasibility"] = feas
+
+                op["delta"] = delta
+
+            abs_delta = abs(delta) if delta is not None else None
+            if abs_delta is not None and feas is not None:
+                if abs_delta >= 0.45 and feas <= 1.0:
+                    label = "likely"
+                elif abs_delta >= 0.30 and feas <= 1.8:
+                    label = "possible"
+                else:
+                    label = "speculative"
+            elif abs_delta is not None:
+                label = "likely" if abs_delta >= 0.45 else ("possible" if abs_delta >= 0.30 else "speculative")
+            elif feas is not None:
+                label = "likely" if feas <= 1.0 else ("possible" if feas <= 1.8 else "speculative")
+            else:
+                label = "speculative"
+            op["likelihood"] = label
             play["option_play"] = op
 
     return {

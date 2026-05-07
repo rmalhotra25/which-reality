@@ -109,6 +109,29 @@ def get_aggregates(
     ]
 
 
+def get_options_chain_snapshot(
+    ticker: str,
+    dte_max: int = 45,
+    contract_type: str | None = None,
+) -> list:
+    """Real-time options chain snapshot with Greeks via Polygon (requires Options plan)."""
+    from datetime import date, timedelta
+    c = _client()
+    today = date.today()
+    params = {
+        "expiration_date.gte": today.isoformat(),
+        "expiration_date.lte": (today + timedelta(days=dte_max)).isoformat(),
+        "limit": 250,
+    }
+    if contract_type:
+        params["contract_type"] = contract_type.lower()
+    try:
+        return list(c.list_snapshot_options_chain(ticker, params=params))
+    except Exception as e:
+        logger.debug("options_chain_snapshot failed for %s: %s", ticker, e)
+        return []
+
+
 def get_news(ticker: str | None = None, limit: int = 5) -> list[dict]:
     """Recent news articles, returned as plain dicts."""
     c = _client()

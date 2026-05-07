@@ -189,64 +189,99 @@ def _bs_delta(S: float, K: float, T_years: float, sigma: float, option_type: str
 
 
 def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggested_expiry: str) -> dict | None:
-    """Fetch real bid/ask from yfinance for the closest available strike/expiry."""
+    """Fetch real-time quote + Greeks from Polygon for the closest available strike/expiry."""
     try:
-        t = yf.Ticker(ticker)
-        price = getattr(t.fast_info, "last_price", None)
-        if not price or price <= 0:
-            return None
-        expiries = t.options
-        if not expiries:
+        from services.polygon_client import get_options_chain_snapshot
+        snapshots = get_options_chain_snapshot(ticker, dte_max=30, contract_type=option_type.lower())
+        if not snapshots:
             return None
 
-        # Find closest expiry
+        today = date.today()
         try:
             target_dt = date.fromisoformat(suggested_expiry)
         except Exception:
-            target_dt = date.today()
-        best_exp = min(expiries, key=lambda e: abs((date.fromisoformat(e) - target_dt).days))
+            target_dt = today
 
-        chain = t.option_chain(best_exp)
-        df = chain.calls if option_type.upper() == "CALL" else chain.puts
-        if df.empty:
+        # Score each contract by proximity to suggested strike + expiry
+        best = None
+        best_score = float("inf")
+        for snap in snapshots:
+            if not snap.details:
+                continue
+            strike = float(snap.details.strike_price or 0)
+            if strike <= 0:
+                continue
+            try:
+                exp_dt = date.fromisoformat(str(snap.details.expiration_date))
+            except Exception:
+                continue
+            exp_diff = abs((exp_dt - target_dt).days)
+            strike_diff = abs(strike - suggested_strike)
+            score = exp_diff * 3 + strike_diff
+            if score < best_score:
+                best_score = score
+                best = snap
+
+        if not best or not best.details:
             return None
 
-        strikes = df["strike"].values
-        nearest_strike = float(strikes[abs(strikes - suggested_strike).argmin()])
-        row = df[df["strike"] == nearest_strike].iloc[0]
+        strike = float(best.details.strike_price)
+        expiry = str(best.details.expiration_date)
+        dte = (date.fromisoformat(expiry) - today).days
 
-        bid = float(row.get("bid") or 0)
-        ask = float(row.get("ask") or 0)
-        last = float(row.get("lastPrice") or 0)
-        mid = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else last
+        bid = ask = mid = 0.0
+        if best.last_quote:
+            bid = float(best.last_quote.bid or 0)
+            ask = float(best.last_quote.ask or 0)
+            mp = best.last_quote.midpoint
+            mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
+        if mid <= 0 and best.last_trade:
+            mid = float(best.last_trade.price or 0)
         if mid <= 0:
             return None
 
-        dte = (date.fromisoformat(best_exp) - date.today()).days
+        price = None
+        if best.underlying_asset and best.underlying_asset.price:
+            price = float(best.underlying_asset.price)
+        if not price or price <= 0:
+            return None
+
         if option_type.upper() == "CALL":
-            breakeven = round(nearest_strike + mid, 2)
+            breakeven = round(strike + mid, 2)
         else:
-            breakeven = round(nearest_strike - mid, 2)
+            breakeven = round(strike - mid, 2)
         pct_move = round(abs(breakeven - price) / price * 100, 1)
 
-        # Delta via Black-Scholes using chain IV
-        iv_raw = row.get("impliedVolatility")
-        iv = float(iv_raw) if iv_raw and float(iv_raw) > 0 else None
-        T_years = max(dte, 1) / 365
-        delta = _bs_delta(price, nearest_strike, T_years, iv, option_type.upper()) if iv else None
+        # Real Greeks — no BS approximation needed
+        delta = gamma = theta = vega = None
+        if best.greeks:
+            delta = round(float(best.greeks.delta), 2) if best.greeks.delta is not None else None
+            gamma = round(float(best.greeks.gamma), 4) if best.greeks.gamma is not None else None
+            theta = round(float(best.greeks.theta), 2) if best.greeks.theta is not None else None
+            vega = round(float(best.greeks.vega), 2) if best.greeks.vega is not None else None
+
+        iv_pct = round(float(best.implied_volatility) * 100, 1) if best.implied_volatility else None
+
+        # Fall back to BS delta only if Polygon didn't return Greeks (e.g. market closed)
+        if delta is None and iv_pct:
+            T_years = max(dte, 1) / 365
+            delta = _bs_delta(price, strike, T_years, best.implied_volatility, option_type.upper())
 
         return {
             "option_type": option_type.upper(),
-            "strike": nearest_strike,
-            "expiry": best_exp,
+            "strike": strike,
+            "expiry": expiry,
             "dte": dte,
-            "entry_premium": mid,
-            "bid": bid,
-            "ask": ask,
+            "entry_premium": round(mid, 2),
+            "bid": round(bid, 2),
+            "ask": round(ask, 2),
             "breakeven_stock": breakeven,
             "pct_move_needed": pct_move,
             "delta": delta,
-            "iv_pct": round(iv * 100, 1) if iv else None,
+            "gamma": gamma,
+            "theta": theta,
+            "vega": vega,
+            "iv_pct": iv_pct,
         }
     except Exception as e:
         logger.debug("snap_option failed for %s: %s", ticker, e)

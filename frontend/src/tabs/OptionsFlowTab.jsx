@@ -237,6 +237,32 @@ function FlowCard({ alert }) {
           </div>
         </div>
 
+        {/* Greeks row */}
+        {(alert.delta != null || alert.theta != null || alert.vega != null || alert.gamma != null) && (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {alert.delta != null && (
+              <span style={{ padding: '3px 9px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', background: 'rgba(0,0,0,0.3)', color: '#a0aec0' }}>
+                Δ {Math.abs(alert.delta)}
+              </span>
+            )}
+            {alert.gamma != null && (
+              <span style={{ padding: '3px 9px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', background: 'rgba(0,0,0,0.3)', color: '#718096' }}>
+                Γ {alert.gamma}
+              </span>
+            )}
+            {alert.theta != null && (
+              <span style={{ padding: '3px 9px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', background: 'rgba(116,42,42,0.2)', color: '#fc8181' }}>
+                Θ {alert.theta}/d
+              </span>
+            )}
+            {alert.vega != null && (
+              <span style={{ padding: '3px 9px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', background: 'rgba(43,108,176,0.15)', color: '#90cdf4' }}>
+                V {alert.vega}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Implied target */}
         {alert.implied_target && (
           <div style={s.impliedTarget(sent)}>

@@ -402,6 +402,25 @@ function PlayCard({ play, shortData }) {
                 </span>
               </div>
             )}
+            {(play.option_play.theta != null || play.option_play.vega != null || play.option_play.iv_pct != null) && (
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {play.option_play.theta != null && (
+                  <span style={{ padding: '2px 8px', fontSize: '10px', fontWeight: 600, borderRadius: '4px', background: 'rgba(116,42,42,0.2)', color: '#fc8181' }}>
+                    Θ {play.option_play.theta}/d
+                  </span>
+                )}
+                {play.option_play.vega != null && (
+                  <span style={{ padding: '2px 8px', fontSize: '10px', fontWeight: 600, borderRadius: '4px', background: 'rgba(43,108,176,0.15)', color: '#90cdf4' }}>
+                    V {play.option_play.vega}
+                  </span>
+                )}
+                {play.option_play.iv_pct != null && (
+                  <span style={{ padding: '2px 8px', fontSize: '10px', fontWeight: 600, borderRadius: '4px', background: 'rgba(0,0,0,0.3)', color: '#718096' }}>
+                    IV {play.option_play.iv_pct}%
+                  </span>
+                )}
+              </div>
+            )}
             {(play.option_play.bid != null || play.option_play.pct_move_needed != null) && (
               <div style={s.optBreakeven}>
                 {play.option_play.bid != null && play.option_play.ask != null && `Bid $${play.option_play.bid} / Ask $${play.option_play.ask}`}

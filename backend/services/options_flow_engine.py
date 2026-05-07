@@ -1,19 +1,19 @@
 """
-Options Flow Scanner — detects unusual activity on the real options chain.
+Options Flow Scanner — detects unusual activity using Polygon real-time options data.
 
 For each ticker in the universe:
-  1. Fetch the next 1-2 expiries (≤ 45 DTE) via yfinance
-  2. Fetch earnings date context (upcoming / just passed / none)
+  1. Fetch real-time options chain snapshot via Polygon (Greeks, IV, bid/ask, volume, OI)
+  2. Fetch earnings date context via yfinance calendar
   3. Scan every call and put for abnormal volume vs open interest
   4. Compute notional premium (volume × mid × 100)
   5. Flag contracts where vol/OI ≥ 3x or brand-new OI
-  6. Pass top alerts + earnings context to Claude for interpretation
+  6. Pass top alerts + earnings/Greek context to Claude for interpretation
 """
 import logging
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date
 
 import yfinance as yf
 
@@ -43,13 +43,13 @@ MIN_NOTIONAL = 25_000
 MAX_ALERTS_PER_TICKER = 2
 
 
-def _earnings_context(t: "yf.Ticker") -> str | None:
-    """Return a short string describing earnings proximity, or None if unavailable."""
+def _earnings_context(ticker: str) -> str | None:
+    """Return a short string describing earnings proximity, or None."""
     try:
+        t = yf.Ticker(ticker)
         cal = t.calendar
         if cal is None:
             return None
-        # yfinance returns calendar as a dict; 'Earnings Date' may be a list or single value
         ed_raw = cal.get("Earnings Date") if isinstance(cal, dict) else None
         if ed_raw is None:
             return None
@@ -70,9 +70,10 @@ def _earnings_context(t: "yf.Ticker") -> str | None:
         return None
 
 
-def _compute_hv(t: "yf.Ticker") -> float | None:
-    """30-day annualised historical volatility from daily closes."""
+def _compute_hv(ticker: str) -> float | None:
+    """30-day annualised historical volatility — used for IV/HV richness comparison."""
     try:
+        t = yf.Ticker(ticker)
         hist = t.history(period="40d", interval="1d")
         closes = hist["Close"].dropna()
         if len(closes) < 10:
@@ -84,137 +85,135 @@ def _compute_hv(t: "yf.Ticker") -> float | None:
         return None
 
 
-def _premium_analysis(
-    opt_type: str,
-    strike: float,
-    mid: float,
-    price: float,
-    iv_pct: float | None,
-    hv_pct: float | None,
-    dte: int,
-) -> dict:
-    """Compute break-even, move needed, bid richness vs historical vol."""
-    if opt_type == "call":
-        breakeven = round(strike + mid, 2)
-        pct_move_needed = round((breakeven - price) / price * 100, 1)
-    else:
-        breakeven = round(strike - mid, 2)
-        pct_move_needed = round((price - breakeven) / price * 100, 1)
-
-    richness = None
-    iv_hv_ratio = None
-    if iv_pct and hv_pct and hv_pct > 0:
-        iv_hv_ratio = round(iv_pct / hv_pct, 2)
-        if iv_hv_ratio > 1.5:
-            richness = "RICH"
-        elif iv_hv_ratio < 0.8:
-            richness = "CHEAP"
-        else:
-            richness = "FAIR"
-
-    return {
-        "breakeven": breakeven,
-        "pct_move_needed": pct_move_needed,
-        "iv_pct": iv_pct,
-        "hv_pct": hv_pct,
-        "iv_hv_ratio": iv_hv_ratio,
-        "premium_rating": richness,
-    }
-
-
 def _fetch_ticker_flow(ticker: str) -> list[dict]:
-    """Return unusual flow alerts for a single ticker, with earnings context."""
-    # Small random stagger so parallel workers don't all hit Yahoo simultaneously
-    time.sleep(random.uniform(0.1, 0.6))
+    """Return unusual flow alerts for a single ticker using Polygon real-time data."""
+    time.sleep(random.uniform(0.05, 0.25))
     try:
-        t = yf.Ticker(ticker)
-        expiries = t.options
-        if not expiries:
+        from services.polygon_client import get_options_chain_snapshot
+        snapshots = get_options_chain_snapshot(ticker, dte_max=45)
+        if not snapshots:
             return []
 
         today = date.today()
-        price = getattr(t.fast_info, "last_price", None)
-        if not price or price <= 0:
-            return []
 
-        earnings_ctx = _earnings_context(t)
-        hv_pct = _compute_hv(t)
-
-        # Up to 2 nearest expiries within 45 DTE
-        targets = []
-        for exp in expiries:
-            dte = (date.fromisoformat(exp) - today).days
-            if 1 <= dte <= 45:
-                targets.append(exp)
-            if len(targets) >= 2:
+        # Get underlying price from the first snapshot that has it
+        underlying_price = None
+        for snap in snapshots:
+            if snap.underlying_asset and snap.underlying_asset.price:
+                underlying_price = float(snap.underlying_asset.price)
                 break
-        if not targets:
+        if not underlying_price or underlying_price <= 0:
             return []
+
+        earnings_ctx = _earnings_context(ticker)
+        hv_pct = _compute_hv(ticker)
 
         alerts = []
-        for expiry in targets:
-            dte = (date.fromisoformat(expiry) - today).days
+        for snap in snapshots:
             try:
-                chain = t.option_chain(expiry)
+                details = snap.details
+                if not details:
+                    continue
+
+                opt_type = (details.contract_type or "").lower()
+                if opt_type not in ("call", "put"):
+                    continue
+
+                strike = float(details.strike_price or 0)
+                expiry = str(details.expiration_date or "")
+                if not strike or not expiry:
+                    continue
+
+                dte = (date.fromisoformat(expiry) - today).days
+                if dte < 1 or dte > 45:
+                    continue
+
+                volume = int(snap.day.volume or 0) if snap.day else 0
+                if volume < MIN_VOLUME:
+                    continue
+
+                oi = int(snap.open_interest or 0)
+
+                # Real-time quote from Polygon
+                bid = ask = mid = 0.0
+                if snap.last_quote:
+                    bid = float(snap.last_quote.bid or 0)
+                    ask = float(snap.last_quote.ask or 0)
+                    mp = snap.last_quote.midpoint
+                    mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
+                if mid <= 0 and snap.last_trade:
+                    mid = float(snap.last_trade.price or 0)
+                if mid <= 0:
+                    continue
+
+                notional = round(volume * mid * 100)
+                if notional < MIN_NOTIONAL:
+                    continue
+
+                is_new_contract = oi == 0
+                vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
+                if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
+                    continue
+
+                if opt_type == "call":
+                    pct_otm = round((strike - underlying_price) / underlying_price * 100, 1)
+                else:
+                    pct_otm = round((underlying_price - strike) / underlying_price * 100, 1)
+
+                # Real Greeks from Polygon
+                delta = gamma = theta = vega = None
+                if snap.greeks:
+                    delta = round(float(snap.greeks.delta), 2) if snap.greeks.delta is not None else None
+                    gamma = round(float(snap.greeks.gamma), 4) if snap.greeks.gamma is not None else None
+                    theta = round(float(snap.greeks.theta), 2) if snap.greeks.theta is not None else None
+                    vega = round(float(snap.greeks.vega), 2) if snap.greeks.vega is not None else None
+
+                iv_pct = round(float(snap.implied_volatility) * 100, 1) if snap.implied_volatility else None
+
+                # Premium richness: IV vs 30-day historical vol
+                iv_hv_ratio = premium_rating = None
+                if iv_pct and hv_pct and hv_pct > 0:
+                    iv_hv_ratio = round(iv_pct / hv_pct, 2)
+                    premium_rating = "RICH" if iv_hv_ratio > 1.5 else ("CHEAP" if iv_hv_ratio < 0.8 else "FAIR")
+
+                if opt_type == "call":
+                    breakeven = round(strike + mid, 2)
+                    pct_move_needed = round((breakeven - underlying_price) / underlying_price * 100, 1)
+                else:
+                    breakeven = round(strike - mid, 2)
+                    pct_move_needed = round((underlying_price - breakeven) / underlying_price * 100, 1)
+
+                alerts.append({
+                    "ticker": ticker,
+                    "price": round(underlying_price, 2),
+                    "option_type": opt_type,
+                    "strike": strike,
+                    "expiry": expiry,
+                    "dte": dte,
+                    "volume": volume,
+                    "open_interest": oi,
+                    "vol_oi_ratio": vol_oi_ratio,
+                    "is_new_contract": is_new_contract,
+                    "mid_premium": round(mid, 2),
+                    "bid": round(bid, 2),
+                    "ask": round(ask, 2),
+                    "notional": notional,
+                    "pct_otm": pct_otm,
+                    "sentiment": "bullish" if opt_type == "call" else "bearish",
+                    "earnings_context": earnings_ctx,
+                    "breakeven": breakeven,
+                    "pct_move_needed": pct_move_needed,
+                    "iv_pct": iv_pct,
+                    "hv_pct": hv_pct,
+                    "iv_hv_ratio": iv_hv_ratio,
+                    "premium_rating": premium_rating,
+                    "delta": delta,
+                    "gamma": gamma,
+                    "theta": theta,
+                    "vega": vega,
+                })
             except Exception:
                 continue
-
-            for opt_type, df in [("call", chain.calls), ("put", chain.puts)]:
-                if df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    volume = int(row.get("volume") or 0)
-                    if volume < MIN_VOLUME:
-                        continue
-
-                    oi = int(row.get("openInterest") or 0)
-                    bid = float(row.get("bid") or 0)
-                    ask = float(row.get("ask") or 0)
-                    last = float(row.get("lastPrice") or 0)
-                    mid = round((bid + ask) / 2, 2) if bid > 0 else last
-                    if mid <= 0:
-                        continue
-
-                    notional = round(volume * mid * 100)
-                    if notional < MIN_NOTIONAL:
-                        continue
-
-                    # vol_oi_ratio: cap at 99 when OI=0 (brand-new contract, not a ratio)
-                    is_new_contract = oi == 0
-                    vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
-
-                    # Skip normal activity — only flag when vol clearly outpaces OI
-                    if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
-                        continue
-
-                    strike = float(row["strike"])
-                    if opt_type == "call":
-                        pct_otm = round((strike - price) / price * 100, 1)
-                    else:
-                        pct_otm = round((price - strike) / price * 100, 1)
-
-                    iv_raw = row.get("impliedVolatility")
-                    iv_pct = round(float(iv_raw) * 100, 1) if iv_raw and float(iv_raw) > 0 else None
-                    premium_data = _premium_analysis(opt_type, strike, mid, price, iv_pct, hv_pct, dte)
-
-                    alerts.append({
-                        "ticker": ticker,
-                        "price": round(price, 2),
-                        "option_type": opt_type,
-                        "strike": strike,
-                        "expiry": expiry,
-                        "dte": dte,
-                        "volume": volume,
-                        "open_interest": oi,
-                        "vol_oi_ratio": vol_oi_ratio,
-                        "is_new_contract": is_new_contract,
-                        "mid_premium": mid,
-                        "notional": notional,
-                        "pct_otm": pct_otm,
-                        "sentiment": "bullish" if opt_type == "call" else "bearish",
-                        "earnings_context": earnings_ctx,
-                        **premium_data,
-                    })
 
         alerts.sort(key=lambda x: x["notional"], reverse=True)
         return alerts[:MAX_ALERTS_PER_TICKER]
@@ -229,11 +228,10 @@ def run_flow_scan() -> dict:
 
     all_alerts: list[dict] = []
 
-    # Shuffle so different tickers surface first each scan (avoids rate-limit bias)
     universe = FLOW_UNIVERSE[:]
     random.shuffle(universe)
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
         for fut in as_completed(futures, timeout=90):
             try:
@@ -249,7 +247,6 @@ def run_flow_scan() -> dict:
             "error": "No unusual options flow detected. Market may be closed or activity is within normal ranges.",
         }
 
-    # Sort by notional, deduplicate
     all_alerts.sort(key=lambda x: x["notional"], reverse=True)
     seen: set = set()
     deduped = []
@@ -277,4 +274,5 @@ def run_flow_scan() -> dict:
         "put_notional": put_notional,
         "sentiment_ratio": sentiment_ratio,
         "overall_sentiment": overall,
+        "data_source": "Polygon real-time options data",
     }

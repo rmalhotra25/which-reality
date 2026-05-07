@@ -296,12 +296,17 @@ def run_scan() -> dict:
         op = play.get("option_play")
         if not op or not op.get("option_type") or not op.get("strike"):
             continue
-        snapped = _snap_option(
-            play.get("ticker", ""),
-            op["option_type"],
-            float(op["strike"]),
-            op.get("expiry", ""),
-        )
+        try:
+            snapped = _snap_option(
+                play.get("ticker", ""),
+                op["option_type"],
+                float(op["strike"]),
+                op.get("expiry", ""),
+            )
+        except Exception as e:
+            logger.debug("snap_option error for %s: %s", play.get("ticker"), e)
+            snapped = None
+
         if snapped:
             # Preserve Claude's target/stop estimates; replace entry with real market data
             snapped["target_premium"] = op.get("target_premium")
@@ -334,8 +339,11 @@ def run_scan() -> dict:
             else:
                 label = None
             snapped["likelihood"] = label
-
             play["option_play"] = snapped
+        else:
+            # Snap failed — keep Claude's estimates with a basic likelihood from delta alone
+            op.setdefault("likelihood", None)
+            play["option_play"] = op
 
     return {
         "plays": plays,

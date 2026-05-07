@@ -910,7 +910,7 @@ class ClaudeAnalyst:
             '}}'
             "]}"
         )
-        raw = self._call(system, user, max_tokens=2000)
+        raw = self._call(system, user, max_tokens=2500)
         result = self._parse(raw)
         return result.get("plays", [])
 

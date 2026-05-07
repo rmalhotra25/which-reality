@@ -226,20 +226,27 @@ def run_flow_scan() -> dict:
     """Scan the options universe and return AI-interpreted unusual flow alerts."""
     from services.claude_analyst import ClaudeAnalyst
 
-    # Quick API connectivity check before spinning up the thread pool
+    # Quick API connectivity check — bypass the exception-swallowing wrapper
+    # so we surface the real error (missing key, wrong plan, 403, etc.)
     try:
-        from services.polygon_client import get_options_chain_snapshot
-        test = get_options_chain_snapshot("SPY", dte_max=7)
-        if test is None:
-            raise RuntimeError("Polygon returned None for SPY snapshot")
+        from datetime import timedelta
+        from services.polygon_client import _client
+        c = _client()
+        today = date.today()
+        params = {
+            "expiration_date.gte": today.isoformat(),
+            "expiration_date.lte": (today + timedelta(days=7)).isoformat(),
+            "limit": 5,
+        }
+        list(c.list_snapshot_options_chain("SPY", params=params))
     except Exception as e:
         err = str(e)
-        logger.warning("Polygon API check failed: %s", err)
+        logger.warning("Polygon API connectivity check failed: %s", err)
         return {
             "alerts": [],
             "tickers_scanned": 0,
             "total_alerts_found": 0,
-            "error": f"Polygon API connection failed: {err}. Check that POLYGON_API_KEY is set and the Options plan is active.",
+            "error": f"Polygon API error: {err}. Check that POLYGON_API_KEY is set correctly and the Options plan is active.",
         }
 
     all_alerts: list[dict] = []

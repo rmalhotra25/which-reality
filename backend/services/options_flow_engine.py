@@ -92,23 +92,34 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
         from services.polygon_client import get_options_chain_snapshot
         snapshots = get_options_chain_snapshot(ticker, dte_max=45)
         if not snapshots:
+            logger.info("flow scan %s: no snapshots returned", ticker)
             return []
 
         today = date.today()
 
-        # Get underlying price from the first snapshot that has it
+        # Try to get underlying price from snapshot first, fall back to yfinance
         underlying_price = None
         for snap in snapshots:
             if snap.underlying_asset and snap.underlying_asset.price:
                 underlying_price = float(snap.underlying_asset.price)
                 break
         if not underlying_price or underlying_price <= 0:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                underlying_price = float(fi.last_price or 0)
+            except Exception:
+                pass
+        if not underlying_price or underlying_price <= 0:
+            logger.warning("flow scan %s: could not get underlying price, skipping", ticker)
             return []
+
+        logger.info("flow scan %s: %d snapshots, price=%.2f", ticker, len(snapshots), underlying_price)
 
         earnings_ctx = _earnings_context(ticker)
         hv_pct = _compute_hv(ticker)
 
         alerts = []
+        filtered_vol = filtered_mid = filtered_notional = filtered_ratio = 0
         for snap in snapshots:
             try:
                 details = snap.details
@@ -130,6 +141,7 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
 
                 volume = int(snap.day.volume or 0) if snap.day else 0
                 if volume < MIN_VOLUME:
+                    filtered_vol += 1
                     continue
 
                 oi = int(snap.open_interest or 0)
@@ -144,15 +156,18 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                 if mid <= 0 and snap.last_trade:
                     mid = float(snap.last_trade.price or 0)
                 if mid <= 0:
+                    filtered_mid += 1
                     continue
 
                 notional = round(volume * mid * 100)
                 if notional < MIN_NOTIONAL:
+                    filtered_notional += 1
                     continue
 
                 is_new_contract = oi == 0
                 vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
                 if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
+                    filtered_ratio += 1
                     continue
 
                 if opt_type == "call":
@@ -215,6 +230,10 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
             except Exception:
                 continue
 
+        logger.info(
+            "flow scan %s: %d alerts found | filtered vol=%d mid=%d notional=%d ratio=%d",
+            ticker, len(alerts), filtered_vol, filtered_mid, filtered_notional, filtered_ratio,
+        )
         alerts.sort(key=lambda x: x["notional"], reverse=True)
         return alerts[:MAX_ALERTS_PER_TICKER]
     except Exception as e:

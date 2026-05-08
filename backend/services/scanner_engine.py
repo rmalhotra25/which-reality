@@ -192,7 +192,10 @@ def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggest
     """Fetch real-time quote + Greeks from Polygon for the closest available strike/expiry."""
     try:
         from services.polygon_client import get_options_chain_snapshot
-        snapshots = get_options_chain_snapshot(ticker, dte_max=30, contract_type=option_type.lower())
+        snapshots = get_options_chain_snapshot(
+            ticker, dte_max=30, contract_type=option_type.lower(),
+            near_price=suggested_strike, strike_pct_range=0.15,
+        )
         if not snapshots:
             return None
 

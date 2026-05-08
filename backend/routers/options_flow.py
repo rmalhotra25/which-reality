@@ -31,11 +31,15 @@ def debug_options_api(ticker: str = "SPY"):
 
         c = _client()
         today = date.today()
+        price = yfprice or 0
         params = {
             "expiration_date.gte": today.isoformat(),
             "expiration_date.lte": (today + timedelta(days=30)).isoformat(),
             "limit": 10,
         }
+        if price > 0:
+            params["strike_price.gte"] = round(price * 0.85, 2)
+            params["strike_price.lte"] = round(price * 1.15, 2)
         snapshots = list(c.list_snapshot_options_chain(ticker, params=params))
 
         # Underlying price from yfinance

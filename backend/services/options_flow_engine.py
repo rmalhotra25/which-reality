@@ -90,28 +90,26 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
     time.sleep(random.uniform(0.2, 0.8))
     try:
         from services.polygon_client import get_options_chain_snapshot
-        snapshots = get_options_chain_snapshot(ticker, dte_max=45)
+
+        # Get price FIRST so we can filter strikes to ±20% of current price.
+        # Without this the API returns deep-ITM contracts sorted by strike that
+        # have zero volume and null quotes — the active contracts are never fetched.
+        underlying_price = None
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            underlying_price = float(fi.last_price or 0)
+        except Exception:
+            pass
+        if not underlying_price or underlying_price <= 0:
+            logger.warning("flow scan %s: could not get underlying price, skipping", ticker)
+            return []
+
+        snapshots = get_options_chain_snapshot(ticker, dte_max=45, near_price=underlying_price)
         if not snapshots:
             logger.info("flow scan %s: no snapshots returned", ticker)
             return []
 
         today = date.today()
-
-        # Try to get underlying price from snapshot first, fall back to yfinance
-        underlying_price = None
-        for snap in snapshots:
-            if snap.underlying_asset and snap.underlying_asset.price:
-                underlying_price = float(snap.underlying_asset.price)
-                break
-        if not underlying_price or underlying_price <= 0:
-            try:
-                fi = yf.Ticker(ticker).fast_info
-                underlying_price = float(fi.last_price or 0)
-            except Exception:
-                pass
-        if not underlying_price or underlying_price <= 0:
-            logger.warning("flow scan %s: could not get underlying price, skipping", ticker)
-            return []
 
         logger.info("flow scan %s: %d snapshots, price=%.2f", ticker, len(snapshots), underlying_price)
 

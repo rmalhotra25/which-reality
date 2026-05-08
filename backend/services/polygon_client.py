@@ -113,8 +113,14 @@ def get_options_chain_snapshot(
     ticker: str,
     dte_max: int = 45,
     contract_type: str | None = None,
+    near_price: float | None = None,
+    strike_pct_range: float = 0.20,
 ) -> list:
-    """Real-time options chain snapshot with Greeks via Polygon (requires Options plan)."""
+    """Real-time options chain snapshot with Greeks via Polygon (requires Options plan).
+
+    near_price: if provided, restricts strikes to ±strike_pct_range of that price
+                so we fetch active ATM/near-OTM contracts instead of deep ITM junk.
+    """
     from datetime import date, timedelta
     c = _client()
     today = date.today()
@@ -125,10 +131,13 @@ def get_options_chain_snapshot(
     }
     if contract_type:
         params["contract_type"] = contract_type.lower()
+    if near_price and near_price > 0:
+        params["strike_price.gte"] = round(near_price * (1 - strike_pct_range), 2)
+        params["strike_price.lte"] = round(near_price * (1 + strike_pct_range), 2)
     try:
         return list(c.list_snapshot_options_chain(ticker, params=params))
     except Exception as e:
-        logger.debug("options_chain_snapshot failed for %s: %s", ticker, e)
+        logger.warning("options_chain_snapshot failed for %s: %s", ticker, e)
         return []
 
 

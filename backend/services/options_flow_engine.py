@@ -37,9 +37,9 @@ FLOW_UNIVERSE = [
     "LLY", "MRNA", "BNTX",
 ]
 
-MIN_VOLUME = 200
-MIN_VOL_OI_RATIO = 3.0
-MIN_NOTIONAL = 25_000
+MIN_VOLUME = 100
+MIN_VOL_OI_RATIO = 2.0
+MIN_NOTIONAL = 10_000
 MAX_ALERTS_PER_TICKER = 2
 
 
@@ -119,7 +119,7 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
         hv_pct = _compute_hv(ticker)
 
         alerts = []
-        filtered_vol = filtered_mid = filtered_notional = filtered_ratio = 0
+        filtered_dte = filtered_vol = filtered_mid = filtered_notional = filtered_ratio = 0
         for snap in snapshots:
             try:
                 details = snap.details
@@ -136,7 +136,8 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                     continue
 
                 dte = (date.fromisoformat(expiry) - today).days
-                if dte < 1 or dte > 45:
+                if dte < 0 or dte > 45:
+                    filtered_dte += 1
                     continue
 
                 volume = int(snap.day.volume or 0) if snap.day else 0
@@ -227,12 +228,13 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                     "theta": theta,
                     "vega": vega,
                 })
-            except Exception:
+            except Exception as e:
+                logger.debug("contract parse error %s: %s", ticker, e)
                 continue
 
         logger.info(
-            "flow scan %s: %d alerts found | filtered vol=%d mid=%d notional=%d ratio=%d",
-            ticker, len(alerts), filtered_vol, filtered_mid, filtered_notional, filtered_ratio,
+            "flow scan %s: %d alerts found | filtered dte=%d vol=%d mid=%d notional=%d ratio=%d",
+            ticker, len(alerts), filtered_dte, filtered_vol, filtered_mid, filtered_notional, filtered_ratio,
         )
         alerts.sort(key=lambda x: x["notional"], reverse=True)
         return alerts[:MAX_ALERTS_PER_TICKER]

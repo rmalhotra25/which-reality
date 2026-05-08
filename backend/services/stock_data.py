@@ -707,7 +707,14 @@ class StockDataService:
         # Pre-fetch live price so Polygon gets the right ATM strike range
         _live_price: float | None = None
         try:
-            _live_price = float(yf.Ticker(ticker).fast_info.last_price or 0) or None
+            fi = yf.Ticker(ticker).fast_info
+            raw_last = float(fi.last_price or 0) or None
+            prev_close = float(fi.previous_close or 0) or None
+            if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
+                logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
+                _live_price = prev_close
+            else:
+                _live_price = raw_last or prev_close
         except Exception:
             pass
 
@@ -790,8 +797,9 @@ class StockDataService:
             if not target_expiry:
                 target_expiry = expiries[0]
 
-            info = t.fast_info
-            price = getattr(info, "last_price", None)
+            price = _live_price
+            if not price:
+                price = getattr(t.fast_info, "last_price", None)
             if not price:
                 return None
 
@@ -974,7 +982,14 @@ class StockDataService:
         # Pre-fetch live price so Polygon gets the right ATM strike range
         _live_price: float | None = None
         try:
-            _live_price = float(yf.Ticker(ticker).fast_info.last_price or 0) or None
+            fi = yf.Ticker(ticker).fast_info
+            raw_last = float(fi.last_price or 0) or None
+            prev_close = float(fi.previous_close or 0) or None
+            if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
+                logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
+                _live_price = prev_close
+            else:
+                _live_price = raw_last or prev_close
         except Exception:
             pass
 

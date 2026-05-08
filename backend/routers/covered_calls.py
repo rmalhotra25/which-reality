@@ -31,8 +31,8 @@ def analyze_covered_calls(req: CoveredCallRequest):
     analyst = ClaudeAnalyst()
 
     tech = stock_data.get_price_and_technicals(ticker)
-    current_price = tech.get("price")
-    if not current_price:
+    tech_price = tech.get("price")
+    if not tech_price:
         raise HTTPException(
             status_code=404,
             detail=f"No price data found for {ticker}. Check the symbol and try again.",
@@ -49,6 +49,9 @@ def analyze_covered_calls(req: CoveredCallRequest):
                 "Try a different ticker or wait a few minutes and try again."
             ),
         )
+
+    # Prefer the live price from call_tiers (fast_info / Polygon) over the daily-close from history
+    current_price = call_tiers.get("current_price") or tech_price
 
     try:
         result = analyst.suggest_covered_calls(

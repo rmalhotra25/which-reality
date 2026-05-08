@@ -1,13 +1,13 @@
 """
-Options Flow Scanner — detects unusual activity using Polygon real-time options data.
+Options Flow Scanner — detects unusual activity using yfinance options chains.
 
 For each ticker in the universe:
-  1. Fetch real-time options chain snapshot via Polygon (Greeks, IV, bid/ask, volume, OI)
-  2. Fetch earnings date context via yfinance calendar
-  3. Scan every call and put for abnormal volume vs open interest
-  4. Compute notional premium (volume × mid × 100)
-  5. Flag contracts where vol/OI ≥ 3x or brand-new OI
-  6. Pass top alerts + earnings/Greek context to Claude for interpretation
+  1. Fetch the nearest 2 expiry dates via yfinance
+  2. For each expiry, scan calls and puts for vol/OI anomalies
+  3. Compute notional premium (volume × mid × 100)
+  4. Flag contracts where vol/OI ≥ 2x with meaningful volume
+  5. Optionally enrich with Polygon Greeks if available
+  6. Pass top alerts to Claude for interpretation
 """
 import logging
 import random
@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
+import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -37,20 +38,18 @@ FLOW_UNIVERSE = [
     "LLY", "MRNA", "BNTX",
 ]
 
-MIN_VOLUME = 100
+MIN_VOLUME = 200
 MIN_VOL_OI_RATIO = 2.0
 MIN_NOTIONAL = 10_000
 MAX_ALERTS_PER_TICKER = 2
 
 
 def _earnings_context(ticker: str) -> str | None:
-    """Return a short string describing earnings proximity, or None."""
     try:
-        t = yf.Ticker(ticker)
-        cal = t.calendar
-        if cal is None:
+        cal = yf.Ticker(ticker).calendar
+        if not isinstance(cal, dict):
             return None
-        ed_raw = cal.get("Earnings Date") if isinstance(cal, dict) else None
+        ed_raw = cal.get("Earnings Date")
         if ed_raw is None:
             return None
         if hasattr(ed_raw, "__iter__") and not isinstance(ed_raw, str):
@@ -58,7 +57,6 @@ def _earnings_context(ticker: str) -> str | None:
             ed_raw = ed_list[0] if ed_list else None
         if ed_raw is None:
             return None
-        import pandas as pd
         earnings_date = pd.Timestamp(ed_raw).date()
         days = (earnings_date - date.today()).days
         if -14 <= days <= 0:
@@ -70,174 +68,144 @@ def _earnings_context(ticker: str) -> str | None:
         return None
 
 
-def _compute_hv(ticker: str) -> float | None:
-    """30-day annualised historical volatility — used for IV/HV richness comparison."""
+def _fetch_ticker_flow(ticker: str) -> list[dict]:
+    """Return unusual flow alerts for a single ticker using yfinance options chains."""
+    time.sleep(random.uniform(0.1, 0.4))
     try:
         t = yf.Ticker(ticker)
-        hist = t.history(period="40d", interval="1d")
-        closes = hist["Close"].dropna()
-        if len(closes) < 10:
-            return None
-        returns = closes.pct_change().dropna()
-        hv = float(returns.std() * (252 ** 0.5))
-        return round(hv * 100, 1) if hv > 0 else None
-    except Exception:
-        return None
 
-
-def _fetch_ticker_flow(ticker: str) -> list[dict]:
-    """Return unusual flow alerts for a single ticker using Polygon real-time data."""
-    time.sleep(random.uniform(0.2, 0.8))
-    try:
-        from services.polygon_client import get_options_chain_snapshot
-
-        # Get price FIRST so we can filter strikes to ±20% of current price.
-        # Without this the API returns deep-ITM contracts sorted by strike that
-        # have zero volume and null quotes — the active contracts are never fetched.
-        underlying_price = None
+        # Current price
+        price = None
         try:
-            fi = yf.Ticker(ticker).fast_info
-            underlying_price = float(fi.last_price or 0)
+            price = float(t.fast_info.last_price or 0)
         except Exception:
             pass
-        if not underlying_price or underlying_price <= 0:
-            logger.warning("flow scan %s: could not get underlying price, skipping", ticker)
+        if not price or price <= 0:
             return []
 
-        snapshots = get_options_chain_snapshot(ticker, dte_max=45, near_price=underlying_price)
-        if not snapshots:
-            logger.info("flow scan %s: no snapshots returned", ticker)
+        # Available expiry dates — scan nearest 2
+        expiries = t.options
+        if not expiries:
             return []
-
-        today = date.today()
-
-        logger.info("flow scan %s: %d snapshots, price=%.2f", ticker, len(snapshots), underlying_price)
+        expiries_to_scan = expiries[:2]
 
         earnings_ctx = _earnings_context(ticker)
-        hv_pct = _compute_hv(ticker)
-
+        today = date.today()
         alerts = []
-        filtered_dte = filtered_vol = filtered_mid = filtered_notional = filtered_ratio = 0
-        for snap in snapshots:
+
+        for expiry_str in expiries_to_scan:
             try:
-                details = snap.details
-                if not details:
-                    continue
-
-                opt_type = (details.contract_type or "").lower()
-                if opt_type not in ("call", "put"):
-                    continue
-
-                strike = float(details.strike_price or 0)
-                expiry = str(details.expiration_date or "")
-                if not strike or not expiry:
-                    continue
-
-                dte = (date.fromisoformat(expiry) - today).days
-                if dte < 0 or dte > 45:
-                    filtered_dte += 1
-                    continue
-
-                volume = int(snap.day.volume or 0) if snap.day else 0
-                if volume < MIN_VOLUME:
-                    filtered_vol += 1
-                    continue
-
-                oi = int(snap.open_interest or 0)
-
-                # Real-time quote — try last_quote, last_trade, then day.vwap
-                bid = ask = mid = 0.0
-                if snap.last_quote:
-                    bid = float(snap.last_quote.bid or 0)
-                    ask = float(snap.last_quote.ask or 0)
-                    mp = snap.last_quote.midpoint
-                    mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
-                if mid <= 0 and snap.last_trade:
-                    mid = float(snap.last_trade.price or 0)
-                if mid <= 0 and snap.day:
-                    mid = float(snap.day.vwap or 0)
-                if mid <= 0:
-                    filtered_mid += 1
-                    continue
-
-                notional = round(volume * mid * 100)
-                if notional < MIN_NOTIONAL:
-                    filtered_notional += 1
-                    continue
-
-                is_new_contract = oi == 0
-                vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
-                if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
-                    filtered_ratio += 1
-                    continue
-
-                if opt_type == "call":
-                    pct_otm = round((strike - underlying_price) / underlying_price * 100, 1)
-                else:
-                    pct_otm = round((underlying_price - strike) / underlying_price * 100, 1)
-
-                # Real Greeks from Polygon
-                delta = gamma = theta = vega = None
-                if snap.greeks:
-                    delta = round(float(snap.greeks.delta), 2) if snap.greeks.delta is not None else None
-                    gamma = round(float(snap.greeks.gamma), 4) if snap.greeks.gamma is not None else None
-                    theta = round(float(snap.greeks.theta), 2) if snap.greeks.theta is not None else None
-                    vega = round(float(snap.greeks.vega), 2) if snap.greeks.vega is not None else None
-
-                iv_pct = round(float(snap.implied_volatility) * 100, 1) if snap.implied_volatility else None
-
-                # Premium richness: IV vs 30-day historical vol
-                iv_hv_ratio = premium_rating = None
-                if iv_pct and hv_pct and hv_pct > 0:
-                    iv_hv_ratio = round(iv_pct / hv_pct, 2)
-                    premium_rating = "RICH" if iv_hv_ratio > 1.5 else ("CHEAP" if iv_hv_ratio < 0.8 else "FAIR")
-
-                if opt_type == "call":
-                    breakeven = round(strike + mid, 2)
-                    pct_move_needed = round((breakeven - underlying_price) / underlying_price * 100, 1)
-                else:
-                    breakeven = round(strike - mid, 2)
-                    pct_move_needed = round((underlying_price - breakeven) / underlying_price * 100, 1)
-
-                alerts.append({
-                    "ticker": ticker,
-                    "price": round(underlying_price, 2),
-                    "option_type": opt_type,
-                    "strike": strike,
-                    "expiry": expiry,
-                    "dte": dte,
-                    "volume": volume,
-                    "open_interest": oi,
-                    "vol_oi_ratio": vol_oi_ratio,
-                    "is_new_contract": is_new_contract,
-                    "mid_premium": round(mid, 2),
-                    "bid": round(bid, 2),
-                    "ask": round(ask, 2),
-                    "notional": notional,
-                    "pct_otm": pct_otm,
-                    "sentiment": "bullish" if opt_type == "call" else "bearish",
-                    "earnings_context": earnings_ctx,
-                    "breakeven": breakeven,
-                    "pct_move_needed": pct_move_needed,
-                    "iv_pct": iv_pct,
-                    "hv_pct": hv_pct,
-                    "iv_hv_ratio": iv_hv_ratio,
-                    "premium_rating": premium_rating,
-                    "delta": delta,
-                    "gamma": gamma,
-                    "theta": theta,
-                    "vega": vega,
-                })
-            except Exception as e:
-                logger.warning("contract parse error %s: %s", ticker, e)
+                chain = t.option_chain(expiry_str)
+            except Exception:
                 continue
 
-        logger.info(
-            "flow scan %s: %d alerts found | filtered dte=%d vol=%d mid=%d notional=%d ratio=%d",
-            ticker, len(alerts), filtered_dte, filtered_vol, filtered_mid, filtered_notional, filtered_ratio,
-        )
+            expiry_dt = date.fromisoformat(expiry_str)
+            dte = (expiry_dt - today).days
+
+            for opt_type, df in [("call", chain.calls), ("put", chain.puts)]:
+                if df is None or df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    try:
+                        strike = float(row.get("strike") or 0)
+                        if strike <= 0:
+                            continue
+
+                        volume = int(row.get("volume") or 0)
+                        if volume < MIN_VOLUME:
+                            continue
+
+                        oi = int(row.get("openInterest") or 0)
+                        vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
+                        is_new_contract = oi == 0
+
+                        if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
+                            continue
+
+                        bid = float(row.get("bid") or 0)
+                        ask = float(row.get("ask") or 0)
+                        mid = round((bid + ask) / 2, 2) if bid > 0 else float(row.get("lastPrice") or 0)
+                        if mid <= 0:
+                            continue
+
+                        notional = round(volume * mid * 100)
+                        if notional < MIN_NOTIONAL:
+                            continue
+
+                        iv_pct = round(float(row.get("impliedVolatility") or 0) * 100, 1) or None
+
+                        if opt_type == "call":
+                            pct_otm = round((strike - price) / price * 100, 1)
+                            breakeven = round(strike + mid, 2)
+                            pct_move_needed = round((breakeven - price) / price * 100, 1)
+                        else:
+                            pct_otm = round((price - strike) / price * 100, 1)
+                            breakeven = round(strike - mid, 2)
+                            pct_move_needed = round((price - breakeven) / price * 100, 1)
+
+                        alerts.append({
+                            "ticker": ticker,
+                            "price": round(price, 2),
+                            "option_type": opt_type,
+                            "strike": strike,
+                            "expiry": expiry_str,
+                            "dte": dte,
+                            "volume": volume,
+                            "open_interest": oi,
+                            "vol_oi_ratio": vol_oi_ratio,
+                            "is_new_contract": is_new_contract,
+                            "mid_premium": mid,
+                            "bid": bid,
+                            "ask": ask,
+                            "notional": notional,
+                            "pct_otm": pct_otm,
+                            "sentiment": "bullish" if opt_type == "call" else "bearish",
+                            "earnings_context": earnings_ctx,
+                            "breakeven": breakeven,
+                            "pct_move_needed": pct_move_needed,
+                            "iv_pct": iv_pct,
+                            "hv_pct": None,
+                            "iv_hv_ratio": None,
+                            "premium_rating": None,
+                            "delta": None,
+                            "gamma": None,
+                            "theta": None,
+                            "vega": None,
+                        })
+                    except Exception:
+                        continue
+
+        # Try to enrich top alerts with Polygon Greeks
         alerts.sort(key=lambda x: x["notional"], reverse=True)
-        return alerts[:MAX_ALERTS_PER_TICKER]
+        top = alerts[:MAX_ALERTS_PER_TICKER]
+        for alert in top:
+            try:
+                from services.polygon_client import get_options_chain_snapshot
+                snaps = get_options_chain_snapshot(
+                    ticker, dte_max=alert["dte"] + 2,
+                    contract_type=alert["option_type"],
+                    near_price=price, strike_pct_range=0.05,
+                )
+                best = None
+                for snap in snaps:
+                    if not snap.details:
+                        continue
+                    if abs(float(snap.details.strike_price or 0) - alert["strike"]) < 0.01:
+                        best = snap
+                        break
+                if best and best.greeks:
+                    alert["delta"] = round(float(best.greeks.delta), 2) if best.greeks.delta is not None else None
+                    alert["gamma"] = round(float(best.greeks.gamma), 4) if best.greeks.gamma is not None else None
+                    alert["theta"] = round(float(best.greeks.theta), 2) if best.greeks.theta is not None else None
+                    alert["vega"] = round(float(best.greeks.vega), 2) if best.greeks.vega is not None else None
+                if best and best.implied_volatility:
+                    alert["iv_pct"] = round(float(best.implied_volatility) * 100, 1)
+            except Exception:
+                pass
+
+        logger.info("flow scan %s: %d alerts from %d expiries", ticker, len(top), len(expiries_to_scan))
+        return top
+
     except Exception as e:
         logger.warning("flow scan failed for %s: %s", ticker, e)
         return []
@@ -247,39 +215,16 @@ def run_flow_scan() -> dict:
     """Scan the options universe and return AI-interpreted unusual flow alerts."""
     from services.claude_analyst import ClaudeAnalyst
 
-    # Quick API connectivity check — bypass the exception-swallowing wrapper
-    # so we surface the real error (missing key, wrong plan, 403, etc.)
-    try:
-        from datetime import timedelta
-        from services.polygon_client import _client
-        c = _client()
-        today = date.today()
-        params = {
-            "expiration_date.gte": today.isoformat(),
-            "expiration_date.lte": (today + timedelta(days=7)).isoformat(),
-            "limit": 5,
-        }
-        list(c.list_snapshot_options_chain("SPY", params=params))
-    except Exception as e:
-        err = str(e)
-        logger.warning("Polygon API connectivity check failed: %s", err)
-        return {
-            "alerts": [],
-            "tickers_scanned": 0,
-            "total_alerts_found": 0,
-            "error": f"Polygon API error: {err}. Check that POLYGON_API_KEY is set correctly and the Options plan is active.",
-        }
-
     all_alerts: list[dict] = []
 
     universe = FLOW_UNIVERSE[:]
     random.shuffle(universe)
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
-        for fut in as_completed(futures, timeout=90):
+        for fut in as_completed(futures, timeout=120):
             try:
-                all_alerts.extend(fut.result(timeout=25))
+                all_alerts.extend(fut.result(timeout=30))
             except Exception:
                 pass
 
@@ -318,5 +263,5 @@ def run_flow_scan() -> dict:
         "put_notional": put_notional,
         "sentiment_ratio": sentiment_ratio,
         "overall_sentiment": overall,
-        "data_source": "Polygon real-time options data",
+        "data_source": "yfinance options chains + Polygon Greeks",
     }

@@ -19,3 +19,58 @@ def scan_options_flow():
     except Exception as e:
         logger.error("Options flow scan failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Flow scan failed: {str(e)}")
+
+
+@router.get("/debug")
+def debug_options_api(ticker: str = "SPY"):
+    """Return raw Polygon options snapshot data for one ticker — for diagnosing API issues."""
+    try:
+        from datetime import date, timedelta
+        from services.polygon_client import _client
+        import yfinance as yf
+
+        c = _client()
+        today = date.today()
+        params = {
+            "expiration_date.gte": today.isoformat(),
+            "expiration_date.lte": (today + timedelta(days=30)).isoformat(),
+            "limit": 10,
+        }
+        snapshots = list(c.list_snapshot_options_chain(ticker, params=params))
+
+        # Underlying price from yfinance
+        yfprice = None
+        try:
+            yfprice = float(yf.Ticker(ticker).fast_info.last_price or 0)
+        except Exception:
+            pass
+
+        sample = []
+        for snap in snapshots[:5]:
+            d = snap.details
+            sample.append({
+                "ticker": ticker,
+                "contract_type": getattr(d, "contract_type", None) if d else None,
+                "strike": getattr(d, "strike_price", None) if d else None,
+                "expiry": str(getattr(d, "expiration_date", None)) if d else None,
+                "underlying_asset_price": float(snap.underlying_asset.price) if snap.underlying_asset and snap.underlying_asset.price else None,
+                "day_volume": int(snap.day.volume or 0) if snap.day else None,
+                "day_vwap": float(snap.day.vwap or 0) if snap.day else None,
+                "open_interest": snap.open_interest,
+                "implied_volatility": snap.implied_volatility,
+                "last_quote_bid": float(snap.last_quote.bid or 0) if snap.last_quote else None,
+                "last_quote_ask": float(snap.last_quote.ask or 0) if snap.last_quote else None,
+                "last_quote_midpoint": float(snap.last_quote.midpoint or 0) if snap.last_quote else None,
+                "last_trade_price": float(snap.last_trade.price or 0) if snap.last_trade else None,
+                "greeks_delta": float(snap.greeks.delta) if snap.greeks and snap.greeks.delta is not None else None,
+            })
+
+        return {
+            "ticker": ticker,
+            "total_snapshots_returned": len(snapshots),
+            "yfinance_price": yfprice,
+            "sample_contracts": sample,
+        }
+    except Exception as e:
+        logger.error("debug endpoint failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

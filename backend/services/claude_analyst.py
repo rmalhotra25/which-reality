@@ -530,27 +530,25 @@ class ClaudeAnalyst:
             '"wheel_score":82,'
             '"grade":"B",'
             '"company_assessment":"2-3 sentences: Is this a good company to own if assigned? '
-            'Mention stability, business quality, and whether you\'re comfortable owning shares.",'
+            'Mention stability, business quality, and whether you are comfortable owning shares.",'
             '"technicals_plain":"1-2 sentences in plain English about the chart setup. '
-            'No indicator names — just what it means (e.g. \'The stock is in a healthy uptrend \'",'
+            'No indicator names — just what it means (e.g. The stock is in a healthy uptrend)",'
             '"iv_environment_plain":"1 sentence: are options cheap, fair, or expensive right now? '
-            'What does that mean for the seller? (e.g. \'Options are pricier than usual — '
-            'great time to collect premium\')",'  
+            'What does that mean for the seller? (e.g. Options are pricier than usual — '
+            'great time to collect premium)",'
             '"tiers":['
             '{"tier_name":"Higher premium, more likely to buy shares",'
             '"strike":190.0,"expiry":"2026-05-01","dte":9,'
             '"premium_plain":"You collect $420 upfront for agreeing to buy 100 shares",'
             '"assignment_plain":"Roughly a 45-in-100 chance you end up buying the shares at $190",'
             '"time_decay_plain":"Earns about $18 per day automatically just from time passing",'
-            '"protection_plain":"You only start losing money if the stock drops below $186 — '
-            'that\'s a 3% drop from today\'s price",'
-            '"return_plain":"If this keeps expiring worthless, it\'s like earning 28% per year on your cash",'
+            '"protection_plain":"You only start losing money if the stock drops below $186",'
+            '"return_plain":"If this keeps expiring worthless, it is like earning 28% per year on your cash",'
             '"best_for":"Investors who actually want to own the shares and want maximum premium"},'
             '{"tier_name":"Balanced — decent premium with a reasonable safety cushion",...},'
             '{"tier_name":"Conservative — smaller premium but much safer",...}'
             '],'
-            '"overall_verdict":"2-3 sentences recommending which tier makes most sense right now '
-            'and why, in plain English."}'
+            '"overall_verdict":"2-3 sentences recommending which tier makes most sense right now and why."}'
         )
         raw = self._call(system, user, max_tokens=3000)
         return self._parse(raw)
@@ -756,14 +754,14 @@ class ClaudeAnalyst:
             '"call_away_chance_pct": 70,'
             '"premium_plain": "You collect $180 upfront for agreeing to sell your 100 shares at $95",'
             '"callaway_plain": "About a 70-in-100 chance your shares get called away at $95 by Friday",'
-            '"if_called_plain": "If called away: you sell at $95 and keep the $180 premium — total income of $X",'
-            '"if_not_called_plain": "If the stock stays below $95: you keep your shares and the $180 is yours to keep",'
+            '"if_called_plain": "If called away: you sell at $95 and keep the $180 premium",'
+            '"if_not_called_plain": "If the stock stays below $95: you keep your shares and the $180 is yours",'
             '"best_for": "Investors who want maximum income now and are OK selling at $95",'
             '"thin_market_note": null},'
             '{"tier": "balanced", ...},'
             '{"tier": "conservative", ...}]}'
         )
-        raw = self._call(system, user, max_tokens=1400)
+        raw = self._call(system, user, max_tokens=2500)
         return self._parse(raw)
 
     # ------------------------------------------------------------------

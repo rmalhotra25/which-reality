@@ -22,20 +22,20 @@ logger = logging.getLogger(__name__)
 
 # Most liquid US equity options — highest volume, tightest spreads
 FLOW_UNIVERSE = [
+    # ETFs first — highest options volume, most reliable yfinance data
+    "SPY", "QQQ", "IWM", "SOXL", "TQQQ", "GLD",
     # Mega-cap tech
     "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA",
     # Semiconductors
-    "AMD", "INTC", "MU", "SMCI", "AVGO", "ARM",
+    "AMD", "AVGO", "MU",
     # High-IV momentum
-    "PLTR", "COIN", "HOOD", "MSTR", "SOFI", "RIVN", "RBLX", "DKNG",
+    "PLTR", "COIN", "MSTR", "HOOD",
     # Financials
-    "JPM", "GS", "BAC", "MS", "V",
-    # ETFs (highest options volume)
-    "SPY", "QQQ", "IWM", "SOXL", "TQQQ", "SQQQ", "XLE", "GLD", "ARKK",
+    "JPM", "GS", "BAC",
     # Other liquid names
-    "NFLX", "DIS", "UBER", "SQ", "SHOP", "CRWD", "NOW", "CRM",
+    "NFLX", "UBER", "CRWD", "NOW",
     # Biotech
-    "LLY", "MRNA", "BNTX",
+    "LLY", "MRNA",
 ]
 
 MIN_VOLUME = 200
@@ -70,7 +70,6 @@ def _earnings_context(ticker: str) -> str | None:
 
 def _fetch_ticker_flow(ticker: str) -> list[dict]:
     """Return unusual flow alerts for a single ticker using yfinance options chains."""
-    time.sleep(random.uniform(0.1, 0.4))
     try:
         t = yf.Ticker(ticker)
 
@@ -220,13 +219,22 @@ def run_flow_scan() -> dict:
     universe = FLOW_UNIVERSE[:]
     random.shuffle(universe)
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
-        for fut in as_completed(futures, timeout=120):
-            try:
-                all_alerts.extend(fut.result(timeout=30))
-            except Exception:
-                pass
+        try:
+            for fut in as_completed(futures, timeout=90):
+                try:
+                    all_alerts.extend(fut.result(timeout=20))
+                except Exception:
+                    pass
+        except Exception:
+            # Timeout — use whatever results came in before the deadline
+            for fut in futures:
+                if fut.done():
+                    try:
+                        all_alerts.extend(fut.result())
+                    except Exception:
+                        pass
 
     if not all_alerts:
         return {

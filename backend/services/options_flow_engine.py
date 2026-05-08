@@ -229,7 +229,7 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                     "vega": vega,
                 })
             except Exception as e:
-                logger.debug("contract parse error %s: %s", ticker, e)
+                logger.warning("contract parse error %s: %s", ticker, e)
                 continue
 
         logger.info(

@@ -197,14 +197,39 @@ function FlowCard({ alert }) {
       </div>
 
       <div style={s.cardBody}>
-        {/* Earnings context banner */}
-        {alert.earnings_context && (
+        {/* Catalyst section: price move + earnings + news */}
+        {(alert.change_pct != null || alert.earnings_context || (alert.news && alert.news.length > 0)) && (
           <div style={{
-            fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '6px',
-            background: 'rgba(246,224,94,0.08)', border: '1px solid rgba(183,121,31,0.4)',
-            color: '#f6e05e',
+            background: 'rgba(0,0,0,0.25)', borderRadius: '8px', padding: '8px 10px',
+            display: 'flex', flexDirection: 'column', gap: '5px',
           }}>
-            📅 {alert.earnings_context}
+            {/* Price move today */}
+            {alert.change_pct != null && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '11px', color: '#718096' }}>Today</span>
+                <span style={{
+                  fontSize: '12px', fontWeight: 700,
+                  color: alert.change_pct >= 0 ? '#68d391' : '#fc8181',
+                }}>
+                  {alert.change_pct >= 0 ? '▲' : '▼'} {Math.abs(alert.change_pct)}%
+                </span>
+              </div>
+            )}
+            {/* Earnings */}
+            {alert.earnings_context && (
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#f6e05e' }}>
+                📅 {alert.earnings_context}
+              </div>
+            )}
+            {/* News headlines */}
+            {alert.news && alert.news.slice(0, 2).map((headline, i) => (
+              <div key={i} style={{
+                fontSize: '11px', color: '#a0aec0', lineHeight: 1.4,
+                borderLeft: '2px solid #4a5568', paddingLeft: '6px',
+              }}>
+                {headline}
+              </div>
+            ))}
           </div>
         )}
 

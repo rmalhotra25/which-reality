@@ -530,12 +530,12 @@ class ClaudeAnalyst:
             '"wheel_score":82,'
             '"grade":"B",'
             '"company_assessment":"2-3 sentences: Is this a good company to own if assigned? '
-            'Mention stability, business quality, and whether you\'d be comfortable owning shares.",'
+            'Mention stability, business quality, and whether you\'re comfortable owning shares.",'
             '"technicals_plain":"1-2 sentences in plain English about the chart setup. '
             'No indicator names — just what it means (e.g. \'The stock is in a healthy uptrend \'",'
             '"iv_environment_plain":"1 sentence: are options cheap, fair, or expensive right now? '
             'What does that mean for the seller? (e.g. \'Options are pricier than usual — '
-            'great time to collect premium\')",'
+            'great time to collect premium\')",'  
             '"tiers":['
             '{"tier_name":"Higher premium, more likely to buy shares",'
             '"strike":190.0,"expiry":"2026-05-01","dte":9,'
@@ -908,7 +908,7 @@ class ClaudeAnalyst:
             '"stop_premium": 0.75,'
             '"breakeven_stock": 90.50'
             '}}'
-            "]}"
+            "]}'"
         )
         raw = self._call(system, user, max_tokens=2500)
         result = self._parse(raw)
@@ -932,6 +932,10 @@ class ClaudeAnalyst:
             ratio_str = "NEW (no prior OI)" if a.get("is_new_contract") else f"{vol_oi}x"
             earnings = a.get("earnings_context")
             earnings_str = f" | {earnings}" if earnings else ""
+            change_pct = a.get("change_pct")
+            move_str = f" | Today {'+' if (change_pct or 0) >= 0 else ''}{change_pct}%" if change_pct is not None else ""
+            news_items = a.get("news") or []
+            news_str = f" | News: {' // '.join(news_items[:2])}" if news_items else ""
             # Premium richness context
             prem_parts = []
             if a.get("breakeven"):
@@ -950,7 +954,7 @@ class ClaudeAnalyst:
                 f"exp {a.get('expiry','?')} ({a.get('dte','?')}d) | "
                 f"Vol:{a.get('volume',0):,} OI:{oi:,} Ratio:{ratio_str} | "
                 f"${notional_k}K notional | {itm_otm} | Stock=${a.get('price','?')}"
-                f"{richness_str}{earnings_str}"
+                f"{richness_str}{earnings_str}{move_str}{news_str}"
             )
         flow_block = "\n".join(lines)
 

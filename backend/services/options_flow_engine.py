@@ -254,6 +254,30 @@ def run_flow_scan() -> dict:
             deduped.append(a)
     top = deduped[:20]
 
+    # Enrich top alerts with catalyst data: today's % move + recent news
+    seen_tickers: dict = {}
+    for alert in top:
+        ticker = alert["ticker"]
+        if ticker not in seen_tickers:
+            catalyst: dict = {"change_pct": None, "news": []}
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                prev = float(fi.previous_close or 0)
+                curr = float(fi.last_price or 0)
+                if prev > 0:
+                    catalyst["change_pct"] = round((curr - prev) / prev * 100, 2)
+            except Exception:
+                pass
+            try:
+                from services.polygon_client import get_news
+                raw = get_news(ticker, limit=3)
+                catalyst["news"] = [n.get("title", "") for n in raw if n.get("title")]
+            except Exception:
+                pass
+            seen_tickers[ticker] = catalyst
+        alert["change_pct"] = seen_tickers[ticker]["change_pct"]
+        alert["news"] = seen_tickers[ticker]["news"]
+
     call_notional = sum(a["notional"] for a in all_alerts if a["option_type"] == "call")
     put_notional = sum(a["notional"] for a in all_alerts if a["option_type"] == "put")
     total_notional = call_notional + put_notional

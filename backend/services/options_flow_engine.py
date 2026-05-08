@@ -145,7 +145,7 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
 
                 oi = int(snap.open_interest or 0)
 
-                # Real-time quote from Polygon
+                # Real-time quote — try last_quote, last_trade, then day.vwap
                 bid = ask = mid = 0.0
                 if snap.last_quote:
                     bid = float(snap.last_quote.bid or 0)
@@ -154,6 +154,8 @@ def _fetch_ticker_flow(ticker: str) -> list[dict]:
                     mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
                 if mid <= 0 and snap.last_trade:
                     mid = float(snap.last_trade.price or 0)
+                if mid <= 0 and snap.day:
+                    mid = float(snap.day.vwap or 0)
                 if mid <= 0:
                     filtered_mid += 1
                     continue

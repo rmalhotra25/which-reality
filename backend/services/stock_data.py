@@ -599,7 +599,8 @@ class StockDataService:
         return technicals
 
     def _polygon_options_chain(
-        self, ticker: str, contract_type: str, dte_min: int, dte_max: int
+        self, ticker: str, contract_type: str, dte_min: int, dte_max: int,
+        near_price: float | None = None,
     ) -> tuple[list[dict], float | None]:
         """
         Fetch options chain from Polygon with real Greeks and live quotes.
@@ -607,15 +608,20 @@ class StockDataService:
         Each dict: strike, expiry, dte, bid, ask, mid, iv_pct, delta, delta_abs,
                    theta_seller (positive = seller income per share/day), gamma, vega,
                    volume, open_interest.
+        near_price filters to ATM ±25% so Polygon doesn't return deep-ITM junk first.
         """
         try:
             from services.polygon_client import get_options_chain_snapshot
-            snapshots = get_options_chain_snapshot(ticker, dte_max=dte_max, contract_type=contract_type)
+            snapshots = get_options_chain_snapshot(
+                ticker, dte_max=dte_max, contract_type=contract_type,
+                near_price=near_price, strike_pct_range=0.25,
+            )
             if not snapshots:
                 return [], None
 
             today = date.today()
-            underlying_price = None
+            # Polygon often doesn't populate underlying_asset.price — use near_price as seed
+            underlying_price = near_price or None
             result = []
 
             for snap in snapshots:
@@ -698,9 +704,18 @@ class StockDataService:
         Fetch real put options chain and return three tiers for wheel strategy analysis.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
+        # Pre-fetch live price so Polygon gets the right ATM strike range
+        _live_price: float | None = None
+        try:
+            _live_price = float(yf.Ticker(ticker).fast_info.last_price or 0) or None
+        except Exception:
+            pass
+
         # --- Polygon path (preferred) ---
         try:
-            puts, price = self._polygon_options_chain(ticker, "put", 14, 45)
+            puts, price = self._polygon_options_chain(ticker, "put", 14, 45, near_price=_live_price)
+            if not price:
+                price = _live_price
             if puts and price:
                 today = date.today()
                 # Pick expiry closest to 21 DTE (sweet spot for wheel)
@@ -790,7 +805,6 @@ class StockDataService:
             dte = (exp_date - today).days
 
             # Use real bid/ask when markets are open; fall back to lastPrice when closed.
-            # This lets the feature work evenings, weekends, and pre/post market.
             puts["_mid"] = puts.apply(
                 lambda r: round((float(r["bid"]) + float(r["ask"])) / 2, 2)
                           if float(r["bid"]) > 0
@@ -878,7 +892,9 @@ class StockDataService:
         min_dte, max_dte = prefer_dte
         # --- Polygon path (preferred) ---
         try:
-            puts, price = self._polygon_options_chain(ticker, "put", min_dte, max_dte)
+            puts, price = self._polygon_options_chain(
+                ticker, "put", min_dte, max_dte, near_price=suggested_strike
+            )
             if puts:
                 best = min(puts, key=lambda p: abs(p["strike"] - suggested_strike))
                 return {
@@ -955,9 +971,18 @@ class StockDataService:
         Returns three tiers: aggressive, balanced, conservative.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
+        # Pre-fetch live price so Polygon gets the right ATM strike range
+        _live_price: float | None = None
+        try:
+            _live_price = float(yf.Ticker(ticker).fast_info.last_price or 0) or None
+        except Exception:
+            pass
+
         # --- Polygon path (preferred) ---
         try:
-            calls, price = self._polygon_options_chain(ticker, "call", 4, 30)
+            calls, price = self._polygon_options_chain(ticker, "call", 4, 30, near_price=_live_price)
+            if not price:
+                price = _live_price
             if calls and price:
                 today = date.today()
                 # Pick expiry closest to 14 DTE (weekly/bi-weekly sweet spot for covered calls)
@@ -1052,22 +1077,17 @@ class StockDataService:
                 return None
 
             # Price: try fast_info first, then Finnhub, then t.info
-            price = None
-            try:
-                price = getattr(t.fast_info, "last_price", None)
-            except Exception:
-                pass
+            price = _live_price
+            if not price:
+                try:
+                    price = getattr(t.fast_info, "last_price", None)
+                except Exception:
+                    pass
             if not price:
                 try:
                     from services.finnhub_client import get_quote
                     q = get_quote(ticker)
                     price = float(q.get("c") or q.get("pc") or 0) or None
-                except Exception:
-                    pass
-            if not price:
-                try:
-                    info_dict = t.info
-                    price = info_dict.get("regularMarketPrice") or info_dict.get("previousClose")
                 except Exception:
                     pass
             if not price:

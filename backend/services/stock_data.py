@@ -704,19 +704,26 @@ class StockDataService:
         Fetch real put options chain and return three tiers for wheel strategy analysis.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
-        # Pre-fetch live price so Polygon gets the right ATM strike range
+        # Pre-fetch live price: Finnhub first (reliable), then yfinance
         _live_price: float | None = None
         try:
-            fi = yf.Ticker(ticker).fast_info
-            raw_last = float(fi.last_price or 0) or None
-            prev_close = float(fi.previous_close or 0) or None
-            if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
-                logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
-                _live_price = prev_close
-            else:
-                _live_price = raw_last or prev_close
+            from services.finnhub_client import get_quote
+            q = get_quote(ticker)
+            _live_price = float(q.get("c") or q.get("pc") or 0) or None
         except Exception:
             pass
+        if not _live_price:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                raw_last = float(fi.last_price or 0) or None
+                prev_close = float(fi.previous_close or 0) or None
+                if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
+                    logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
+                    _live_price = prev_close
+                else:
+                    _live_price = raw_last or prev_close
+            except Exception:
+                pass
 
         # --- Polygon path (preferred) ---
         try:
@@ -979,19 +986,26 @@ class StockDataService:
         Returns three tiers: aggressive, balanced, conservative.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
-        # Pre-fetch live price so Polygon gets the right ATM strike range
+        # Pre-fetch live price: Finnhub first (reliable), then yfinance
         _live_price: float | None = None
         try:
-            fi = yf.Ticker(ticker).fast_info
-            raw_last = float(fi.last_price or 0) or None
-            prev_close = float(fi.previous_close or 0) or None
-            if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
-                logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
-                _live_price = prev_close
-            else:
-                _live_price = raw_last or prev_close
+            from services.finnhub_client import get_quote
+            q = get_quote(ticker)
+            _live_price = float(q.get("c") or q.get("pc") or 0) or None
         except Exception:
             pass
+        if not _live_price:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                raw_last = float(fi.last_price or 0) or None
+                prev_close = float(fi.previous_close or 0) or None
+                if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
+                    logger.warning("Price sanity %s: last_price=%s vs prev_close=%s — using prev_close", ticker, raw_last, prev_close)
+                    _live_price = prev_close
+                else:
+                    _live_price = raw_last or prev_close
+            except Exception:
+                pass
 
         # --- Polygon path (preferred) ---
         try:

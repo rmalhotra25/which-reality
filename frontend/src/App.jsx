@@ -10,10 +10,12 @@ import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import DayTradeTab from './tabs/DayTradeTab'
 import OptionsFlowTab from './tabs/OptionsFlowTab'
+import DiscoveryTab from './tabs/DiscoveryTab'
 
 const TABS = [
   { id: 'daytrade',     label: '⚡ Day Scanner' },
   { id: 'flow',         label: '🌊 Options Flow' },
+  { id: 'discovery',    label: '🔭 Discovery' },
   { id: 'options',      label: '📈 Options Trading' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
@@ -124,6 +126,7 @@ export default function App() {
           {activeTab === 'lookup'       && <StockLookupTab />}
           {activeTab === 'watchlist'    && <WatchlistTab />}
           {activeTab === 'performance'  && <PerformanceTab />}
+          {activeTab === 'discovery'    && <DiscoveryTab />}
         </TabErrorBoundary>
       </main>
     </div>

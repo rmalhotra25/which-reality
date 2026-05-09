@@ -704,14 +704,20 @@ class StockDataService:
         Fetch real put options chain and return three tiers for wheel strategy analysis.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
-        # Pre-fetch live price: Finnhub first (reliable), then yfinance
+        # Pre-fetch live price: Public → Finnhub → yfinance
         _live_price: float | None = None
         try:
-            from services.finnhub_client import get_quote
-            q = get_quote(ticker)
-            _live_price = float(q.get("c") or q.get("pc") or 0) or None
+            from services.public_client import get_last_price as _pub_price
+            _live_price = _pub_price(ticker)
         except Exception:
             pass
+        if not _live_price:
+            try:
+                from services.finnhub_client import get_quote
+                q = get_quote(ticker)
+                _live_price = float(q.get("c") or q.get("pc") or 0) or None
+            except Exception:
+                pass
         if not _live_price:
             try:
                 fi = yf.Ticker(ticker).fast_info
@@ -986,14 +992,20 @@ class StockDataService:
         Returns three tiers: aggressive, balanced, conservative.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
-        # Pre-fetch live price: Finnhub first (reliable), then yfinance
+        # Pre-fetch live price: Public → Finnhub → yfinance
         _live_price: float | None = None
         try:
-            from services.finnhub_client import get_quote
-            q = get_quote(ticker)
-            _live_price = float(q.get("c") or q.get("pc") or 0) or None
+            from services.public_client import get_last_price as _pub_price
+            _live_price = _pub_price(ticker)
         except Exception:
             pass
+        if not _live_price:
+            try:
+                from services.finnhub_client import get_quote
+                q = get_quote(ticker)
+                _live_price = float(q.get("c") or q.get("pc") or 0) or None
+            except Exception:
+                pass
         if not _live_price:
             try:
                 fi = yf.Ticker(ticker).fast_info

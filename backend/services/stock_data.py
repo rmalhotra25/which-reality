@@ -1167,7 +1167,7 @@ class StockDataService:
 
             data_source = "live" if calls["_is_live"].any() else "last_trade"
 
-            # If most rows have IV=0 (newly listed options), fall back to historical vol
+            # If most rows have IV=0 (market closed / newly listed), fall back to HV then default
             mean_iv = calls["impliedVolatility"].fillna(0).mean() if "impliedVolatility" in calls.columns else 0
             if mean_iv < 0.01:
                 hv = _historical_volatility(ticker)
@@ -1175,8 +1175,8 @@ class StockDataService:
                     logger.info("get_call_tiers: using HV=%.2f for %s (chain IV near zero)", hv, ticker)
                     calls["impliedVolatility"] = hv
                 else:
-                    logger.warning("get_call_tiers: no valid IV or HV for %s", ticker)
-                    return None
+                    logger.info("get_call_tiers: using default IV=0.30 for %s (HV unavailable)", ticker)
+                    calls["impliedVolatility"] = 0.30
 
             calls["_delta"] = calls.apply(
                 lambda r: _bs_call_delta(price, r["strike"], float(r.get("impliedVolatility") or 0), T),

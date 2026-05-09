@@ -1040,7 +1040,9 @@ class StockDataService:
                 min_premium = round(price * 0.003 * weeks, 2)
 
                 def _poly_call_tier(target_delta: float) -> dict | None:
-                    best = min(calls, key=lambda c: abs(c["delta"] - target_delta))
+                    sane = [c for c in calls if 0.8 * price <= c["strike"] <= 3.0 * price]
+                    pool = sane if sane else calls
+                    best = min(pool, key=lambda c: abs(c["delta"] - target_delta))
                     if abs(best["delta"] - target_delta) > 0.20:
                         return None
                     mid = best["mid"]
@@ -1204,8 +1206,10 @@ class StockDataService:
             def _best_near_delta(target: float) -> dict | None:
                 if calls.empty:
                     return None
-                idx = (calls["_delta"] - target).abs().idxmin()
-                row = calls.loc[idx]
+                sane = calls[(calls["strike"] >= price * 0.8) & (calls["strike"] <= price * 3.0)]
+                pool = sane if not sane.empty else calls
+                idx = (pool["_delta"] - target).abs().idxmin()
+                row = pool.loc[idx]
                 mid = float(row["_mid"])
                 bid = float(row.get("bid") or 0)
                 ask = float(row.get("ask") or 0)

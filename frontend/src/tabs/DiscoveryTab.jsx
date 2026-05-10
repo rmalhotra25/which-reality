@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 
 const API = import.meta.env.VITE_API_URL || ''
 
-// ── Styles ─────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────────────
 const S = {
   page: {
     minHeight: '100vh',
@@ -222,6 +222,30 @@ const S = {
     fontWeight: 700,
     marginBottom: '10px',
   },
+  insiderBuyBadge: {
+    display: 'inline-block',
+    background: 'rgba(104,211,145,0.15)',
+    color: '#68d391',
+    border: '1px solid rgba(104,211,145,0.3)',
+    borderRadius: '6px',
+    padding: '3px 9px',
+    fontSize: '11px',
+    fontWeight: 700,
+    marginBottom: '10px',
+    marginLeft: '6px',
+  },
+  insiderSellBadge: {
+    display: 'inline-block',
+    background: 'rgba(252,129,74,0.12)',
+    color: '#fc814a',
+    border: '1px solid rgba(252,129,74,0.3)',
+    borderRadius: '6px',
+    padding: '3px 9px',
+    fontSize: '11px',
+    fontWeight: 700,
+    marginBottom: '10px',
+    marginLeft: '6px',
+  },
   emptyState: {
     textAlign: 'center',
     padding: '40px 20px',
@@ -237,25 +261,34 @@ const S = {
   },
 }
 
-// ── Subcomponents ──────────────────────────────────────────────────────────
+// ── Subcomponents ──────────────────────────────────────────────────────────────────────
 
-function MetricChip({ label, value }) {
+function MetricChip({ label, value, accent }) {
   if (!value && value !== 0) return null
+  const valueColor = accent === 'green' ? '#68d391' : accent === 'red' ? '#fc8181' : '#e2e8f0'
   return (
     <div style={S.metric}>
       <span style={S.metricLabel}>{label}</span>
-      <span style={S.metricValue}>{value}</span>
+      <span style={{ ...S.metricValue, color: valueColor }}>{value}</span>
     </div>
   )
 }
 
 function PickCard({ pick }) {
-  const mc = pick.market_cap_b > 0 ? `$${pick.market_cap_b}B` : null
+  const mc   = pick.market_cap_b > 0 ? `$${pick.market_cap_b}B` : null
   const revG = pick.revenue_growth_pct !== 0 ? `${pick.revenue_growth_pct > 0 ? '+' : ''}${pick.revenue_growth_pct}%` : null
-  const gm = pick.gross_margin_pct > 0 ? `${pick.gross_margin_pct}%` : null
-  const pe = pick.pe ? `${pick.pe}x` : null
-  const ps = pick.ps ? `${pick.ps}x` : null
-  const roe = pick.roe_pct !== 0 ? `${pick.roe_pct}%` : null
+  const gm   = pick.gross_margin_pct > 0 ? `${pick.gross_margin_pct}%` : null
+  const pe   = pick.pe ? `${pick.pe}x` : null
+  const ps   = pick.ps ? `${pick.ps}x` : null
+  const roe  = pick.roe_pct !== 0 ? `${pick.roe_pct}%` : null
+  const fcf  = pick.fcf_margin_pct != null && pick.fcf_margin_pct !== 0 ? `${pick.fcf_margin_pct}%` : null
+  const roic = pick.roic_pct != null && pick.roic_pct !== 0 ? `${pick.roic_pct}%` : null
+  const mom  = pick.return_6m_pct != null ? `${pick.return_6m_pct > 0 ? '+' : ''}${pick.return_6m_pct}%` : null
+  const accel = pick.rev_accel_pct != null && Math.abs(pick.rev_accel_pct) >= 3
+    ? `${pick.rev_accel_pct > 0 ? '↑' : '↓'}${Math.abs(pick.rev_accel_pct).toFixed(1)}%`
+    : null
+  const dtc = pick.days_to_cover != null && pick.days_to_cover > 3
+    ? `${pick.days_to_cover}d` : null
 
   return (
     <div style={S.card}>
@@ -267,17 +300,30 @@ function PickCard({ pick }) {
         {pick.sector && <div style={S.cardSector}>{pick.sector}</div>}
       </div>
       <div style={S.cardBody}>
-        {pick.key_metric && (
-          <div style={S.keyMetricBadge}>⭐ {pick.key_metric}</div>
-        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0', alignItems: 'center', marginBottom: pick.key_metric || pick.insider_signal !== 'neutral' ? '0' : '0' }}>
+          {pick.key_metric && (
+            <div style={{ ...S.keyMetricBadge, marginLeft: 0 }}>⭐ {pick.key_metric}</div>
+          )}
+          {pick.insider_signal === 'buy' && (pick.insiders_buying ?? 0) >= 2 && (
+            <div style={S.insiderBuyBadge}>🏦 Insiders Buying ({pick.insiders_buying})</div>
+          )}
+          {pick.insider_signal === 'sell' && (pick.insiders_selling ?? 0) >= 2 && (
+            <div style={S.insiderSellBadge}>⚠️ Insiders Selling ({pick.insiders_selling})</div>
+          )}
+        </div>
         <p style={S.thesis}>{pick.thesis}</p>
         <div style={S.metrics}>
-          {mc && <MetricChip label="Mkt Cap" value={mc} />}
-          {revG && <MetricChip label="Rev Growth" value={revG} />}
-          {gm && <MetricChip label="Gross Margin" value={gm} />}
-          {pe && <MetricChip label="P/E" value={pe} />}
-          {ps && <MetricChip label="P/S" value={ps} />}
-          {roe && <MetricChip label="ROE" value={roe} />}
+          {mc   && <MetricChip label="Mkt Cap" value={mc} />}
+          {revG && <MetricChip label="Rev Growth" value={revG} accent={pick.revenue_growth_pct > 0 ? 'green' : 'red'} />}
+          {accel && <MetricChip label="Acceleration" value={accel} accent={pick.rev_accel_pct > 0 ? 'green' : 'red'} />}
+          {gm   && <MetricChip label="Gross Margin" value={gm} />}
+          {fcf  && <MetricChip label="FCF Margin" value={fcf} />}
+          {mom  && <MetricChip label="6mo Return" value={mom} accent={pick.return_6m_pct > 0 ? 'green' : 'red'} />}
+          {pe   && <MetricChip label="P/E" value={pe} />}
+          {ps   && <MetricChip label="P/S" value={ps} />}
+          {roe  && <MetricChip label="ROE" value={roe} />}
+          {roic && <MetricChip label="ROIC" value={roic} />}
+          {dtc  && <MetricChip label="Short DTC" value={dtc} accent={pick.days_to_cover > 10 ? 'green' : null} />}
         </div>
         {pick.catalyst && (
           <div style={S.catalystBox}>
@@ -308,7 +354,7 @@ function SectionHeader({ emoji, title, badge, badgeColor, desc }) {
   )
 }
 
-// ── Main Tab ───────────────────────────────────────────────────────────────
+// ── Main Tab ─────────────────────────────────────────────────────────────────────────
 
 export default function DiscoveryTab() {
   const [state, setState] = useState(null)
@@ -399,7 +445,7 @@ export default function DiscoveryTab() {
         )}
         {!isScanning && !hasResults && !loading && (
           <p style={S.scanNote}>
-            Click "Run Discovery Scan" to analyze ~300 stocks across all sectors.<br />
+            Click “Run Discovery Scan” to analyze ~300 stocks across all sectors.<br />
             Takes ~5–7 minutes. Results are cached for 24 hours.
           </p>
         )}

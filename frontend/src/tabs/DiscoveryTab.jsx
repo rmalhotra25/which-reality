@@ -239,23 +239,30 @@ const S = {
 
 // ── Subcomponents ──────────────────────────────────────────────────────────
 
-function MetricChip({ label, value }) {
+function MetricChip({ label, value, accent }) {
   if (!value && value !== 0) return null
+  const valueColor = accent === 'green' ? '#68d391' : accent === 'red' ? '#fc8181' : '#e2e8f0'
   return (
     <div style={S.metric}>
       <span style={S.metricLabel}>{label}</span>
-      <span style={S.metricValue}>{value}</span>
+      <span style={{ ...S.metricValue, color: valueColor }}>{value}</span>
     </div>
   )
 }
 
 function PickCard({ pick }) {
-  const mc = pick.market_cap_b > 0 ? `$${pick.market_cap_b}B` : null
+  const mc   = pick.market_cap_b > 0 ? `$${pick.market_cap_b}B` : null
   const revG = pick.revenue_growth_pct !== 0 ? `${pick.revenue_growth_pct > 0 ? '+' : ''}${pick.revenue_growth_pct}%` : null
-  const gm = pick.gross_margin_pct > 0 ? `${pick.gross_margin_pct}%` : null
-  const pe = pick.pe ? `${pick.pe}x` : null
-  const ps = pick.ps ? `${pick.ps}x` : null
-  const roe = pick.roe_pct !== 0 ? `${pick.roe_pct}%` : null
+  const gm   = pick.gross_margin_pct > 0 ? `${pick.gross_margin_pct}%` : null
+  const pe   = pick.pe ? `${pick.pe}x` : null
+  const ps   = pick.ps ? `${pick.ps}x` : null
+  const roe  = pick.roe_pct !== 0 ? `${pick.roe_pct}%` : null
+  const fcf  = pick.fcf_margin_pct != null && pick.fcf_margin_pct !== 0 ? `${pick.fcf_margin_pct}%` : null
+  const roic = pick.roic_pct != null && pick.roic_pct !== 0 ? `${pick.roic_pct}%` : null
+  const mom  = pick.return_6m_pct != null ? `${pick.return_6m_pct > 0 ? '+' : ''}${pick.return_6m_pct}%` : null
+  const accel = pick.rev_accel_pct != null && Math.abs(pick.rev_accel_pct) >= 3
+    ? `${pick.rev_accel_pct > 0 ? '↑' : '↓'}${Math.abs(pick.rev_accel_pct).toFixed(1)}%`
+    : null
 
   return (
     <div style={S.card}>
@@ -272,12 +279,16 @@ function PickCard({ pick }) {
         )}
         <p style={S.thesis}>{pick.thesis}</p>
         <div style={S.metrics}>
-          {mc && <MetricChip label="Mkt Cap" value={mc} />}
-          {revG && <MetricChip label="Rev Growth" value={revG} />}
-          {gm && <MetricChip label="Gross Margin" value={gm} />}
-          {pe && <MetricChip label="P/E" value={pe} />}
-          {ps && <MetricChip label="P/S" value={ps} />}
-          {roe && <MetricChip label="ROE" value={roe} />}
+          {mc   && <MetricChip label="Mkt Cap" value={mc} />}
+          {revG && <MetricChip label="Rev Growth" value={revG} accent={pick.revenue_growth_pct > 0 ? 'green' : 'red'} />}
+          {accel && <MetricChip label="Acceleration" value={accel} accent={pick.rev_accel_pct > 0 ? 'green' : 'red'} />}
+          {gm   && <MetricChip label="Gross Margin" value={gm} />}
+          {fcf  && <MetricChip label="FCF Margin" value={fcf} />}
+          {mom  && <MetricChip label="6mo Return" value={mom} accent={pick.return_6m_pct > 0 ? 'green' : 'red'} />}
+          {pe   && <MetricChip label="P/E" value={pe} />}
+          {ps   && <MetricChip label="P/S" value={ps} />}
+          {roe  && <MetricChip label="ROE" value={roe} />}
+          {roic && <MetricChip label="ROIC" value={roic} />}
         </div>
         {pick.catalyst && (
           <div style={S.catalystBox}>

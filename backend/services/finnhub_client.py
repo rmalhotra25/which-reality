@@ -69,6 +69,49 @@ def get_company_profile(symbol: str) -> dict:
         return {}
 
 
+def get_insider_sentiment(symbol: str) -> dict:
+    """
+    Net insider buying/selling over the last 90 days (direct transactions only).
+    Returns signal ('buy'|'sell'|'neutral'), net_change, insiders_buying/selling count.
+    Filters out derivative (options) transactions to focus on real share purchases.
+    """
+    try:
+        from datetime import date, timedelta
+        today = date.today()
+        from_date = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+        to_date = today.strftime("%Y-%m-%d")
+        data = _get_client().stock_insider_transactions(symbol, from_date, to_date)
+        txns = (data or {}).get("data", []) or []
+        direct = [t for t in txns if not t.get("isDerivative", False)]
+        if not direct:
+            return {}
+        buyers: dict[str, int] = {}
+        sellers: dict[str, int] = {}
+        for t in direct:
+            change = int(t.get("change") or 0)
+            name = t.get("name") or "Unknown"
+            if change > 0:
+                buyers[name] = buyers.get(name, 0) + change
+            elif change < 0:
+                sellers[name] = sellers.get(name, 0) + abs(change)
+        net_change = sum(buyers.values()) - sum(sellers.values())
+        if len(buyers) >= 2 and net_change > 0:
+            signal = "buy"
+        elif len(sellers) >= 2 and net_change < 0:
+            signal = "sell"
+        else:
+            signal = "neutral"
+        return {
+            "signal": signal,
+            "net_change": net_change,
+            "insiders_buying": len(buyers),
+            "insiders_selling": len(sellers),
+        }
+    except Exception as e:
+        logger.debug("insider_sentiment failed for %s: %s", symbol, e)
+        return {}
+
+
 def get_earnings_this_month(symbol: str) -> int | None:
     """
     Returns days until next earnings announcement, or None if unknown.

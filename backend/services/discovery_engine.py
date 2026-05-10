@@ -328,12 +328,29 @@ def _fmt_candidates(candidates: list[dict]) -> str:
         roe_str  = f"ROE={round((d.get('roe') or 0)*100,1)}%"
         roic_str = f"ROIC={round((d.get('roic') or 0)*100,1)}%" if d.get("roic") else ""
 
+        # Insider signal
+        insider_str = ""
+        sig = d.get("insider_signal", "neutral")
+        n_buy = d.get("insiders_buying", 0) or 0
+        n_sell = d.get("insiders_selling", 0) or 0
+        if sig == "buy" and n_buy >= 2:
+            insider_str = f"InsiderBuying={n_buy}execs"
+        elif sig == "sell" and n_sell >= 2:
+            insider_str = f"InsiderSelling={n_sell}execs"
+
+        # Short interest (high DTC = potential squeeze fuel for sleepers)
+        short_str = ""
+        dtc = d.get("days_to_cover")
+        if dtc and dtc > 5:
+            short_str = f"ShortDTC={dtc}d"
+
         parts = [
             f"{d['ticker']} ({d['name']}) | {d['sector']} | ${mc_b}B",
             f"RevGrowth={rev_str}",
             gm_str,
         ]
-        for extra in (fcf_str, mom_str, pe_str, ps_str, roe_str, roic_str):
+        for extra in (fcf_str, mom_str, pe_str, ps_str, roe_str, roic_str,
+                      insider_str, short_str):
             if extra:
                 parts.append(extra)
 
@@ -459,18 +476,43 @@ def _run_scan() -> None:
         with _lock:
             _state["progress"] = 0.70
 
-        # Phase 3: enrich top candidates with company names (rate-limited)
+        # Phase 3: enrich finalists with name/sector, insider activity, short interest
         all_finalists = {d["ticker"]: d for d in top_compounders + top_sleepers}
         unique_finalists = list(all_finalists.values())
         for i, d in enumerate(unique_finalists):
+            ticker = d["ticker"]
+
+            # Company name and sector (Finnhub profile, rate-limited)
             try:
                 from services.finnhub_client import get_company_profile
-                profile = _rate_limited_call(get_company_profile, d["ticker"])
+                profile = _rate_limited_call(get_company_profile, ticker)
                 if profile:
-                    d["name"] = profile.get("name", d["ticker"])
+                    d["name"] = profile.get("name", ticker)
                     d["sector"] = profile.get("finnhubIndustry", "Unknown")
             except Exception:
                 pass
+
+            # Insider buying/selling signal (Finnhub, rate-limited)
+            try:
+                from services.finnhub_client import get_insider_sentiment
+                insider = _rate_limited_call(get_insider_sentiment, ticker)
+                if insider:
+                    d["insider_signal"] = insider.get("signal", "neutral")
+                    d["insiders_buying"] = insider.get("insiders_buying", 0)
+                    d["insiders_selling"] = insider.get("insiders_selling", 0)
+            except Exception:
+                pass
+
+            # Short interest (Polygon — independent rate limit, fully optional)
+            try:
+                from services.polygon_client import get_short_data
+                short = get_short_data(ticker)
+                if short:
+                    d["days_to_cover"] = short.get("days_to_cover")
+                    d["short_vol_pct"] = short.get("short_volume_ratio_pct")
+            except Exception:
+                pass
+
             with _lock:
                 _state["progress"] = 0.70 + (i + 1) / len(unique_finalists) * 0.10
 
@@ -516,6 +558,12 @@ def _run_scan() -> None:
                     "roic_pct": round((d.get("roic") or 0) * 100, 1) if d.get("roic") else None,
                     "return_6m_pct": round(d.get("return_6m") or 0, 1) if d.get("return_6m") is not None else None,
                     "rev_accel_pct": round((rev_q - rev_g) * 100, 1) if rev_q is not None else None,
+                    # Insider and short signals
+                    "insider_signal": d.get("insider_signal", "neutral"),
+                    "insiders_buying": d.get("insiders_buying") or 0,
+                    "insiders_selling": d.get("insiders_selling") or 0,
+                    "days_to_cover": d.get("days_to_cover"),
+                    "short_vol_pct": d.get("short_vol_pct"),
                 })
             return enriched
 

@@ -323,8 +323,8 @@ def _fmt_candidates(candidates: list[dict]) -> str:
         gm_str   = f"GrossMargin={round((d.get('gross_margin') or 0)*100,1)}%"
         fcf_str  = f"FCFMargin={round((d.get('fcf_margin') or 0)*100,1)}%" if d.get("fcf_margin") is not None else ""
         mom_str  = f"6moReturn={round(d.get('return_6m') or 0,1)}%" if d.get("return_6m") is not None else ""
-        pe_str   = f"PE={round(d['pe'],1)}" if (d.get("pe") or 0) > 0 else "PE=n/a"
-        ps_str   = f"PS={round(d['ps'],1)}" if d.get("ps") else ""
+        pe_str   = f"PE={round(d.get('pe'),1)}" if (d.get("pe") or 0) > 0 else "PE=n/a"
+        ps_str   = f"PS={round(d.get('ps'),1)}" if d.get("ps") else ""
         roe_str  = f"ROE={round((d.get('roe') or 0)*100,1)}%"
         roic_str = f"ROIC={round((d.get('roic') or 0)*100,1)}%" if d.get("roic") else ""
 
@@ -550,8 +550,8 @@ def _run_scan() -> None:
                     "market_cap_b": round((d.get("market_cap") or 0) / 1000, 2),
                     "revenue_growth_pct": round(rev_g * 100, 1),
                     "gross_margin_pct": round((d.get("gross_margin") or 0) * 100, 1),
-                    "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
-                    "ps": round(d["ps"], 1) if d.get("ps") else None,
+                    "pe": round(d.get("pe"), 1) if (d.get("pe") or 0) > 0 else None,
+                    "ps": round(d.get("ps"), 1) if d.get("ps") else None,
                     "roe_pct": round((d.get("roe") or 0) * 100, 1),
                     # New multi-factor metrics
                     "fcf_margin_pct": round((d.get("fcf_margin") or 0) * 100, 1) if d.get("fcf_margin") is not None else None,

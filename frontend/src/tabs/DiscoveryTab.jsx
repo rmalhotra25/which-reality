@@ -304,10 +304,10 @@ function PickCard({ pick }) {
           {pick.key_metric && (
             <div style={{ ...S.keyMetricBadge, marginLeft: 0 }}>⭐ {pick.key_metric}</div>
           )}
-          {pick.insider_signal === 'buy' && pick.insiders_buying >= 2 && (
+          {pick.insider_signal === 'buy' && (pick.insiders_buying ?? 0) >= 2 && (
             <div style={S.insiderBuyBadge}>🏦 Insiders Buying ({pick.insiders_buying})</div>
           )}
-          {pick.insider_signal === 'sell' && pick.insiders_selling >= 2 && (
+          {pick.insider_signal === 'sell' && (pick.insiders_selling ?? 0) >= 2 && (
             <div style={S.insiderSellBadge}>⚠️ Insiders Selling ({pick.insiders_selling})</div>
           )}
         </div>

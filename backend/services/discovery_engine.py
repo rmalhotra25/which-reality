@@ -217,7 +217,9 @@ def _dcf_scenarios(d: dict, category: str) -> dict:
     revenue_0 = market_cap / ps   # implied annual revenue ($M)
 
     # Floor FCF margin: high-growth / pre-profit companies will eventually monetise scale
-    fcf_0 = max(fcf_margin, gross_margin * 0.15)
+    # Priority: actual FCF margin > net margin proxy (FCF ≈ 85% of net income) > gross margin proxy
+    net_margin = (d.get("net_margin") or 0) / 100
+    fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
     if category == "compounder":
         dr = 0.12   # 12% discount rate (higher execution risk)

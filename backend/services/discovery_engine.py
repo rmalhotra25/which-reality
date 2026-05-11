@@ -261,6 +261,15 @@ def _dcf_scenarios(d: dict, category: str) -> dict:
     else:
         out["recommendation"] = "Pass"
 
+    # Implied current price and per-share price targets
+    shares_m = d.get("shares_outstanding") or 0
+    if shares_m > 0:
+        curr_p = market_cap / shares_m   # market_cap ($M) / shares (M) = $/share
+        out["current_price"] = round(curr_p, 2)
+        for scenario in ("bull", "base", "bear"):
+            upside = out.get(f"{scenario}_upside", 0)
+            out[f"{scenario}_price"] = round(curr_p * (1 + upside / 100), 2)
+
     return out
 
 
@@ -551,13 +560,14 @@ def _run_scan() -> None:
         for i, d in enumerate(unique_finalists):
             ticker = d["ticker"]
 
-            # Company name and sector (Finnhub profile, rate-limited)
+            # Company name, sector, and shares outstanding (Finnhub profile, rate-limited)
             try:
                 from services.finnhub_client import get_company_profile
                 profile = _rate_limited_call(get_company_profile, ticker)
                 if profile:
                     d["name"] = profile.get("name", ticker)
                     d["sector"] = profile.get("finnhubIndustry", "Unknown")
+                    d["shares_outstanding"] = profile.get("shareOutstanding")  # millions
             except Exception:
                 pass
 
@@ -642,6 +652,10 @@ def _run_scan() -> None:
                     "dcf_base_upside": dcf.get("base_upside"),
                     "dcf_bear_upside": dcf.get("bear_upside"),
                     "dcf_recommendation": dcf.get("recommendation"),
+                    "current_price": dcf.get("current_price"),
+                    "dcf_bull_price": dcf.get("bull_price"),
+                    "dcf_base_price": dcf.get("base_price"),
+                    "dcf_bear_price": dcf.get("bear_price"),
                     # Qualitative bull/bear narrative + AI recommendation from Claude
                     "bull_case": p.get("bull_case", ""),
                     "bear_case": p.get("bear_case", ""),

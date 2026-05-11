@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 
 const API = import.meta.env.VITE_API_URL || ''
 
-// ── Styles ─────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────────────
 const S = {
   page: {
     minHeight: '100vh',
@@ -261,7 +261,7 @@ const S = {
   },
 }
 
-// ── Subcomponents ──────────────────────────────────────────────────────────
+// ── Subcomponents ──────────────────────────────────────────────────────────────────────
 
 function MetricChip({ label, value, accent }) {
   if (!value && value !== 0) return null
@@ -354,7 +354,7 @@ function SectionHeader({ emoji, title, badge, badgeColor, desc }) {
   )
 }
 
-// ── Main Tab ───────────────────────────────────────────────────────────────
+// ── Main Tab ─────────────────────────────────────────────────────────────────────────
 
 export default function DiscoveryTab() {
   const [state, setState] = useState(null)
@@ -445,7 +445,7 @@ export default function DiscoveryTab() {
         )}
         {!isScanning && !hasResults && !loading && (
           <p style={S.scanNote}>
-            Click "Run Discovery Scan" to analyze ~300 stocks across all sectors.<br />
+            Click “Run Discovery Scan” to analyze ~300 stocks across all sectors.<br />
             Takes ~5–7 minutes. Results are cached for 24 hours.
           </p>
         )}

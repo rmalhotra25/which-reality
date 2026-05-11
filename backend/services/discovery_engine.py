@@ -146,31 +146,31 @@ def _fetch_fundamentals(ticker: str) -> Optional[dict]:
             "sector": "Unknown",
             # Size
             "market_cap": mc,                                          # millions
-            # Growth
-            "revenue_growth": metrics.get("revenueGrowthTTMYoy"),     # TTM YoY
-            "revenue_growth_q": rev_growth_q,                          # recent qtr YoY
+            # Growth — Finnhub returns as percentage (e.g. 65.47 = 65.47%)
+            "revenue_growth": metrics.get("revenueGrowthTTMYoy"),
+            "revenue_growth_q": rev_growth_q,
             "eps_growth": metrics.get("epsGrowthTTMYoy"),
             "eps_growth_q": metrics.get("epsGrowthQuarterlyYoy"),
-            # Margins / quality
+            # Margins — Finnhub returns as percentage (e.g. 71.31 = 71.31%)
             "gross_margin": metrics.get("grossMarginTTM"),
             "operating_margin": metrics.get("operatingMarginTTM"),
             "net_margin": metrics.get("netProfitMarginTTM"),
             "fcf_margin": fcf_margin,
-            # Price momentum (from same API call — no extra request needed)
-            "return_6m": metrics.get("26WeekPriceReturnDaily"),        # 6-month %
-            "return_3m": metrics.get("13WeekPriceReturnDaily"),        # 3-month %
-            "return_1y": metrics.get("52WeekPriceReturnDaily"),        # 1-year %
+            # Price momentum (pre-computed by Finnhub, already in %)
+            "return_6m": metrics.get("26WeekPriceReturnDaily"),
+            "return_3m": metrics.get("13WeekPriceReturnDaily"),
+            "return_1y": metrics.get("52WeekPriceReturnDaily"),
             "week52_high": metrics.get("52WeekHigh"),
             "week52_low": metrics.get("52WeekLow"),
-            # Valuation
+            # Valuation (raw ratios)
             "pe": metrics.get("peNormalizedAnnual") or metrics.get("peTTM"),
             "ps": metrics.get("psTTM"),
             "pb": metrics.get("pbAnnual"),
-            # Capital efficiency
+            # Returns — Finnhub returns as percentage (e.g. 104.37 = 104.37%)
             "roe": metrics.get("roeTTM"),
             "roa": metrics.get("roaTTM"),
             "roic": roic,
-            # Financial health
+            # Financial health (raw ratios)
             "debt_equity": metrics.get("debtToEquityAnnual"),
             "current_ratio": metrics.get("currentRatioAnnual"),
         }
@@ -182,14 +182,12 @@ def _fetch_fundamentals(ticker: str) -> Optional[dict]:
 def _add_derived_signals(fundamentals: list[dict]) -> None:
     """Compute derived signals in-place. Called after all fundamentals are fetched."""
     for d in fundamentals:
-        # Revenue acceleration: recent quarter growth vs TTM growth
-        # Positive = speeding up (early innings signal), negative = slowing
+        # Revenue acceleration: recent quarter growth vs TTM growth (in percentage points)
         rev_ttm = d.get("revenue_growth") or 0.0
         rev_q = d.get("revenue_growth_q")
         d["rev_accel"] = (rev_q - rev_ttm) if rev_q is not None else None
 
         # Growth efficiency: revenue growth per unit of valuation (PEG-style)
-        # High growth at low PS = highly efficient. Neutral if PS unknown.
         ps = d.get("ps") or 0
         rev_g = d.get("revenue_growth") or 0
         d["growth_efficiency"] = rev_g / max(ps, 0.5) if ps > 0 and rev_g > 0 else None
@@ -281,14 +279,14 @@ def _build_sleeper_scores(pool: list[dict]) -> dict[str, float]:
       Debt/Equity (lower = better)   5%  balance sheet resilience
     """
     r = {
-        "pe":   _pct_ranks(pool, "pe",           ascending=False),  # cheaper = better
+        "pe":   _pct_ranks(pool, "pe",           ascending=False),
         "roe":  _pct_ranks(pool, "roe"),
         "rev":  _pct_ranks(pool, "revenue_growth"),
         "gm":   _pct_ranks(pool, "gross_margin"),
         "fcf":  _pct_ranks(pool, "fcf_margin"),
         "roic": _pct_ranks(pool, "roic"),
         "cr":   _pct_ranks(pool, "current_ratio"),
-        "de":   _pct_ranks(pool, "debt_equity",  ascending=False),  # lower debt = better
+        "de":   _pct_ranks(pool, "debt_equity",  ascending=False),
     }
     weights = {
         "pe": 0.20, "roe": 0.20, "rev": 0.15, "gm": 0.15,
@@ -314,19 +312,19 @@ def _fmt_candidates(candidates: list[dict]) -> str:
         rev_q = d.get("revenue_growth_q")
         accel_tag = ""
         if rev_q is not None:
-            if rev_q > rev_g + 0.05:
+            if rev_q > rev_g + 5:
                 accel_tag = " [↑ACCEL]"
-            elif rev_q < rev_g - 0.05:
+            elif rev_q < rev_g - 5:
                 accel_tag = " [↓DECEL]"
-        rev_str = f"{round(rev_g * 100, 1)}%{accel_tag}"
+        rev_str = f"{round(rev_g, 1)}%{accel_tag}"
 
-        gm_str   = f"GrossMargin={round((d.get('gross_margin') or 0)*100,1)}%"
-        fcf_str  = f"FCFMargin={round((d.get('fcf_margin') or 0)*100,1)}%" if d.get("fcf_margin") is not None else ""
-        mom_str  = f"6moReturn={round(d.get('return_6m') or 0,1)}%" if d.get("return_6m") is not None else ""
+        gm_str   = f"GrossMargin={round(d.get('gross_margin') or 0, 1)}%"
+        fcf_str  = f"FCFMargin={round(d.get('fcf_margin') or 0, 1)}%" if d.get("fcf_margin") is not None else ""
+        mom_str  = f"6moReturn={round(d.get('return_6m') or 0, 1)}%" if d.get("return_6m") is not None else ""
         pe_str   = f"PE={round(d.get('pe'),1)}" if (d.get("pe") or 0) > 0 else "PE=n/a"
         ps_str   = f"PS={round(d.get('ps'),1)}" if d.get("ps") else ""
-        roe_str  = f"ROE={round((d.get('roe') or 0)*100,1)}%"
-        roic_str = f"ROIC={round((d.get('roic') or 0)*100,1)}%" if d.get("roic") else ""
+        roe_str  = f"ROE={round(d.get('roe') or 0, 1)}%"
+        roic_str = f"ROIC={round(d.get('roic') or 0, 1)}%" if d.get("roic") else ""
 
         # Insider signal
         insider_str = ""
@@ -456,7 +454,7 @@ def _run_scan() -> None:
 
         compounder_pool = [
             d for d in fundamentals
-            if (d.get("revenue_growth") or 0) > 0.05 and (d.get("gross_margin") or 0) > 0.2
+            if (d.get("revenue_growth") or 0) > 5 and (d.get("gross_margin") or 0) > 20
         ]
         sleeper_pool = [
             d for d in fundamentals
@@ -546,18 +544,18 @@ def _run_scan() -> None:
                     "key_metric": p.get("key_metric", ""),
                     "catalyst": p.get("catalyst", ""),
                     "risk": p.get("risk", ""),
-                    # Core metrics
+                    # Core metrics (Finnhub returns these as percentages, no * 100 needed)
                     "market_cap_b": round((d.get("market_cap") or 0) / 1000, 2),
-                    "revenue_growth_pct": round(rev_g * 100, 1),
-                    "gross_margin_pct": round((d.get("gross_margin") or 0) * 100, 1),
+                    "revenue_growth_pct": round(rev_g, 1),
+                    "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
                     "pe": round(d.get("pe"), 1) if (d.get("pe") or 0) > 0 else None,
                     "ps": round(d.get("ps"), 1) if d.get("ps") else None,
-                    "roe_pct": round((d.get("roe") or 0) * 100, 1),
+                    "roe_pct": round(d.get("roe") or 0, 1),
                     # New multi-factor metrics
-                    "fcf_margin_pct": round((d.get("fcf_margin") or 0) * 100, 1) if d.get("fcf_margin") is not None else None,
-                    "roic_pct": round((d.get("roic") or 0) * 100, 1) if d.get("roic") else None,
+                    "fcf_margin_pct": round(d.get("fcf_margin") or 0, 1) if d.get("fcf_margin") is not None else None,
+                    "roic_pct": round(d.get("roic") or 0, 1) if d.get("roic") else None,
                     "return_6m_pct": round(d.get("return_6m") or 0, 1) if d.get("return_6m") is not None else None,
-                    "rev_accel_pct": round((rev_q - rev_g) * 100, 1) if rev_q is not None else None,
+                    "rev_accel_pct": round(rev_q - rev_g, 1) if rev_q is not None else None,
                     # Insider and short signals
                     "insider_signal": d.get("insider_signal", "neutral"),
                     "insiders_buying": d.get("insiders_buying") or 0,

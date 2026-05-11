@@ -230,10 +230,16 @@ def _dcf_scenarios(d: dict, category: str) -> dict:
         }
     else:   # sleeper
         dr = 0.10   # 10% discount rate (lower risk)
+        # Sleepers are value stocks — cap growth and enforce bear ≤ base ≤ bull.
+        # Without caps, a high-growth stock appearing in sleepers (e.g. NVDA, P/E < 60)
+        # produces base > bull because base uses raw rev_growth while bull caps at 30%.
+        _g_bull = min(rev_growth * 1.3, 0.30)
+        _g_base = min(rev_growth * 0.80, min(_g_bull, 0.20))   # base ≤ bull, ≤ 20%
+        _g_bear = min(max(rev_growth * 0.30, 0.02), _g_base)   # bear ≤ base, ≥ 2%
         scenarios = {
-            "bull": dict(g1=min(rev_growth * 1.5, 0.30), g2=0.10, fm=min(fcf_0 * 1.20, 0.50), tg=0.030),
-            "base": dict(g1=rev_growth,                  g2=0.07, fm=fcf_0,                     tg=0.025),
-            "bear": dict(g1=max(rev_growth * 0.5, 0.02), g2=0.03, fm=fcf_0 * 0.80,              tg=0.020),
+            "bull": dict(g1=_g_bull, g2=0.10, fm=min(fcf_0 * 1.20, 0.50), tg=0.030),
+            "base": dict(g1=_g_base, g2=0.07, fm=fcf_0,                     tg=0.025),
+            "bear": dict(g1=_g_bear, g2=0.03, fm=fcf_0 * 0.80,              tg=0.020),
         }
 
     out: dict = {}

@@ -359,6 +359,15 @@ function fmtDcfVal(m) {
   return `$${Math.round(m)}M`
 }
 
+function fmtPrice(p) {
+  if (p == null) return null
+  if (p >= 10_000) return `$${(Math.round(p / 100) * 100).toLocaleString()}`
+  if (p >= 1_000) return `$${(Math.round(p / 10) * 10).toLocaleString()}`
+  if (p >= 100) return `$${Math.round(p)}`
+  if (p >= 10) return `$${p.toFixed(1)}`
+  return `$${p.toFixed(2)}`
+}
+
 const REC_COLORS = {
   'Strong Buy': '#48bb78',
   'Buy': '#68d391',
@@ -370,24 +379,32 @@ function DcfSection({ pick }) {
   if (pick.dcf_base == null) return null
 
   const scenarios = [
-    { label: 'Bear', val: pick.dcf_bear, upside: pick.dcf_bear_upside, color: '#fc8181' },
-    { label: 'Base', val: pick.dcf_base, upside: pick.dcf_base_upside, color: '#f6ad55' },
-    { label: 'Bull', val: pick.dcf_bull, upside: pick.dcf_bull_upside, color: '#68d391' },
+    { label: 'Bear', val: pick.dcf_bear, price: pick.dcf_bear_price, upside: pick.dcf_bear_upside, color: '#fc8181' },
+    { label: 'Base', val: pick.dcf_base, price: pick.dcf_base_price, upside: pick.dcf_base_upside, color: '#f6ad55' },
+    { label: 'Bull', val: pick.dcf_bull, price: pick.dcf_bull_price, upside: pick.dcf_bull_upside, color: '#68d391' },
   ]
 
   const dcfRec = pick.dcf_recommendation
   const dcfColor = REC_COLORS[dcfRec] || '#718096'
   const aiRec = pick.long_term_rec
   const aiColor = REC_COLORS[aiRec] || '#718096'
+  const currPriceStr = pick.current_price ? fmtPrice(pick.current_price) : null
 
   return (
     <div style={S.dcfSection}>
-      <div style={S.dcfTitle}>📊 DCF Intrinsic Value (10-yr model)</div>
+      <div style={S.dcfTitle}>
+        📊 DCF Intrinsic Value (10-yr model){currPriceStr && <span style={{ color: '#4a5568', fontWeight: 400, textTransform: 'none', marginLeft: '6px' }}>· current {currPriceStr}</span>}
+      </div>
       <div style={S.dcfGrid}>
         {scenarios.map(s => (
           <div key={s.label} style={S.dcfCell(s.color)}>
             <div style={S.dcfCellLabel}>{s.label}</div>
             <div style={{ ...S.dcfCellValue, color: s.color }}>{fmtDcfVal(s.val)}</div>
+            {fmtPrice(s.price) && (
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', marginBottom: '2px' }}>
+                {fmtPrice(s.price)}
+              </div>
+            )}
             <div style={{ ...S.dcfCellUpside, color: (s.upside ?? 0) >= 0 ? '#68d391' : '#fc8181' }}>
               {s.upside != null ? `${s.upside >= 0 ? '+' : ''}${s.upside}%` : '—'}
             </div>

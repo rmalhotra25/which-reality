@@ -259,9 +259,151 @@ const S = {
     padding: '12px 20px 0',
     lineHeight: 1.5,
   },
+  bullCaseBox: {
+    background: 'rgba(104,211,145,0.06)',
+    borderLeft: '3px solid #68d391',
+    borderRadius: '0 6px 6px 0',
+    padding: '8px 10px',
+    marginTop: '8px',
+    marginBottom: '8px',
+  },
+  bullCaseLabel: {
+    fontSize: '10px',
+    color: '#68d391',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginBottom: '2px',
+  },
+  bearCaseBox: {
+    background: 'rgba(252,129,74,0.07)',
+    borderLeft: '3px solid #fc814a',
+    borderRadius: '0 6px 6px 0',
+    padding: '8px 10px',
+  },
+  bearCaseLabel: {
+    fontSize: '10px',
+    color: '#fc814a',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginBottom: '2px',
+  },
+  dcfSection: {
+    marginTop: '14px',
+    borderTop: '1px solid #2d3748',
+    paddingTop: '12px',
+  },
+  dcfTitle: {
+    fontSize: '10px',
+    color: '#718096',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+  },
+  dcfGrid: {
+    display: 'flex',
+    gap: '6px',
+    marginBottom: '10px',
+  },
+  dcfCell: (color) => ({
+    flex: 1,
+    background: '#2d3748',
+    borderRadius: '8px',
+    padding: '8px 6px',
+    textAlign: 'center',
+    borderTop: `2px solid ${color}`,
+  }),
+  dcfCellLabel: {
+    fontSize: '10px',
+    color: '#718096',
+    marginBottom: '4px',
+  },
+  dcfCellValue: {
+    fontSize: '13px',
+    fontWeight: 700,
+    marginBottom: '2px',
+  },
+  dcfCellUpside: {
+    fontSize: '11px',
+  },
+  dcfRecsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+  },
+  recBadge: (color) => ({
+    fontSize: '11px',
+    fontWeight: 700,
+    color,
+    background: `${color}18`,
+    border: `1px solid ${color}40`,
+    borderRadius: '6px',
+    padding: '3px 10px',
+  }),
+  dcfNote: {
+    fontSize: '10px',
+    color: '#4a5568',
+    marginLeft: 'auto',
+  },
 }
 
 // ── Subcomponents ──────────────────────────────────────────────────────────────────────
+
+function fmtDcfVal(m) {
+  if (m == null) return '—'
+  if (m >= 1_000_000) return `$${(m / 1_000_000).toFixed(1)}T`
+  if (m >= 1_000) return `$${(m / 1_000).toFixed(0)}B`
+  return `$${Math.round(m)}M`
+}
+
+const REC_COLORS = {
+  'Strong Buy': '#48bb78',
+  'Buy': '#68d391',
+  'Hold': '#f6ad55',
+  'Pass': '#fc8181',
+}
+
+function DcfSection({ pick }) {
+  if (pick.dcf_base == null) return null
+
+  const scenarios = [
+    { label: 'Bear', val: pick.dcf_bear, upside: pick.dcf_bear_upside, color: '#fc8181' },
+    { label: 'Base', val: pick.dcf_base, upside: pick.dcf_base_upside, color: '#f6ad55' },
+    { label: 'Bull', val: pick.dcf_bull, upside: pick.dcf_bull_upside, color: '#68d391' },
+  ]
+
+  const dcfRec = pick.dcf_recommendation
+  const dcfColor = REC_COLORS[dcfRec] || '#718096'
+  const aiRec = pick.long_term_rec
+  const aiColor = REC_COLORS[aiRec] || '#718096'
+
+  return (
+    <div style={S.dcfSection}>
+      <div style={S.dcfTitle}>📊 DCF Intrinsic Value (10-yr model)</div>
+      <div style={S.dcfGrid}>
+        {scenarios.map(s => (
+          <div key={s.label} style={S.dcfCell(s.color)}>
+            <div style={S.dcfCellLabel}>{s.label}</div>
+            <div style={{ ...S.dcfCellValue, color: s.color }}>{fmtDcfVal(s.val)}</div>
+            <div style={{ ...S.dcfCellUpside, color: (s.upside ?? 0) >= 0 ? '#68d391' : '#fc8181' }}>
+              {s.upside != null ? `${s.upside >= 0 ? '+' : ''}${s.upside}%` : '—'}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={S.dcfRecsRow}>
+        {dcfRec && <span style={S.recBadge(dcfColor)}>{dcfRec}</span>}
+        {aiRec && <span style={S.recBadge(aiColor)}>AI: {aiRec}</span>}
+        {pick.market_cap_b > 0 && (
+          <span style={S.dcfNote}>vs ${pick.market_cap_b}B current mkt cap</span>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function MetricChip({ label, value, accent }) {
   if (!value && value !== 0) return null
@@ -325,18 +467,19 @@ function PickCard({ pick }) {
           {roic && <MetricChip label="ROIC" value={roic} />}
           {dtc  && <MetricChip label="Short DTC" value={dtc} accent={pick.days_to_cover > 10 ? 'green' : null} />}
         </div>
-        {pick.catalyst && (
-          <div style={S.catalystBox}>
-            <div style={S.catalystLabel}>🚀 Catalyst</div>
-            <div style={S.catalystText}>{pick.catalyst}</div>
+        {(pick.bull_case || pick.catalyst) && (
+          <div style={S.bullCaseBox}>
+            <div style={S.bullCaseLabel}>🐂 Bull Case</div>
+            <div style={S.catalystText}>{pick.bull_case || pick.catalyst}</div>
           </div>
         )}
-        {pick.risk && (
-          <div style={{ ...S.riskBox, marginTop: '8px' }}>
-            <div style={S.riskLabel}>⚠️ Risk</div>
-            <div style={S.riskText}>{pick.risk}</div>
+        {(pick.bear_case || pick.risk) && (
+          <div style={S.bearCaseBox}>
+            <div style={S.bearCaseLabel}>🐻 Bear Case</div>
+            <div style={S.riskText}>{pick.bear_case || pick.risk}</div>
           </div>
         )}
+        <DcfSection pick={pick} />
       </div>
     </div>
   )
@@ -445,7 +588,7 @@ export default function DiscoveryTab() {
         )}
         {!isScanning && !hasResults && !loading && (
           <p style={S.scanNote}>
-            Click “Run Discovery Scan” to analyze ~300 stocks across all sectors.<br />
+            Click "Run Discovery Scan" to analyze ~300 stocks across all sectors.<br />
             Takes ~5–7 minutes. Results are cached for 24 hours.
           </p>
         )}

@@ -197,6 +197,73 @@ def _add_derived_signals(fundamentals: list[dict]) -> None:
         d["earnings_yield"] = 1.0 / pe if 2 < pe < 200 else None
 
 
+def _dcf_scenarios(d: dict, category: str) -> dict:
+    """
+    3-scenario 10-year FCF DCF (bull / base / bear).
+    Revenue is derived from market_cap ÷ P/S ratio (both from Finnhub).
+    FCF margin is floored by a gross-margin proxy for pre-profit compounders
+    (assumption: mature compounder eventually converts ~15% of gross margin to FCF).
+    Returns intrinsic values in $M and % upside vs current market cap.
+    """
+    market_cap = d.get("market_cap") or 0   # $M (Finnhub marketCapitalization)
+    ps = d.get("ps") or 0
+    if ps <= 0 or market_cap <= 0:
+        return {}
+
+    rev_growth   = (d.get("revenue_growth") or 5) / 100     # decimal
+    fcf_margin   = (d.get("fcf_margin")     or 0) / 100     # decimal
+    gross_margin = (d.get("gross_margin")   or 40) / 100    # decimal
+
+    revenue_0 = market_cap / ps   # implied annual revenue ($M)
+
+    # Floor FCF margin: high-growth / pre-profit companies will eventually monetise scale
+    fcf_0 = max(fcf_margin, gross_margin * 0.15)
+
+    if category == "compounder":
+        dr = 0.12   # 12% discount rate (higher execution risk)
+        scenarios = {
+            "bull": dict(g1=min(rev_growth,        0.80), g2=0.20, fm=min(fcf_0 * 1.30, 0.55), tg=0.035),
+            "base": dict(g1=min(rev_growth * 0.70, 0.50), g2=0.12, fm=fcf_0,                    tg=0.030),
+            "bear": dict(g1=max(rev_growth * 0.30, 0.03), g2=0.05, fm=fcf_0 * 0.75,             tg=0.020),
+        }
+    else:   # sleeper
+        dr = 0.10   # 10% discount rate (lower risk)
+        scenarios = {
+            "bull": dict(g1=min(rev_growth * 1.5, 0.30), g2=0.10, fm=min(fcf_0 * 1.20, 0.50), tg=0.030),
+            "base": dict(g1=rev_growth,                  g2=0.07, fm=fcf_0,                     tg=0.025),
+            "bear": dict(g1=max(rev_growth * 0.5, 0.02), g2=0.03, fm=fcf_0 * 0.80,              tg=0.020),
+        }
+
+    out: dict = {}
+    for name, s in scenarios.items():
+        revenue = revenue_0
+        fm = max(s["fm"], 0.05)   # absolute floor: 5% FCF margin
+        pv = 0.0
+        for yr in range(1, 6):
+            revenue *= (1 + s["g1"])
+            pv += (revenue * fm) / (1 + dr) ** yr
+        for yr in range(6, 11):
+            revenue *= (1 + s["g2"])
+            pv += (revenue * fm) / (1 + dr) ** yr
+        # Gordon Growth terminal value off year-10 FCF
+        terminal_fcf = revenue * fm * (1 + s["tg"])
+        pv += (terminal_fcf / (dr - s["tg"])) / (1 + dr) ** 10
+        out[name] = round(pv)
+        out[f"{name}_upside"] = round((pv - market_cap) / market_cap * 100, 1)
+
+    base_up = out.get("base_upside", 0)
+    if base_up >= 40:
+        out["recommendation"] = "Strong Buy"
+    elif base_up >= 15:
+        out["recommendation"] = "Buy"
+    elif base_up >= -10:
+        out["recommendation"] = "Hold"
+    else:
+        out["recommendation"] = "Pass"
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Multi-factor scoring (percentile-normalized)
 # ---------------------------------------------------------------------------
@@ -386,15 +453,19 @@ def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
         user = (
             f"CANDIDATES (pre-screened and ranked by multi-factor model):\n{data_str}\n\n"
             f"{role}\n\n"
-            "Select the TOP 10 picks. For each, write a specific 2-3 sentence thesis on WHY "
-            "this company could be a life-changing investment. Reference the actual numbers. "
-            "Be specific about the business model, competitive moat, and growth catalyst.\n\n"
+            "Select the TOP 10 picks. Return a JSON array where each object has:\n"
+            "- thesis: 2-3 sentence thesis referencing specific metrics\n"
+            "- bull_case: 1-2 sentences on what drives the best-case outcome (5-10x in 3-5 years)\n"
+            "- bear_case: 1-2 sentences on what could kill this thesis\n"
+            "- key_metric: Single most compelling number e.g. '67% revenue growth [↑ACCEL]'\n"
+            "- catalyst: Specific near-term trigger that could re-rate the stock\n"
+            "- risk: Main risk in one short phrase\n"
+            "- long_term_rec: Exactly one of 'Strong Buy' | 'Buy' | 'Hold' | 'Pass'\n\n"
             "Return ONLY a JSON array:\n"
             '[{"ticker":"XXXX","name":"Full Company Name",'
-            '"thesis":"2-3 sentence thesis referencing specific metrics",'
-            '"key_metric":"Single most compelling number e.g. 67% revenue growth [↑ACCEL]",'
-            '"catalyst":"Specific trigger that could make this stock 5-10x",'
-            '"risk":"Main risk to this thesis"}]'
+            '"thesis":"...","bull_case":"...","bear_case":"...",'
+            '"key_metric":"...","catalyst":"...","risk":"...",'
+            '"long_term_rec":"Buy"}]'
         )
 
         system = (
@@ -404,7 +475,7 @@ def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
             "Respond ONLY with a valid JSON array — no prose, no markdown fences."
         )
 
-        raw = analyst._call(system, user, max_tokens=3500)
+        raw = analyst._call(system, user, max_tokens=4000)
 
         import re as _re
         clean = _re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=_re.MULTILINE)
@@ -529,13 +600,14 @@ def _run_scan() -> None:
         # Phase 5: enrich picks with metric data for frontend display
         fund_map = {d["ticker"]: d for d in fundamentals}
 
-        def _enrich(picks: list[dict]) -> list[dict]:
+        def _enrich(picks: list[dict], category: str) -> list[dict]:
             enriched = []
             for p in picks:
                 t = p.get("ticker", "")
                 d = fund_map.get(t, {})
                 rev_g = d.get("revenue_growth") or 0
                 rev_q = d.get("revenue_growth_q")
+                dcf = _dcf_scenarios(d, category)
                 enriched.append({
                     "ticker": t,
                     "name": p.get("name") or d.get("name", t),
@@ -562,12 +634,24 @@ def _run_scan() -> None:
                     "insiders_selling": d.get("insiders_selling") or 0,
                     "days_to_cover": d.get("days_to_cover"),
                     "short_vol_pct": d.get("short_vol_pct"),
+                    # DCF valuation (bull / base / bear)
+                    "dcf_bull": dcf.get("bull"),
+                    "dcf_base": dcf.get("base"),
+                    "dcf_bear": dcf.get("bear"),
+                    "dcf_bull_upside": dcf.get("bull_upside"),
+                    "dcf_base_upside": dcf.get("base_upside"),
+                    "dcf_bear_upside": dcf.get("bear_upside"),
+                    "dcf_recommendation": dcf.get("recommendation"),
+                    # Qualitative bull/bear narrative + AI recommendation from Claude
+                    "bull_case": p.get("bull_case", ""),
+                    "bear_case": p.get("bear_case", ""),
+                    "long_term_rec": p.get("long_term_rec", ""),
                 })
             return enriched
 
         results = {
-            "compounders": _enrich(compounder_picks),
-            "sleepers": _enrich(sleeper_picks),
+            "compounders": _enrich(compounder_picks, "compounder"),
+            "sleepers": _enrich(sleeper_picks, "sleeper"),
             "universe_size": total,
             "fundamentals_fetched": len(fundamentals),
         }

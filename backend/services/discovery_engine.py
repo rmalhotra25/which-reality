@@ -173,6 +173,7 @@ def _fetch_fundamentals(ticker: str) -> Optional[dict]:
             # Financial health (raw ratios)
             "debt_equity": metrics.get("debtToEquityAnnual"),
             "current_ratio": metrics.get("currentRatioAnnual"),
+            "beta": metrics.get("beta"),
         }
     except Exception as e:
         logger.debug("fundamentals fetch failed for %s: %s", ticker, e)
@@ -197,55 +198,44 @@ def _add_derived_signals(fundamentals: list[dict]) -> None:
         d["earnings_yield"] = 1.0 / pe if 2 < pe < 200 else None
 
 
-def _dcf_scenarios(d: dict, category: str) -> dict:
-    """
-    3-scenario 10-year FCF DCF (bull / base / bear).
-    Revenue is derived from market_cap ÷ P/S ratio (both from Finnhub).
-    FCF margin is floored by a gross-margin proxy for pre-profit compounders
-    (assumption: mature compounder eventually converts ~15% of gross margin to FCF).
-    Returns intrinsic values in $M and % upside vs current market cap.
-    """
-    market_cap = d.get("market_cap") or 0   # $M (Finnhub marketCapitalization)
-    ps = d.get("ps") or 0
-    if ps <= 0 or market_cap <= 0:
-        return {}
+def _wacc_from_beta(beta) -> float:
+    """CAPM-derived discount rate: Rf=4.5%, ERP=5.5%, clamped to [7%, 20%]."""
+    if not beta or beta <= 0:
+        return 0.115   # default 11.5% when beta unavailable
+    return max(0.07, min(0.20, 0.045 + float(beta) * 0.055))
 
-    rev_growth   = (d.get("revenue_growth") or 5) / 100     # decimal
-    fcf_margin   = (d.get("fcf_margin")     or 0) / 100     # decimal
-    gross_margin = (d.get("gross_margin")   or 40) / 100    # decimal
 
-    revenue_0 = market_cap / ps   # implied annual revenue ($M)
+def _reverse_dcf(market_cap: float, revenue_0: float, fcf_0: float,
+                 dr: float, tg: float = 0.025) -> float:
+    """Solve for growth rate g that makes DCF = market_cap. Returns % (e.g. 32.5)."""
+    fm = max(fcf_0, 0.05)
 
-    # Floor FCF margin: high-growth / pre-profit companies will eventually monetise scale
-    # Priority: actual FCF margin > net margin proxy (FCF ≈ 85% of net income) > gross margin proxy
-    net_margin = (d.get("net_margin") or 0) / 100
-    fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
+    def _pv(g):
+        rev = revenue_0
+        pv = 0.0
+        for yr in range(1, 11):
+            rev *= (1 + g)
+            pv += (rev * fm) / (1 + dr) ** yr
+        terminal = rev * fm * (1 + tg) / (dr - tg) / (1 + dr) ** 10
+        return pv + terminal
 
-    if category == "compounder":
-        dr = 0.12   # 12% discount rate (higher execution risk)
-        scenarios = {
-            "bull": dict(g1=min(rev_growth,        0.80), g2=0.20, fm=min(fcf_0 * 1.30, 0.55), tg=0.035),
-            "base": dict(g1=min(rev_growth * 0.70, 0.50), g2=0.12, fm=fcf_0,                    tg=0.030),
-            "bear": dict(g1=max(rev_growth * 0.30, 0.03), g2=0.05, fm=fcf_0 * 0.75,             tg=0.020),
-        }
-    else:   # sleeper
-        dr = 0.10   # 10% discount rate (lower risk)
-        # Sleepers are value stocks — cap growth and enforce bear ≤ base ≤ bull.
-        # Without caps, a high-growth stock appearing in sleepers (e.g. NVDA, P/E < 60)
-        # produces base > bull because base uses raw rev_growth while bull caps at 30%.
-        _g_bull = min(rev_growth * 1.3, 0.30)
-        _g_base = min(rev_growth * 0.80, min(_g_bull, 0.20))   # base ≤ bull, ≤ 20%
-        _g_bear = min(max(rev_growth * 0.30, 0.02), _g_base)   # bear ≤ base, ≥ 2%
-        scenarios = {
-            "bull": dict(g1=_g_bull, g2=0.10, fm=min(fcf_0 * 1.20, 0.50), tg=0.030),
-            "base": dict(g1=_g_base, g2=0.07, fm=fcf_0,                     tg=0.025),
-            "bear": dict(g1=_g_bear, g2=0.03, fm=fcf_0 * 0.80,              tg=0.020),
-        }
+    lo, hi = -0.20, 2.00
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _pv(mid) < market_cap:
+            lo = mid
+        else:
+            hi = mid
+    return round((lo + hi) / 2 * 100, 1)
 
-    out: dict = {}
+
+def _run_dcf(revenue_0: float, fcf_0: float, dr: float, scenarios: dict,
+             market_cap: float) -> dict:
+    """Core DCF engine: discounts 10 years of FCF + Gordon Growth terminal value."""
+    out = {}
     for name, s in scenarios.items():
         revenue = revenue_0
-        fm = max(s["fm"], 0.05)   # absolute floor: 5% FCF margin
+        fm = max(s["fm"], 0.05)
         pv = 0.0
         for yr in range(1, 6):
             revenue *= (1 + s["g1"])
@@ -253,11 +243,79 @@ def _dcf_scenarios(d: dict, category: str) -> dict:
         for yr in range(6, 11):
             revenue *= (1 + s["g2"])
             pv += (revenue * fm) / (1 + dr) ** yr
-        # Gordon Growth terminal value off year-10 FCF
         terminal_fcf = revenue * fm * (1 + s["tg"])
         pv += (terminal_fcf / (dr - s["tg"])) / (1 + dr) ** 10
         out[name] = round(pv)
         out[f"{name}_upside"] = round((pv - market_cap) / market_cap * 100, 1)
+    return out
+
+
+def _dcf_scenarios(d: dict, category: str, claude_params: dict | None = None) -> dict:
+    """
+    3-scenario 10-year FCF DCF (bull / base / bear).
+    Revenue is derived from market_cap ÷ P/S ratio (both from Finnhub).
+    FCF margin is floored by a gross-margin proxy for pre-profit compounders.
+    Uses CAPM-derived WACC from beta. Includes reverse DCF (implied growth priced in).
+    claude_params overrides mechanical scenario params when provided by _claude_picks.
+    """
+    market_cap = d.get("market_cap") or 0
+    ps = d.get("ps") or 0
+    if ps <= 0 or market_cap <= 0:
+        return {}
+
+    rev_growth   = (d.get("revenue_growth") or 5) / 100
+    fcf_margin   = (d.get("fcf_margin")     or 0) / 100
+    gross_margin = (d.get("gross_margin")   or 40) / 100
+    net_margin   = (d.get("net_margin")     or 0) / 100
+
+    revenue_0 = market_cap / ps
+    fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
+
+    dr = _wacc_from_beta(d.get("beta"))
+    wacc_pct = round(dr * 100, 1)
+
+    if claude_params:
+        scenarios = {
+            "bull": dict(
+                g1=claude_params.get("bull_g1", min(rev_growth, 0.80)),
+                g2=claude_params.get("bull_g2", 0.20),
+                fm=claude_params.get("bull_fcf", min(fcf_0 * 1.30, 0.55)),
+                tg=0.035,
+            ),
+            "base": dict(
+                g1=claude_params.get("base_g1", min(rev_growth * 0.70, 0.50)),
+                g2=claude_params.get("base_g2", 0.12),
+                fm=claude_params.get("base_fcf", fcf_0),
+                tg=0.030,
+            ),
+            "bear": dict(
+                g1=claude_params.get("bear_g1", max(rev_growth * 0.30, 0.03)),
+                g2=claude_params.get("bear_g2", 0.05),
+                fm=claude_params.get("bear_fcf", fcf_0 * 0.75),
+                tg=0.020,
+            ),
+        }
+    elif category == "compounder":
+        scenarios = {
+            "bull": dict(g1=min(rev_growth,        0.80), g2=0.20, fm=min(fcf_0 * 1.30, 0.55), tg=0.035),
+            "base": dict(g1=min(rev_growth * 0.70, 0.50), g2=0.12, fm=fcf_0,                    tg=0.030),
+            "bear": dict(g1=max(rev_growth * 0.30, 0.03), g2=0.05, fm=fcf_0 * 0.75,             tg=0.020),
+        }
+    else:   # sleeper — cap growth and enforce bear ≤ base ≤ bull
+        _g_bull = min(rev_growth * 1.3, 0.30)
+        _g_base = min(rev_growth * 0.80, min(_g_bull, 0.20))
+        _g_bear = min(max(rev_growth * 0.30, 0.02), _g_base)
+        scenarios = {
+            "bull": dict(g1=_g_bull, g2=0.10, fm=min(fcf_0 * 1.20, 0.50), tg=0.030),
+            "base": dict(g1=_g_base, g2=0.07, fm=fcf_0,                     tg=0.025),
+            "bear": dict(g1=_g_bear, g2=0.03, fm=fcf_0 * 0.80,              tg=0.020),
+        }
+
+    out = _run_dcf(revenue_0, fcf_0, dr, scenarios, market_cap)
+
+    tg_base = scenarios.get("base", {}).get("tg", 0.025)
+    out["implied_growth_pct"] = _reverse_dcf(market_cap, revenue_0, fcf_0, dr, tg_base)
+    out["wacc_pct"] = wacc_pct
 
     base_up = out.get("base_upside", 0)
     if base_up >= 40:
@@ -269,10 +327,9 @@ def _dcf_scenarios(d: dict, category: str) -> dict:
     else:
         out["recommendation"] = "Pass"
 
-    # Implied current price and per-share price targets
     shares_m = d.get("shares_outstanding") or 0
     if shares_m > 0:
-        curr_p = market_cap / shares_m   # market_cap ($M) / shares (M) = $/share
+        curr_p = market_cap / shares_m
         out["current_price"] = round(curr_p, 2)
         for scenario in ("bull", "base", "bear"):
             upside = out.get(f"{scenario}_upside", 0)
@@ -477,18 +534,29 @@ def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
             "- key_metric: Single most compelling number e.g. '67% revenue growth [↑ACCEL]'\n"
             "- catalyst: Specific near-term trigger that could re-rate the stock\n"
             "- risk: Main risk in one short phrase\n"
-            "- long_term_rec: Exactly one of 'Strong Buy' | 'Buy' | 'Hold' | 'Pass'\n\n"
+            "- long_term_rec: Exactly one of 'Strong Buy' | 'Buy' | 'Hold' | 'Pass'\n"
+            "- dcf_params: DCF scenario inputs based on your knowledge of this company's competitive\n"
+            "  position, industry dynamics, and realistic long-term trajectory. Do NOT use mechanical\n"
+            "  multipliers of TTM growth. Think: TAM size, share trajectory, margin at maturity.\n"
+            "  g1=annual rev growth yrs1-5, g2=yrs6-10, fcf=steady-state FCF margin at yr10.\n"
+            "  Enforce bull > base > bear for each parameter.\n"
+            "  Format: {bull_g1, bull_g2, bull_fcf, base_g1, base_g2, base_fcf, bear_g1, bear_g2, bear_fcf}\n\n"
             "Return ONLY a JSON array:\n"
             '[{"ticker":"XXXX","name":"Full Company Name",'
             '"thesis":"...","bull_case":"...","bear_case":"...",'
             '"key_metric":"...","catalyst":"...","risk":"...",'
-            '"long_term_rec":"Buy"}]'
+            '"long_term_rec":"Buy",'
+            '"dcf_params":{"bull_g1":0.30,"bull_g2":0.15,"bull_fcf":0.30,'
+            '"base_g1":0.20,"base_g2":0.10,"base_fcf":0.22,'
+            '"bear_g1":0.08,"bear_g2":0.04,"bear_fcf":0.15}}]'
         )
 
         system = (
             "You are an elite hedge fund analyst identifying high-conviction long-term stock picks. "
             "Be specific, data-driven, and contrarian where warranted. No generic platitudes. "
             "Revenue acceleration and price momentum are strong signals — flag them explicitly. "
+            "For dcf_params: use real knowledge of each company — industry TAM, competitive moat, "
+            "cost structure, and comparable mature company margins. Not mechanical formulas. "
             "Respond ONLY with a valid JSON array — no prose, no markdown fences."
         )
 
@@ -625,7 +693,8 @@ def _run_scan() -> None:
                 d = fund_map.get(t, {})
                 rev_g = d.get("revenue_growth") or 0
                 rev_q = d.get("revenue_growth_q")
-                dcf = _dcf_scenarios(d, category)
+                claude_params = p.get("dcf_params") or None
+                dcf = _dcf_scenarios(d, category, claude_params=claude_params)
                 enriched.append({
                     "ticker": t,
                     "name": p.get("name") or d.get("name", t),
@@ -660,6 +729,8 @@ def _run_scan() -> None:
                     "dcf_base_upside": dcf.get("base_upside"),
                     "dcf_bear_upside": dcf.get("bear_upside"),
                     "dcf_recommendation": dcf.get("recommendation"),
+                    "dcf_implied_growth_pct": dcf.get("implied_growth_pct"),
+                    "dcf_wacc_pct": dcf.get("wacc_pct"),
                     "current_price": dcf.get("current_price"),
                     "dcf_bull_price": dcf.get("bull_price"),
                     "dcf_base_price": dcf.get("base_price"),

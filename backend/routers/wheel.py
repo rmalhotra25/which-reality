@@ -51,9 +51,19 @@ def _latest_wheel_batch(db: Session) -> List[WheelRecommendation]:
     )
 
 
-@router.get("/recommendations", response_model=List[WheelRecommendationSchema])
+@router.get("/recommendations")
 def get_wheel_recommendations(db: Session = Depends(get_db)):
-    return _latest_wheel_batch(db)
+    from services.finnhub_client import get_earnings_this_month
+    recs = _latest_wheel_batch(db)
+    result = []
+    for rec in recs:
+        d = WheelRecommendationSchema.model_validate(rec).model_dump()
+        try:
+            d["earnings_days"] = get_earnings_this_month(rec.ticker)
+        except Exception:
+            d["earnings_days"] = None
+        result.append(d)
+    return result
 
 
 @router.post("/recommendations/{rec_id}/accept", response_model=WheelPositionSchema)

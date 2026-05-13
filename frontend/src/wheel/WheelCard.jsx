@@ -138,6 +138,28 @@ export default function WheelCard({ rec, account, onAccepted }) {
 
       <AssignmentBadge chance={rec.assignment_chance_pct} risk={rec.assignment_risk} />
 
+      {rec.earnings_days != null && rec.earnings_days <= 14 && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '10px',
+          padding: '10px 14px',
+          background: '#2d2000',
+          border: '1px solid #b7791f',
+          borderRadius: '8px',
+        }}>
+          <span style={{ fontSize: '18px', lineHeight: 1, flexShrink: 0 }}>⚠️</span>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d' }}>
+              Earnings in {rec.earnings_days === 0 ? 'today' : `${rec.earnings_days} day${rec.earnings_days === 1 ? '' : 's'}`} — elevated IV risk
+            </div>
+            <div style={{ fontSize: '12px', color: '#d69e2e', marginTop: '2px' }}>
+              Consider waiting until after earnings to enter this trade.
+            </div>
+          </div>
+        </div>
+      )}
+
       <TradingViewWidget ticker={rec.ticker} />
 
       <table style={s.table}>

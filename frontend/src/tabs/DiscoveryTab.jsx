@@ -630,6 +630,21 @@ export default function DiscoveryTab() {
         </div>
       )}
 
+      {/* Claude fallback notice */}
+      {hasResults && state.results?.claude_fallback && (
+        <div style={{
+          margin: '16px auto 0', maxWidth: '800px', padding: '0 16px',
+        }}>
+          <div style={{
+            background: '#2d2000', border: '1px solid #b7791f',
+            borderRadius: '8px', padding: '10px 14px',
+            fontSize: '13px', color: '#fbd38d',
+          }}>
+            ⚠️ AI thesis generation failed (Claude API error) — showing top-ranked candidates by quant score. Theses will populate on the next successful scan.
+          </div>
+        </div>
+      )}
+
       {/* Results */}
       {hasResults && (
         <>

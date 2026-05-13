@@ -560,7 +560,7 @@ def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
             "Respond ONLY with a valid JSON array — no prose, no markdown fences."
         )
 
-        raw = analyst._call(system, user, max_tokens=4000)
+        raw = analyst._call(system, user, max_tokens=8000)
 
         import re as _re
         clean = _re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=_re.MULTILINE)
@@ -577,6 +577,24 @@ def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
     except Exception as e:
         logger.error("Claude picks failed for %s: %s", category, e)
         return []
+
+
+def _fallback_picks(candidates: list[dict], n: int = 10) -> list[dict]:
+    """Return top-n candidates as minimal picks when Claude call fails."""
+    result = []
+    for d in candidates[:n]:
+        result.append({
+            "ticker": d["ticker"],
+            "name": d.get("name", d["ticker"]),
+            "thesis": "Ranked by multi-factor model (thesis unavailable — Claude API error).",
+            "bull_case": "",
+            "bear_case": "",
+            "key_metric": "",
+            "catalyst": "",
+            "risk": "",
+            "long_term_rec": "",
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -674,12 +692,12 @@ def _run_scan() -> None:
         with _lock:
             _state["progress"] = 0.80
 
-        # Phase 4: Claude thesis
-        compounder_picks = _claude_picks(top_compounders, "compounder")
+        # Phase 4: Claude thesis (falls back to raw ranked candidates if Claude fails)
+        compounder_picks = _claude_picks(top_compounders, "compounder") or _fallback_picks(top_compounders)
         with _lock:
             _state["progress"] = 0.90
 
-        sleeper_picks = _claude_picks(top_sleepers, "sleeper")
+        sleeper_picks = _claude_picks(top_sleepers, "sleeper") or _fallback_picks(top_sleepers)
         with _lock:
             _state["progress"] = 0.95
 
@@ -742,11 +760,16 @@ def _run_scan() -> None:
                 })
             return enriched
 
+        used_fallback = (
+            any(p.get("thesis", "").startswith("Ranked by multi-factor") for p in compounder_picks) or
+            any(p.get("thesis", "").startswith("Ranked by multi-factor") for p in sleeper_picks)
+        )
         results = {
             "compounders": _enrich(compounder_picks, "compounder"),
             "sleepers": _enrich(sleeper_picks, "sleeper"),
             "universe_size": total,
             "fundamentals_fetched": len(fundamentals),
+            "claude_fallback": used_fallback,
         }
 
         with _lock:

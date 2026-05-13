@@ -23,6 +23,7 @@ class WheelRecommendationSchema(BaseModel):
     breakeven: Optional[float] = None
     assignment_chance_pct: Optional[float] = None
     assignment_risk: Optional[str] = None
+    earnings_days: Optional[int] = None
     run_at: datetime
     accepted: bool
     accepted_at: Optional[datetime] = None

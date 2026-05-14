@@ -974,12 +974,23 @@ class ClaudeAnalyst:
             f"Flow summary: {sentiment_ratio}% call volume vs puts = overall {overall} bias\n\n"
             f"Unusual contracts (sorted by notional premium, biggest bets first):\n\n"
             f"{flow_block}\n\n"
-            "For EACH alert, return all original fields plus these five new fields:\n"
+            "For EACH alert, return all original fields plus these new fields:\n"
             "- interpretation: what this flow likely means given any earnings context\n"
             "- implied_target: specific price target implied by the bet (e.g. '$115+ by May 15')\n"
             "- confidence: high / medium / low\n"
             "- action_note: one sentence for a day trader watching this stock\n"
-            "- recommendation: 'BUY' or 'AVOID' plus one specific condition (e.g. 'BUY if stock breaks $880 with volume — flow is real. AVOID if IV is RICH and stock is flat at open')\n\n"
+            "- recommendation: 'BUY' or 'AVOID' plus one specific condition\n"
+            "- verdict: exactly one of 'PROCEED' | 'CAUTION' | 'AVOID'\n"
+            "  PROCEED = strong signal, good risk/reward, worth following\n"
+            "  CAUTION = interesting flow but meaningful red flags (0-1 DTE, earnings imminent,\n"
+            "            RICH premium, large move needed, possible hedge)\n"
+            "  AVOID = too risky (0-DTE into earnings, IV crushed after earnings, very large move\n"
+            "          needed, low notional that smells like retail noise)\n"
+            "- verdict_reason: one short phrase (≤8 words) explaining the verdict\n"
+            "  Examples: 'High Vol/OI with price confirmation'\n"
+            "            'Earnings in 2d — IV crush risk'\n"
+            "            '0-DTE needs 3% move — long shot'\n"
+            "            'Possible hedge, not directional'\n\n"
             "Return JSON only:\n"
             '{"alerts": [{'
             '"ticker": "NVDA", "option_type": "call", "strike": 900.0, '
@@ -992,7 +1003,9 @@ class ClaudeAnalyst:
             '"implied_target": "$900+ by May 10", '
             '"confidence": "high", '
             '"action_note": "Watch for break above $880 with volume — flow confirms upside bias", '
-            '"recommendation": "BUY if stock breaks $880 with volume confirmation. AVOID if market opens flat — premium decay will hurt quickly."'
+            '"recommendation": "BUY if stock breaks $880 with volume confirmation. AVOID if market opens flat.", '
+            '"verdict": "PROCEED", '
+            '"verdict_reason": "High Vol/OI with price confirmation"'
             "}]}"
         )
         raw = self._call(system, user, max_tokens=3500)

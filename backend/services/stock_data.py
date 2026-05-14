@@ -1254,7 +1254,120 @@ class StockDataService:
                 "conservative": _best_near_delta(0.20),
             }
         except Exception as e:
-            logger.warning("get_call_tiers failed for %s: %s", ticker, e)
+            logger.warning("get_call_tiers yfinance failed for %s: %s", ticker, e)
+
+        # --- Synthetic Black-Scholes fallback ---
+        # Runs when Polygon (no Options subscription) and yfinance (rate-limited on cloud) both fail.
+        # Prices synthetic options using Finnhub candles for HV and Black-Scholes.
+        try:
+            if not _live_price:
+                return None
+            price = _live_price
+
+            hv: float = 0.30
+            try:
+                from services.finnhub_client import get_candles as _fh_candles
+                candles = _fh_candles(ticker, days=60)
+                closes = candles.get("c") or []
+                if len(closes) >= 10:
+                    log_returns = [
+                        math.log(closes[i] / closes[i - 1])
+                        for i in range(1, len(closes))
+                        if closes[i] > 0 and closes[i - 1] > 0
+                    ]
+                    if len(log_returns) >= 5:
+                        mean_lr = sum(log_returns) / len(log_returns)
+                        variance = sum((lr - mean_lr) ** 2 for lr in log_returns) / max(len(log_returns) - 1, 1)
+                        hv = max(0.10, min(2.0, math.sqrt(variance * 252)))
+            except Exception:
+                pass
+
+            from datetime import timedelta
+            today = date.today()
+            days_to_friday = (4 - today.weekday()) % 7
+            if days_to_friday < 3:
+                days_to_friday += 7
+            target_expiry = (today + timedelta(days=days_to_friday)).isoformat()
+            dte = days_to_friday
+            T = max(dte, 1) / 365.0
+            options_type = "weekly" if dte <= 14 else "monthly"
+            min_premium = round(price * 0.003 * dte / 7.0, 2)
+
+            rounding = 0.5 if price < 50 else (5.0 if price > 500 else 1.0)
+            strikes = sorted(set(
+                round(price * m / rounding) * rounding
+                for m in [0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20]
+            ))
+
+            r = 0.045
+            synthetic_calls = []
+            for strike in strikes:
+                if strike <= 0:
+                    continue
+                delta = _bs_call_delta(price, strike, hv, T, r)
+                theta = _bs_call_theta_daily(price, strike, hv, T, r)
+                if delta is None:
+                    continue
+                sigma_sqrtT = hv * math.sqrt(T)
+                d1 = (math.log(price / strike) + (r + 0.5 * hv ** 2) * T) / sigma_sqrtT
+                d2 = d1 - sigma_sqrtT
+                bs_price = round(max(price * _ncdf(d1) - strike * math.exp(-r * T) * _ncdf(d2), 0.01), 2)
+                spread = round(max(bs_price * 0.10, 0.05), 2)
+                synthetic_calls.append({
+                    "strike": strike,
+                    "mid": bs_price,
+                    "bid": round(max(bs_price - spread / 2, 0.01), 2),
+                    "ask": round(bs_price + spread / 2, 2),
+                    "delta": delta,
+                    "theta": theta,
+                })
+
+            if not synthetic_calls:
+                return None
+
+            atm_iv_pct = round(hv * 100, 1)
+
+            def _synth_tier(target_delta: float) -> dict | None:
+                best = min(synthetic_calls, key=lambda c: abs(c["delta"] - target_delta))
+                mid = best["mid"]
+                strike = best["strike"]
+                delta_val = best["delta"]
+                theta = best["theta"]
+                daily_per_contract = round(float(theta) * 100, 2) if theta else None
+                return {
+                    "strike": strike,
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "bid": best["bid"],
+                    "ask": best["ask"],
+                    "mid_premium": mid,
+                    "premium_per_contract": round(mid * 100, 2),
+                    "iv_pct": atm_iv_pct,
+                    "delta": round(delta_val, 2),
+                    "call_away_chance_pct": round(delta_val * 100),
+                    "daily_income_per_contract": daily_per_contract,
+                    "upside_to_strike_pct": round((strike - price) / price * 100, 1),
+                    "pct_of_stock_weekly": round(mid / price * 100, 2),
+                    "below_threshold": mid < min_premium,
+                    "volume": 0,
+                    "open_interest": 0,
+                }
+
+            logger.info("get_call_tiers synthetic BS for %s: price=%.2f hv=%.2f dte=%d", ticker, price, hv, dte)
+            return {
+                "current_price": round(price, 2),
+                "expiry": target_expiry,
+                "dte": dte,
+                "options_type": options_type,
+                "atm_iv_pct": atm_iv_pct,
+                "data_source": "synthetic_bs",
+                "min_premium_threshold": min_premium,
+                "aggressive": _synth_tier(0.70),
+                "balanced": _synth_tier(0.45),
+                "conservative": _synth_tier(0.20),
+            }
+        except Exception as e:
+            logger.warning("get_call_tiers synthetic BS failed for %s: %s", ticker, e)
             return None
 
     def get_chain_context(self, tickers: list[str]) -> dict:

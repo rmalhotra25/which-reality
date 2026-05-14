@@ -7,6 +7,12 @@ const CONF_COLORS = {
   low:    { bg: '#131825', border: '#2d3748', text: '#718096' },
 }
 
+const VERDICT_CONFIG = {
+  PROCEED: { bg: '#0a2218', border: '#276749', text: '#68d391', icon: '✅', label: 'PROCEED' },
+  CAUTION: { bg: '#2d2000', border: '#b7791f', text: '#fbd38d', icon: '⚠️', label: 'CAUTION' },
+  AVOID:   { bg: '#2d1515', border: '#742a2a', text: '#fc8181', icon: '🚫', label: 'AVOID'   },
+}
+
 function fmt(n) {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `$${Math.round(n / 1_000)}K`
@@ -197,6 +203,31 @@ function FlowCard({ alert }) {
       </div>
 
       <div style={s.cardBody}>
+        {/* Verdict banner */}
+        {alert.verdict && (() => {
+          const vc = VERDICT_CONFIG[alert.verdict] ?? VERDICT_CONFIG.CAUTION
+          return (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '10px',
+              padding: '10px 14px',
+              background: vc.bg, border: `1px solid ${vc.border}`,
+              borderRadius: '8px',
+            }}>
+              <span style={{ fontSize: '20px', lineHeight: 1 }}>{vc.icon}</span>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 800, color: vc.text, letterSpacing: '0.05em' }}>
+                  {vc.label}
+                </div>
+                {alert.verdict_reason && (
+                  <div style={{ fontSize: '12px', color: vc.text, opacity: 0.8, marginTop: '1px' }}>
+                    {alert.verdict_reason}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })()}
+
         {/* Catalyst section: price move + earnings + news */}
         {(alert.change_pct != null || alert.earnings_context || (alert.news && alert.news.length > 0)) && (
           <div style={{

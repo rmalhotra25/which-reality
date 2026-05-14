@@ -412,6 +412,11 @@ export default function CoveredCallsTab() {
               ℹ Markets closed — using last-trade prices. Live bid/ask available during market hours.
             </div>
           )}
+          {result.data_source === 'synthetic_bs' && (
+            <div style={{ ...s.dataSourceNote, color: '#fbd38d', background: '#2d2000', border: '1px solid #b7791f', borderRadius: '6px', padding: '8px 12px' }}>
+              🧮 Live options data unavailable — premiums are estimated using Black-Scholes with {result.atm_iv_pct}% historical volatility. Verify actual quotes with your broker before trading.
+            </div>
+          )}
 
           {/* Three tier cards */}
           <div style={s.tiersGrid}>

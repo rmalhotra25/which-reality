@@ -349,3 +349,100 @@ def analyze(ticker: str) -> dict:
         "recommendation": recommendation,
         "monte_carlo": mc,
     }
+
+
+def analyze_quant(ticker: str) -> dict:
+    """
+    Quantitative-only DCF — identical to analyze() but skips the Claude call.
+    Uses mechanical scenarios (_mechanial_scenarios) directly.
+    Safe to call in bulk scan loops without incurring LLM latency or cost.
+    """
+    ticker = ticker.upper().strip()
+    d = _build_fundamentals(ticker)
+    if not d:
+        raise ValueError(f"No fundamentals available for {ticker}")
+
+    market_cap = d["market_cap"]
+    ps = d.get("ps") or 0
+    if ps <= 0:
+        raise ValueError(f"No P/S ratio available for {ticker}")
+
+    revenue_0 = market_cap / ps
+
+    fcf_margin = (d.get("fcf_margin") or 0) / 100
+    gross_margin = (d.get("gross_margin") or 40) / 100
+    net_margin = (d.get("net_margin") or 0) / 100
+    fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
+
+    dr = _wacc_from_beta(d.get("beta"))
+    wacc_pct = round(dr * 100, 1)
+    implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
+
+    cp = _mechanial_scenarios(d)
+    scenarios = {
+        "bull": dict(g1=cp["bull"]["g1"], g2=cp["bull"]["g2"],
+                     fm=cp["bull"]["fcf"], tg=cp["bull"].get("tg", 0.035)),
+        "base": dict(g1=cp["base"]["g1"], g2=cp["base"]["g2"],
+                     fm=cp["base"]["fcf"], tg=cp["base"].get("tg", 0.030)),
+        "bear": dict(g1=cp["bear"]["g1"], g2=cp["bear"]["g2"],
+                     fm=cp["bear"]["fcf"], tg=cp["bear"].get("tg", 0.020)),
+    }
+
+    dcf = _run_dcf(revenue_0, fcf_0, dr, scenarios, market_cap)
+    shares_m = d.get("shares_outstanding") or 0
+    mc = _monte_carlo_dcf(revenue_0, market_cap, shares_m, dr, scenarios)
+
+    current_price = None
+    price_targets = {}
+    if shares_m > 0:
+        current_price = round(market_cap / shares_m, 2)
+        for s in ("bull", "base", "bear"):
+            upside = dcf.get(f"{s}_upside", 0)
+            price_targets[s] = round(current_price * (1 + upside / 100), 2)
+
+    base_up = dcf.get("base_upside", 0)
+    if base_up >= 40:
+        recommendation = "Strong Buy"
+    elif base_up >= 15:
+        recommendation = "Buy"
+    elif base_up >= -10:
+        recommendation = "Hold"
+    else:
+        recommendation = "Pass"
+
+    return {
+        "ticker": ticker,
+        "name": d["name"],
+        "sector": d["sector"],
+        "market_cap_b": round(market_cap / 1000, 2),
+        "current_price": current_price,
+        "revenue_growth_pct": round(d.get("revenue_growth") or 0, 1),
+        "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
+        "net_margin_pct": round(d.get("net_margin") or 0, 1),
+        "fcf_margin_pct": round(max((d.get("fcf_margin") or 0) / 100, fcf_0) * 100, 1),
+        "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
+        "ps": round(d["ps"], 1) if d.get("ps") else None,
+        "beta": round(d["beta"], 2) if d.get("beta") else None,
+        "wacc_pct": wacc_pct,
+        "implied_growth_pct": implied_growth_pct,
+        "used_claude_params": False,
+        "scenario_reasoning": "",
+        "scenario_confidence": "",
+        "bull_g1_pct": round(scenarios["bull"]["g1"] * 100, 1),
+        "base_g1_pct": round(scenarios["base"]["g1"] * 100, 1),
+        "bear_g1_pct": round(scenarios["bear"]["g1"] * 100, 1),
+        "bull_fcf_pct": round(scenarios["bull"]["fm"] * 100, 1),
+        "base_fcf_pct": round(scenarios["base"]["fm"] * 100, 1),
+        "bear_fcf_pct": round(scenarios["bear"]["fm"] * 100, 1),
+        "dcf_bull": dcf.get("bull"),
+        "dcf_base": dcf.get("base"),
+        "dcf_bear": dcf.get("bear"),
+        "dcf_bull_upside": dcf.get("bull_upside"),
+        "dcf_base_upside": dcf.get("base_upside"),
+        "dcf_bear_upside": dcf.get("bear_upside"),
+        "dcf_bull_price": price_targets.get("bull"),
+        "dcf_base_price": price_targets.get("base"),
+        "dcf_bear_price": price_targets.get("bear"),
+        "recommendation": recommendation,
+        "monte_carlo": mc,
+    }

@@ -166,76 +166,80 @@ def _cache_timestamp(scan_type: str) -> str | None:
 
 def _get_fundamentals(ticker: str) -> dict | None:
     """
-    One Finnhub call per ticker (basic financials only — no profile call to halve API usage).
-    Returns normalised pre-filter metrics, or None on failure / missing data.
+    One Finnhub call per ticker with retry for empty responses (rate limiting).
+    Returns normalised pre-filter metrics, or None on persistent failure.
     """
-    try:
-        from services.finnhub_client import get_basic_financials
-        metrics = get_basic_financials(ticker)
-        if not metrics:
-            return None
-
-        week52_high = metrics.get("52WeekHigh")
-        if isinstance(week52_high, str):
-            week52_high = None
-
-        # Finnhub returns volume metrics in millions of shares
-        avg_vol_m = (
-            metrics.get("10DayAverageTradingVolumeMillion") or
-            metrics.get("3MonthAverageTradingVolumeMillion") or
-            0
-        )
-
-        # Dividend yield: try several Finnhub field names.
-        # Finnhub returns this in % (e.g. 3.5 means 3.5%), but some API versions
-        # return decimal (0.035). Normalise to percentage.
-        div_yield_raw = (
-            metrics.get("dividendYieldIndicatedAnnual") or
-            metrics.get("currentDividendYieldTTM") or
-            metrics.get("dividendYield5Y") or
-            0
-        )
-        # Normalise: if value looks like a decimal (< 0.25) convert to %
-        div_yield = div_yield_raw * 100 if 0 < div_yield_raw < 0.25 else div_yield_raw
-
-        # Payout ratio: Finnhub may return % (65) or decimal (0.65)
-        payout_raw = metrics.get("payoutRatioTTM") or 0
-        payout = payout_raw * 100 if 0 < payout_raw < 2.0 else payout_raw
-
-        return {
-            "ticker": ticker,
-            "market_cap": metrics.get("marketCapitalization") or 0,  # millions
-            "dividend_yield": div_yield,
-            "payout_ratio": payout,
-            "revenue_growth": metrics.get("revenueGrowthTTMYoy") or 0,
-            "gross_margin": metrics.get("grossMarginTTM") or 0,
-            "ps": metrics.get("psTTM") or 0,
-            "week52_high": week52_high,
-            "avg_volume_m": avg_vol_m,
-        }
-    except Exception as e:
-        logger.debug("_get_fundamentals failed for %s: %s", ticker, e)
+    for attempt in range(3):
+        try:
+            from services.finnhub_client import get_basic_financials
+            metrics = get_basic_financials(ticker)
+            if metrics:  # non-empty response
+                break
+            # Empty response — likely rate limited; wait and retry
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s
+        except Exception as e:
+            logger.debug("_get_fundamentals attempt %d failed for %s: %s", attempt, ticker, e)
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+    else:
+        logger.warning("_get_fundamentals gave up after 3 attempts for %s", ticker)
         return None
+
+    week52_high = metrics.get("52WeekHigh")
+    if isinstance(week52_high, str):
+        week52_high = None
+
+    avg_vol_m = (
+        metrics.get("10DayAverageTradingVolumeMillion") or
+        metrics.get("3MonthAverageTradingVolumeMillion") or
+        0
+    )
+
+    div_yield_raw = (
+        metrics.get("dividendYieldIndicatedAnnual") or
+        metrics.get("currentDividendYieldTTM") or
+        metrics.get("dividendYield5Y") or
+        0
+    )
+    # Normalise: if value looks like a decimal (< 0.25) convert to %
+    div_yield = div_yield_raw * 100 if 0 < div_yield_raw < 0.25 else div_yield_raw
+
+    payout_raw = metrics.get("payoutRatioTTM") or 0
+    payout = payout_raw * 100 if 0 < payout_raw < 2.0 else payout_raw
+
+    return {
+        "ticker": ticker,
+        "market_cap": metrics.get("marketCapitalization") or 0,  # millions
+        "dividend_yield": div_yield,
+        "payout_ratio": payout,
+        "revenue_growth": metrics.get("revenueGrowthTTMYoy") or 0,
+        "gross_margin": metrics.get("grossMarginTTM") or 0,
+        "ps": metrics.get("psTTM") or 0,
+        "week52_high": week52_high,
+        "avg_volume_m": avg_vol_m,
+    }
+
+
+_FINNHUB_CALL_INTERVAL = 1.2  # seconds between calls → ~50/min, safe for free tier
 
 
 def _batch_fundamentals(tickers: list[str], scan_type: str, phase: str, workers: int = 2) -> list[dict]:
-    """Fetch fundamentals for all tickers in parallel; updates progress."""
+    """
+    Fetch fundamentals sequentially with rate-limiting to stay within Finnhub limits.
+    workers param retained for API compatibility but ignored — sequential is safer.
+    """
     results = []
     _set_progress(scan_type, phase=phase, current=0, total=len(tickers))
-    completed = 0
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_get_fundamentals, t): t for t in tickers}
-        for fut in as_completed(futures):
-            completed += 1
-            _set_progress(scan_type, current=completed)
-            try:
-                r = fut.result()
-                if r:
-                    results.append(r)
-            except Exception as e:
-                logger.debug("fundamentals future error: %s", e)
+    for i, ticker in enumerate(tickers):
+        _set_progress(scan_type, current=i + 1)
+        r = _get_fundamentals(ticker)
+        if r:
+            results.append(r)
+        time.sleep(_FINNHUB_CALL_INTERVAL)
 
+    logger.info("Batch fundamentals: %d/%d returned data for %s", len(results), len(tickers), scan_type)
     return results
 
 
@@ -345,12 +349,13 @@ def _prefilter_dividend(fundamentals: list[dict]) -> list[str]:
         rev_g = f.get("revenue_growth") or 0
         gm = f.get("gross_margin") or 0
 
-        # Thresholds set for current market (2025): yields compressed, mature companies grow ~2-4%
-        if yield_ < 2.0:   rejected["yield"] += 1; continue      # was 3.5 — too strict vs current yields
-        if payout > 70:    rejected["payout"] += 1; continue      # was 65
-        if rev_g < 2:      rejected["rev_growth"] += 1; continue  # was 5 — too strict for dividend cos
-        if mc < 2_000:     rejected["market_cap"] += 1; continue  # was 5000M — now $2B
-        if gm < 15:        rejected["gross_margin"] += 1; continue # was 20
+        # Only apply yield filter when Finnhub returned the field (>0).
+        # Achievers list already guarantees dividend history; yield=0 means data missing, not no dividend.
+        if yield_ > 0 and yield_ < 2.0: rejected["yield"] += 1; continue
+        if payout > 0 and payout > 70:  rejected["payout"] += 1; continue
+        if rev_g < 2:      rejected["rev_growth"] += 1; continue
+        if mc < 2_000:     rejected["market_cap"] += 1; continue
+        if gm < 15:        rejected["gross_margin"] += 1; continue
         survivors.append(f["ticker"])
 
     logger.info(

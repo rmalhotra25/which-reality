@@ -10,16 +10,20 @@ DIVIDEND INCOME SCANNER
              Update list quarterly to reflect index reconstitution.
   Pre-filter: yield >= 3.5%, payout <= 65%, revenue growth >= 5%,
               market cap >= $5B, gross margin >= 20%
-  Rank by trigger score; top 5 with score >= 5 shown.
+  Rank by trigger score; top 10 shown (no minimum score — mature dividend stocks
+  score lower on a growth-focused trigger system, so we surface all that pass filters).
 
 BIG MOVER SCANNER
   Universe : S&P 500 + Nasdaq 100 (~600 tickers, hardcoded — update semi-annually)
-  Pre-filter: revenue growth >= 20%, market cap $1B-$50B, avg volume >= 500k shares,
-              current price <= 75% of 52-week high, P/S <= 8
+  Pre-filter: revenue growth >= 15%, market cap $1B-$50B, avg volume >= 500k shares,
+              current price <= 75% of 52-week high
+  Note: P/S filter removed — high-growth stocks rarely have P/S <= 8; ranking by
+        Monte Carlo × base upside naturally handles valuation.
   Rank by (Monte Carlo % × base case upside); top 5 shown; labeled SPECULATIVE.
 
-Cache     : JSON files in data/ directory, 24-hour TTL.
+Cache     : /tmp/ (writable on all deployments including Render free tier), 24-hour TTL.
 Progress  : In-memory state dict, polled by frontend via /api/advanced-scanner/status.
+Workers   : 2 concurrent Finnhub calls to stay within rate limits on free/starter tiers.
 """
 import json
 import logging
@@ -32,12 +36,12 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — cache goes to /tmp (always writable); seed file stays in repo
 # ---------------------------------------------------------------------------
-_BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-_DIVIDEND_ACHIEVERS_FILE = os.path.join(_BASE_DIR, "dividend-achievers.json")
-_DIVIDEND_CACHE_FILE = os.path.join(_BASE_DIR, "cache_dividend_scan.json")
-_MOVER_CACHE_FILE = os.path.join(_BASE_DIR, "cache_mover_scan.json")
+_REPO_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+_DIVIDEND_ACHIEVERS_FILE = os.path.join(_REPO_DATA_DIR, "dividend-achievers.json")
+_DIVIDEND_CACHE_FILE = "/tmp/cache_dividend_scan.json"
+_MOVER_CACHE_FILE = "/tmp/cache_mover_scan.json"
 
 # ---------------------------------------------------------------------------
 # S&P 500 + Nasdaq 100 universe (update semi-annually)
@@ -134,13 +138,13 @@ def _load_cache(scan_type: str) -> dict | None:
 
 def _save_cache(scan_type: str, payload: dict) -> None:
     path = _cache_file(scan_type)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     payload["cached_at"] = time.time()
     try:
         with open(path, "w") as f:
             json.dump(payload, f)
+        logger.info("Cache saved for %s → %s", scan_type, path)
     except Exception as e:
-        logger.warning("Cache save failed for %s: %s", scan_type, e)
+        logger.error("Cache save FAILED for %s (%s): %s", scan_type, path, e)
 
 
 def _cache_timestamp(scan_type: str) -> str | None:
@@ -161,44 +165,55 @@ def _cache_timestamp(scan_type: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _get_fundamentals(ticker: str) -> dict | None:
-    """Single Finnhub call returning normalised pre-filter metrics."""
+    """
+    One Finnhub call per ticker (basic financials only — no profile call to halve API usage).
+    Returns normalised pre-filter metrics, or None on failure / missing data.
+    """
     try:
-        from services.finnhub_client import get_basic_financials, get_company_profile
+        from services.finnhub_client import get_basic_financials
         metrics = get_basic_financials(ticker)
         if not metrics:
             return None
-        profile = get_company_profile(ticker) or {}
 
-        week52_high = metrics.get("52WeekHigh") or metrics.get("52WeekHighDate")
-        # Prefer the numeric high; get_basic_financials returns {"52WeekHigh": float, ...}
+        week52_high = metrics.get("52WeekHigh")
         if isinstance(week52_high, str):
             week52_high = None
 
-        avg_vol = (
+        # Finnhub returns volume metrics in millions of shares
+        avg_vol_m = (
             metrics.get("10DayAverageTradingVolumeMillion") or
             metrics.get("3MonthAverageTradingVolumeMillion") or
             0
         )
 
+        # Dividend yield: try several Finnhub field names; value is in % (e.g. 3.5 → 3.5%)
+        div_yield = (
+            metrics.get("dividendYieldIndicatedAnnual") or
+            metrics.get("currentDividendYieldTTM") or
+            metrics.get("dividendYield5Y") or
+            0
+        )
+
+        # Payout ratio: Finnhub returns as % (e.g. 65.0 means 65%)
+        payout = metrics.get("payoutRatioTTM") or 0
+
         return {
             "ticker": ticker,
-            "name": profile.get("name", ticker),
-            "market_cap": metrics.get("marketCapitalization"),   # millions
-            "dividend_yield": metrics.get("currentDividendYieldTTM") or metrics.get("dividendYieldIndicatedAnnual") or 0,
-            "payout_ratio": metrics.get("payoutRatioTTM") or 0,
+            "market_cap": metrics.get("marketCapitalization") or 0,  # millions
+            "dividend_yield": div_yield,
+            "payout_ratio": payout,
             "revenue_growth": metrics.get("revenueGrowthTTMYoy") or 0,
             "gross_margin": metrics.get("grossMarginTTM") or 0,
             "ps": metrics.get("psTTM") or 0,
             "week52_high": week52_high,
-            "avg_volume_m": avg_vol,          # in millions
-            "current_price": metrics.get("52WeekLow") and None,  # fetched below if needed
+            "avg_volume_m": avg_vol_m,
         }
     except Exception as e:
         logger.debug("_get_fundamentals failed for %s: %s", ticker, e)
         return None
 
 
-def _batch_fundamentals(tickers: list[str], scan_type: str, phase: str, workers: int = 6) -> list[dict]:
+def _batch_fundamentals(tickers: list[str], scan_type: str, phase: str, workers: int = 2) -> list[dict]:
     """Fetch fundamentals for all tickers in parallel; updates progress."""
     results = []
     _set_progress(scan_type, phase=phase, current=0, total=len(tickers))
@@ -299,33 +314,43 @@ def _batch_trigger(tickers: list[str], scan_type: str, workers: int = 4) -> list
 # ---------------------------------------------------------------------------
 
 def _load_dividend_achievers() -> list[str]:
-    try:
-        with open(_DIVIDEND_ACHIEVERS_FILE) as f:
-            tickers = json.load(f)
-        return [t.upper() for t in tickers if isinstance(t, str)]
-    except Exception as e:
-        logger.error("Failed to load dividend-achievers.json: %s", e)
-        return []
+    for path in (_DIVIDEND_ACHIEVERS_FILE, "/app/data/dividend-achievers.json",
+                 os.path.join(os.path.dirname(__file__), "dividend-achievers.json")):
+        try:
+            with open(path) as f:
+                tickers = json.load(f)
+            logger.info("Loaded dividend achievers from %s (%d tickers)", path, len(tickers))
+            return [t.upper() for t in tickers if isinstance(t, str)]
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.error("Failed to load dividend-achievers.json from %s: %s", path, e)
+    logger.error("dividend-achievers.json not found in any expected location")
+    return []
 
 
 def _prefilter_dividend(fundamentals: list[dict]) -> list[str]:
     """Apply dividend income criteria; return passing tickers."""
     survivors = []
+    rejected = {"yield": 0, "payout": 0, "rev_growth": 0, "market_cap": 0, "gross_margin": 0}
     for f in fundamentals:
         mc = f.get("market_cap") or 0       # millions
         yield_ = f.get("dividend_yield") or 0
         payout = f.get("payout_ratio") or 0
         rev_g = f.get("revenue_growth") or 0
         gm = f.get("gross_margin") or 0
-        if (
-            yield_ >= 3.5
-            and payout <= 65
-            and rev_g >= 5
-            and mc >= 5_000       # $5B = 5000M
-            and gm >= 20
-        ):
-            survivors.append(f["ticker"])
-    logger.info("Dividend pre-filter: %d / %d passed", len(survivors), len(fundamentals))
+
+        if yield_ < 3.5:   rejected["yield"] += 1; continue
+        if payout > 65:    rejected["payout"] += 1; continue
+        if rev_g < 5:      rejected["rev_growth"] += 1; continue
+        if mc < 5_000:     rejected["market_cap"] += 1; continue
+        if gm < 20:        rejected["gross_margin"] += 1; continue
+        survivors.append(f["ticker"])
+
+    logger.info(
+        "Dividend pre-filter: %d / %d passed | rejections by criterion: %s",
+        len(survivors), len(fundamentals), rejected,
+    )
     return survivors
 
 
@@ -365,16 +390,16 @@ def run_dividend_scan(force: bool = False) -> dict:
         for r in trigger_results:
             r["dividend_yield_pct"] = round(yield_map.get(r["ticker"], 0), 2)
 
-        # Rank by trigger score; minimum score 5
-        qualified = [r for r in trigger_results if r.get("trigger_score", 0) >= 5]
-        ranked = sorted(qualified, key=lambda r: r.get("trigger_score", 0), reverse=True)[:5]
+        # Rank by trigger score; show top 10 (no minimum — dividend stocks score
+        # lower on a growth trigger system; surface all that pass fundamental filters)
+        ranked = sorted(trigger_results, key=lambda r: r.get("trigger_score", 0), reverse=True)[:10]
 
         result = {
             "results": ranked,
             "scanned_at": datetime.now(timezone.utc).isoformat(),
             "universe_size": len(universe),
             "survivors": len(survivors),
-            "qualified": len(qualified),
+            "qualified": len(trigger_results),
             "mode": "dividend",
         }
         _save_cache("dividend", result)
@@ -415,28 +440,30 @@ def _prefilter_movers_polygon(tickers: list[str]) -> list[str]:
 
 
 def _prefilter_movers_fundamentals(fundamentals: list[dict]) -> list[str]:
-    """Apply big mover criteria; return passing tickers."""
+    """
+    Apply big mover criteria; return passing tickers.
+    P/S filter removed — high-growth stocks rarely satisfy P/S <= 8 simultaneously;
+    valuation is handled by Monte Carlo ranking instead.
+    """
     survivors = []
+    rejected = {"rev_growth": 0, "market_cap": 0, "volume": 0}
     for f in fundamentals:
-        mc = f.get("market_cap") or 0          # millions
+        mc = f.get("market_cap") or 0           # millions
         rev_g = f.get("revenue_growth") or 0
-        ps = f.get("ps") or 0
         avg_vol_m = f.get("avg_volume_m") or 0  # millions
-        avg_vol = avg_vol_m * 1_000_000
 
-        if not (rev_g >= 20 and 1_000 <= mc <= 50_000 and avg_vol >= 500_000 and ps <= 8):
-            continue
-
-        # Price ≤ 75% of 52-week high requires a price. Skip if no 52-week high data.
-        w52h = f.get("week52_high")
-        if w52h:
-            # current_price approximation: we don't have it in snapshot at this point
-            # We'll skip this sub-filter if no price data and let trigger analysis handle it.
-            pass
+        if rev_g < 15:                          rejected["rev_growth"] += 1; continue
+        if not (1_000 <= mc <= 50_000):         rejected["market_cap"] += 1; continue
+        # Volume: skip filter if Finnhub didn't return the field (avg_vol_m == 0)
+        if avg_vol_m > 0 and avg_vol_m * 1_000_000 < 500_000:
+            rejected["volume"] += 1; continue
 
         survivors.append(f["ticker"])
 
-    logger.info("Movers fundamental pre-filter: %d / %d passed", len(survivors), len(fundamentals))
+    logger.info(
+        "Movers fundamental pre-filter: %d / %d passed | rejections: %s",
+        len(survivors), len(fundamentals), rejected,
+    )
     return survivors
 
 

@@ -77,7 +77,7 @@ def _build_fundamentals(ticker: str) -> dict | None:
     }
 
 
-def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float) -> dict:
+def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_0: float = 0.0) -> dict:
     """
     Ask Claude to set bull / base / bear scenario parameters for this specific
     company based on industry knowledge, competitive position, and current metrics.
@@ -102,7 +102,7 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float) -> d
             f"Gross Margin: {round(d.get('gross_margin') or 0, 1)}%\n"
             f"Operating Margin: {round(d.get('operating_margin') or 0, 1)}%\n"
             f"Net Margin: {round(d.get('net_margin') or 0, 1)}%\n"
-            f"FCF Margin: {round(d.get('fcf_margin') or 0, 1)}%\n"
+            f"FCF Margin: {round(max((d.get('fcf_margin') or 0) / 100, fcf_0) * 100, 1)}%\n"
             f"P/E: {round(d.get('pe'), 1) if (d.get('pe') or 0) > 0 else 'n/a'}\n"
             f"P/S: {round(d.get('ps'), 1) if d.get('ps') else 'n/a'}\n"
             f"ROE: {round(d.get('roe') or 0, 1)}%\n"
@@ -177,62 +177,64 @@ def _monte_carlo_dcf(
     n: int = 10_000,
 ) -> dict:
     """
-    Monte Carlo DCF: draws each key input from a normal distribution centred on the
-    base scenario with std = (bull - bear) / 4 (so the bull-bear range covers ~95% of draws).
-    Returns intrinsic value distribution, per-share percentiles, and a probability of undervaluation.
+    Monte Carlo DCF: vectorised with numpy — all n simulations run as array ops.
+    Draws g1/g2/fcf/dr from Normal(base, (bull-bear)/4) clipped to reasonable bounds.
+    Returns intrinsic value distribution, per-share percentiles, and prob of undervaluation.
     """
     try:
-        import numpy
+        import numpy as np
 
         base = scenarios["base"]
         bull = scenarios["bull"]
         bear = scenarios["bear"]
 
-        g1_mean, g1_std = base["g1"], max((bull["g1"] - bear["g1"]) / 4, 0.01)
-        g2_mean, g2_std = base["g2"], max((bull["g2"] - bear["g2"]) / 4, 0.005)
-        fm_mean, fm_std = base["fm"], max((bull["fm"] - bear["fm"]) / 4, 0.01)
+        g1_mean = base["g1"]
+        g1_std  = max((bull["g1"] - bear["g1"]) / 4, 0.01)
+        g2_mean = base["g2"]
+        g2_std  = max((bull["g2"] - bear["g2"]) / 4, 0.005)
+        fm_mean = base["fm"]
+        fm_std  = max((bull["fm"] - bear["fm"]) / 4, 0.01)
         tg_mean = base.get("tg", 0.025)
 
-        rng = numpy.random.default_rng(42)  # deterministic seed for reproducibility
-        g1_s = numpy.clip(rng.normal(g1_mean, g1_std, n), -0.30, 1.50)
-        g2_s = numpy.clip(rng.normal(g2_mean, g2_std, n), -0.30, 0.60)
-        fm_s = numpy.clip(rng.normal(fm_mean, fm_std, n), 0.01, 0.85)
-        dr_s = numpy.clip(rng.normal(dr, 0.015, n), 0.05, 0.30)
+        rng = np.random.default_rng(42)
+        g1_s = np.clip(rng.normal(g1_mean, g1_std, n), -0.30, 1.50)
+        g2_s = np.clip(rng.normal(g2_mean, g2_std, n), -0.30, 0.60)
+        fm_s = np.clip(rng.normal(fm_mean, fm_std, n), 0.01, 0.85)
+        dr_s = np.clip(rng.normal(dr, 0.015, n), 0.05, 0.30)
 
-        pvs = numpy.zeros(n)
-        for i in range(n):
-            g1, g2, fm, dr_i = g1_s[i], g2_s[i], fm_s[i], dr_s[i]
-            tg = min(tg_mean, dr_i - 0.005)
-            rev = revenue_0
-            pv = 0.0
-            for yr in range(1, 6):
-                rev *= (1 + g1)
-                pv += (rev * fm) / (1 + dr_i) ** yr
-            for yr in range(6, 11):
-                rev *= (1 + g2)
-                pv += (rev * fm) / (1 + dr_i) ** yr
-            terminal = rev * fm * (1 + tg) / (dr_i - tg) / (1 + dr_i) ** 10
-            pvs[i] = pv + terminal
+        # Vectorised DCF — all n paths computed simultaneously
+        rev = np.full(n, float(revenue_0))
+        pv  = np.zeros(n)
+
+        for yr in range(1, 6):
+            rev = rev * (1.0 + g1_s)
+            pv += (rev * fm_s) / (1.0 + dr_s) ** yr
+
+        for yr in range(6, 11):
+            rev = rev * (1.0 + g2_s)
+            pv += (rev * fm_s) / (1.0 + dr_s) ** yr
+
+        tg_s = np.minimum(tg_mean, dr_s - 0.005)
+        terminal = rev * fm_s * (1.0 + tg_s) / (dr_s - tg_s) / (1.0 + dr_s) ** 10
+        pvs = pv + terminal
 
         per_share = pvs / shares_m if shares_m > 0 else pvs
-        current_price = market_cap / shares_m if shares_m > 0 else None
 
-        counts, edges = numpy.histogram(per_share, bins=25)
+        counts, edges = np.histogram(per_share, bins=25)
         histogram = [{"x": round(float(edges[i]), 2), "count": int(counts[i])} for i in range(len(counts))]
 
         return {
             "n_simulations": n,
-            "prob_undervalued_pct": round(float(numpy.mean(pvs > market_cap) * 100), 1),
+            "prob_undervalued_pct": round(float(np.mean(pvs > market_cap) * 100), 1),
             "per_share": {
-                "p10": round(float(numpy.percentile(per_share, 10)), 2),
-                "p25": round(float(numpy.percentile(per_share, 25)), 2),
-                "median": round(float(numpy.median(per_share)), 2),
-                "mean": round(float(numpy.mean(per_share)), 2),
-                "p75": round(float(numpy.percentile(per_share, 75)), 2),
-                "p90": round(float(numpy.percentile(per_share, 90)), 2),
+                "p10":    round(float(np.percentile(per_share, 10)), 2),
+                "p25":    round(float(np.percentile(per_share, 25)), 2),
+                "median": round(float(np.median(per_share)), 2),
+                "mean":   round(float(np.mean(per_share)), 2),
+                "p75":    round(float(np.percentile(per_share, 75)), 2),
+                "p90":    round(float(np.percentile(per_share, 90)), 2),
             },
             "histogram": histogram,
-            "current_price": round(current_price, 2) if current_price else None,
         }
     except Exception as e:
         logger.warning("Monte Carlo DCF failed: %s", e)
@@ -269,8 +271,8 @@ def analyze(ticker: str) -> dict:
     # Reverse DCF
     implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
 
-    # Claude scenario params
-    cp = _claude_dcf_params(d, implied_growth_pct, wacc_pct)
+    # Claude scenario params — pass fcf_0 so the prompt shows a floor FCF even when Finnhub's field is empty
+    cp = _claude_dcf_params(d, implied_growth_pct, wacc_pct, fcf_0=fcf_0)
     used_claude = bool(cp and "bull" in cp and "base" in cp and "bear" in cp)
     if not used_claude:
         cp = _mechanial_scenarios(d)
@@ -317,7 +319,7 @@ def analyze(ticker: str) -> dict:
         "revenue_growth_pct": round(d.get("revenue_growth") or 0, 1),
         "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
         "net_margin_pct": round(d.get("net_margin") or 0, 1),
-        "fcf_margin_pct": round(d.get("fcf_margin") or 0, 1),
+        "fcf_margin_pct": round(max((d.get("fcf_margin") or 0) / 100, fcf_0) * 100, 1),
         "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
         "ps": round(d["ps"], 1) if d.get("ps") else None,
         "beta": round(d["beta"], 2) if d.get("beta") else None,

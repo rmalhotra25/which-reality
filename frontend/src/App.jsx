@@ -4,29 +4,25 @@ import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
 import LongTermTab from './tabs/LongTermTab'
-import StockLookupTab from './tabs/StockLookupTab'
 import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
-import DayTradeTab from './tabs/DayTradeTab'
-import OptionsFlowTab from './tabs/OptionsFlowTab'
+import MarketPulseTab from './tabs/MarketPulseTab'
 import DiscoveryTab from './tabs/DiscoveryTab'
 import DcfTab from './tabs/DcfTab'
 import StockTriggersTab from './tabs/StockTriggersTab'
 
 const TABS = [
-  { id: 'daytrade',     label: '⚡ Day Scanner' },
-  { id: 'flow',         label: '🌊 Options Flow' },
-  { id: 'discovery',    label: '🔭 Discovery' },
-  { id: 'dcf',          label: '🧮 DCF Valuation' },
-  { id: 'triggers',     label: '🎯 Stock Triggers' },
-  { id: 'options',      label: '📈 Options Trading' },
-  { id: 'wheel',        label: '🔄 Wheel Strategy' },
-  { id: 'coveredcalls', label: '💰 Covered Calls' },
-  { id: 'longterm',     label: '🌱 Growth & Income' },
-  { id: 'lookup',       label: '🔍 Stock Lookup' },
-  { id: 'watchlist',    label: '👁 Watchlist' },
-  { id: 'performance',  label: '🏆 Performance' },
+  { id: 'pulse',        label: '⚡ Market Pulse' },
+  { id: 'discovery',   label: '🔭 Discovery' },
+  { id: 'dcf',         label: '🧮 DCF Valuation' },
+  { id: 'triggers',    label: '🎯 Stock Triggers' },
+  { id: 'options',     label: '📈 Options Trading' },
+  { id: 'wheel',       label: '🔄 Wheel Strategy' },
+  { id: 'coveredcalls',label: '💰 Covered Calls' },
+  { id: 'longterm',    label: '🌱 Growth & Income' },
+  { id: 'watchlist',   label: '👁 Watchlist' },
+  { id: 'performance', label: '🏆 Performance' },
 ]
 
 class TabErrorBoundary extends Component {
@@ -95,7 +91,7 @@ const styles = {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('daytrade')
+  const [activeTab, setActiveTab] = useState('pulse')
   const [menuOpen, setMenuOpen] = useState(false)
 
   const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? ''
@@ -121,13 +117,11 @@ export default function App() {
 
       <main style={styles.content}>
         <TabErrorBoundary key={activeTab}>
-          {activeTab === 'daytrade'     && <DayTradeTab />}
-          {activeTab === 'flow'         && <OptionsFlowTab />}
+          {activeTab === 'pulse'        && <MarketPulseTab />}
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}
           {activeTab === 'longterm'     && <LongTermTab />}
-          {activeTab === 'lookup'       && <StockLookupTab />}
           {activeTab === 'watchlist'    && <WatchlistTab />}
           {activeTab === 'performance'  && <PerformanceTab />}
           {activeTab === 'discovery'    && <DiscoveryTab />}

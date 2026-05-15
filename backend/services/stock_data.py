@@ -234,18 +234,33 @@ def _ncdf(x: float) -> float:
 
 
 def _historical_volatility(ticker: str, days: int = 30) -> float | None:
-    """Annualised historical volatility from recent daily closes. Used as IV fallback."""
+    """Annualised historical volatility from recent daily closes. Polygon primary, yfinance fallback."""
+    import math
+    # Polygon primary
+    try:
+        from services.polygon_client import get_close_prices
+        closes = get_close_prices(ticker, days=max(days * 3, 60))
+        if len(closes) >= 10:
+            log_returns = [math.log(closes[i] / closes[i-1]) for i in range(1, len(closes)) if closes[i] > 0 and closes[i-1] > 0]
+            if len(log_returns) >= 5:
+                mean = sum(log_returns) / len(log_returns)
+                variance = sum((r - mean) ** 2 for r in log_returns) / max(len(log_returns) - 1, 1)
+                hv = math.sqrt(variance * 252)
+                return hv if 0 < hv < 5.0 else None
+    except Exception:
+        pass
+    # yfinance fallback
     if not _YF_AVAILABLE:
         return None
     try:
         hist = yf.download(ticker, period="60d", interval="1d", progress=False, auto_adjust=True)
-        closes = hist["Close"]
-        if hasattr(closes, "columns"):  # multi-ticker download returns DataFrame
-            closes = closes.iloc[:, 0]
-        closes = closes.dropna()
-        if len(closes) < 10:
+        closes_s = hist["Close"]
+        if hasattr(closes_s, "columns"):
+            closes_s = closes_s.iloc[:, 0]
+        closes_s = closes_s.dropna()
+        if len(closes_s) < 10:
             return None
-        returns = closes.pct_change().dropna()
+        returns = closes_s.pct_change().dropna()
         hv = float(returns.std() * (252 ** 0.5))
         return hv if hv > 0 else None
     except Exception:
@@ -1258,29 +1273,16 @@ class StockDataService:
 
         # --- Synthetic Black-Scholes fallback ---
         # Runs when Polygon (no Options subscription) and yfinance (rate-limited on cloud) both fail.
-        # Prices synthetic options using Finnhub candles for HV and Black-Scholes.
+        # Prices synthetic options using _historical_volatility (Polygon primary) and Black-Scholes.
         try:
             if not _live_price:
                 return None
             price = _live_price
 
             hv: float = 0.30
-            try:
-                from services.finnhub_client import get_candles as _fh_candles
-                candles = _fh_candles(ticker, days=60)
-                closes = candles.get("c") or []
-                if len(closes) >= 10:
-                    log_returns = [
-                        math.log(closes[i] / closes[i - 1])
-                        for i in range(1, len(closes))
-                        if closes[i] > 0 and closes[i - 1] > 0
-                    ]
-                    if len(log_returns) >= 5:
-                        mean_lr = sum(log_returns) / len(log_returns)
-                        variance = sum((lr - mean_lr) ** 2 for lr in log_returns) / max(len(log_returns) - 1, 1)
-                        hv = max(0.10, min(2.0, math.sqrt(variance * 252)))
-            except Exception:
-                pass
+            hv_computed = _historical_volatility(ticker)
+            if hv_computed:
+                hv = hv_computed
 
             from datetime import timedelta
             today = date.today()

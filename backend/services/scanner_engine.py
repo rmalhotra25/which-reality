@@ -1,12 +1,12 @@
 """
-Day Trade Scanner — yfinance-based universe scan with technical indicators.
+Day Trade Scanner — Polygon-based universe scan with technical indicators.
 
 Flow:
-1. Fetch market status from Massive (free tier)
-2. Batch-download 30d of OHLCV for a curated 150-stock universe + SPY via yfinance
-3. Compute RSI-14, ATR-14, and relative strength vs SPY for each ticker
-4. Filter for biggest movers by % change and volume surge
-5. Enrich top candidates with news headlines from Massive (free tier)
+1. Fetch market status from Polygon
+2. Batch snapshots for the curated 150-stock universe + SPY via Polygon
+3. First-pass filter for price, volume, and % change thresholds
+4. Fetch OHLCV bars for top candidates; compute RSI-14, ATR-14, MA-20
+5. Enrich top candidates with news headlines from Polygon
 6. Pass enriched candidates to Claude for high-confidence play selection
 """
 import logging
@@ -14,7 +14,6 @@ import math
 from datetime import date
 
 import pandas as pd
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +79,9 @@ def _ma(prices: pd.Series, period: int) -> float | None:
     return round(float(val), 2) if pd.notna(val) else None
 
 
-def _fetch_movers() -> tuple[list[dict], float | None]:
-    """Download 30d of OHLCV for the universe + SPY, compute technicals, return movers + SPY change."""
+def _fetch_movers_yfinance() -> tuple[list[dict], float | None]:
+    """Fallback: download 30d of OHLCV for the universe + SPY via yfinance, compute technicals, return movers + SPY change."""
+    import yfinance as yf
     tickers_to_fetch = list(dict.fromkeys(["SPY"] + SCAN_UNIVERSE))
     try:
         raw = yf.download(
@@ -171,6 +171,97 @@ def _fetch_movers() -> tuple[list[dict], float | None]:
             logger.debug("skipping %s: %s", ticker, e)
 
     return candidates, spy_change
+
+
+def _fetch_movers() -> tuple[list[dict], float | None]:
+    """Batch-snapshot the universe via Polygon, enrich top candidates with OHLCV bars, return movers + SPY change."""
+    from services.polygon_client import get_snapshots_batch, get_ohlcv_bars, get_news
+
+    tickers_to_fetch = list(dict.fromkeys(["SPY"] + SCAN_UNIVERSE))
+    snapshots = get_snapshots_batch(tickers_to_fetch)
+
+    if not snapshots:
+        # Fallback to yfinance if Polygon batch fails
+        return _fetch_movers_yfinance()
+
+    # SPY change for relative strength
+    spy_change = snapshots.get("SPY", {}).get("change_pct")
+
+    # First-pass filter: price, volume, change threshold
+    candidates = []
+    for ticker in SCAN_UNIVERSE:
+        snap = snapshots.get(ticker)
+        if not snap:
+            continue
+        price = snap["price"]
+        volume = snap["volume"]
+        change_pct = snap["change_pct"]
+
+        if price < MIN_PRICE or price > MAX_PRICE:
+            continue
+        if volume < MIN_VOLUME:
+            continue
+        if abs(change_pct) < MIN_CHANGE_PCT:
+            continue
+
+        prev_close = snap["prev_close"] or price / (1 + change_pct / 100)
+        vol_ratio = 1.0  # will compute from bars below
+
+        candidates.append({
+            "ticker": ticker,
+            "price": round(price, 2),
+            "change_pct": round(change_pct, 2),
+            "volume_m": round(volume / 1_000_000, 1),
+            "vol_ratio": vol_ratio,
+            "high": round(snap["high"], 2),
+            "low": round(snap["low"], 2),
+            "open": round(snap["open"], 2),
+            "vwap": round(snap["vwap"], 2) if snap["vwap"] else round((snap["high"] + snap["low"] + price) / 3, 2),
+            "prev_close": round(prev_close, 2),
+            "direction": "up" if change_pct > 0 else "down",
+            "rsi": None,
+            "atr": None,
+            "ma20": None,
+            "vs_spy": round(change_pct - spy_change, 2) if spy_change is not None else None,
+            "hi52": None,
+            "lo52": None,
+            "days_to_cover": None,
+            "short_volume_ratio_pct": None,
+        })
+
+    # Second pass: enrich top candidates with RSI/ATR/MA from Polygon OHLCV bars
+    # Sort by abs change first to get the most important ones
+    candidates.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+    top_candidates = candidates[:20]  # only fetch bars for top 20
+
+    for cand in top_candidates:
+        try:
+            bars = get_ohlcv_bars(cand["ticker"], days=35)
+            if len(bars) < 5:
+                continue
+
+            closes = pd.Series([b["c"] for b in bars])
+            highs = pd.Series([b["h"] for b in bars])
+            lows = pd.Series([b["l"] for b in bars])
+            volumes = pd.Series([b["v"] for b in bars])
+
+            cand["rsi"] = _rsi(closes)
+            cand["atr"] = _atr(highs, lows, closes)
+            cand["ma20"] = _ma(closes, 20)
+
+            if len(volumes) >= 2:
+                vol_today = volumes.iloc[-1]
+                vol_prev = volumes.iloc[-2]
+                if vol_prev > 0:
+                    cand["vol_ratio"] = round(vol_today / vol_prev, 1)
+
+            if len(closes) >= 50:
+                cand["hi52"] = round(float(highs.max()), 2)
+                cand["lo52"] = round(float(lows.min()), 2)
+        except Exception:
+            pass
+
+    return top_candidates, spy_change
 
 
 def _norm_cdf(x: float) -> float:
@@ -441,5 +532,5 @@ def run_scan() -> dict:
         "top_movers": top,
         "market_status": market_status,
         "spy_change": spy_change,
-        "data_note": f"Scanned {len(SCAN_UNIVERSE)}-stock universe · yfinance 30-day daily data · RSI + ATR enriched",
+        "data_note": f"Scanned {len(SCAN_UNIVERSE)}-stock universe · polygon_live · RSI + ATR enriched",
     }

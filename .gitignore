@@ -17,8 +17,10 @@ build/
 .pytest_cache/
 *.pyc
 
-# Database
-data/
+# Database / generated cache files (static seed JSON files are tracked)
+data/*.db
+data/*.sqlite3
+data/cache_*.json
 *.db
 *.sqlite3
 

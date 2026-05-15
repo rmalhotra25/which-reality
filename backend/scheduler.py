@@ -149,6 +149,29 @@ def run_champions_scan() -> None:
         db.close()
 
 
+def run_advanced_scans() -> None:
+    """Run dividend income + big mover scans overnight so results are ready at market open."""
+    import datetime as _dt
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping advanced scans — not a trading day")
+        return
+
+    logger.info("Scheduler: running overnight dividend + mover scans")
+    from services.advanced_scanner_service import run_dividend_scan, run_mover_scan
+    try:
+        run_dividend_scan(force=True)
+        logger.info("Scheduler: dividend scan complete")
+    except Exception as e:
+        logger.error("Overnight dividend scan failed: %s", e, exc_info=True)
+    try:
+        run_mover_scan(force=True)
+        logger.info("Scheduler: mover scan complete")
+    except Exception as e:
+        logger.error("Overnight mover scan failed: %s", e, exc_info=True)
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -189,6 +212,15 @@ def start_scheduler() -> BackgroundScheduler:
         id="champions_daily",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # Daily 6:00 AM Eastern — overnight dividend + mover scans (results ready at open)
+    scheduler.add_job(
+        run_advanced_scans,
+        CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=EASTERN),
+        id="advanced_scans_overnight",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
 
     # Weekly Tuesday 9:05 AM Eastern — refresh covered call suggestions

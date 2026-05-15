@@ -191,7 +191,6 @@ const s = {
     flexDirection: 'column',
     gap: '2px',
   },
-  statLabel: { fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 },
   statVal: { fontSize: '14px', fontWeight: 700, color: '#e2e8f0' },
 }
 

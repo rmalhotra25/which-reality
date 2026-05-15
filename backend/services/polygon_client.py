@@ -141,6 +141,186 @@ def get_options_chain_snapshot(
         return []
 
 
+def get_snapshots_batch(tickers: list[str]) -> dict[str, dict]:
+    """Batch equity snapshots. Returns {ticker: {price, open, high, low, volume, change_pct, prev_close}}."""
+    c = _client()
+    try:
+        snaps = c.get_snapshot_all("stocks", tickers=tickers)
+        result = {}
+        for snap in (snaps or []):
+            t = snap.ticker
+            if not t:
+                continue
+            day = snap.day
+            prev = snap.prev_day
+            result[t] = {
+                "price": float(day.close or 0) if day else 0,
+                "open": float(day.open or 0) if day else 0,
+                "high": float(day.high or 0) if day else 0,
+                "low": float(day.low or 0) if day else 0,
+                "volume": float(day.volume or 0) if day else 0,
+                "vwap": float(day.vwap or 0) if day else 0,
+                "change_pct": round(float(snap.todays_change_percent or 0), 2),
+                "prev_close": float(prev.close or 0) if prev else 0,
+            }
+        return result
+    except Exception as e:
+        logger.warning("get_snapshots_batch failed: %s", e)
+        return {}
+
+
+def get_ohlcv_bars(ticker: str, days: int = 35) -> list[dict]:
+    """Daily OHLCV bars ascending. Returns list of {o,h,l,c,v} dicts."""
+    from datetime import date, timedelta
+    c = _client()
+    to_date = date.today().isoformat()
+    from_date = (date.today() - timedelta(days=days + 30)).isoformat()
+    try:
+        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=days + 30)
+        return [{"o": a.open, "h": a.high, "l": a.low, "c": a.close, "v": a.volume} for a in (aggs or []) if a.close]
+    except Exception as e:
+        logger.warning("get_ohlcv_bars failed for %s: %s", ticker, e)
+        return []
+
+
+def get_vix() -> float | None:
+    """Current VIX level via Polygon index daily bars."""
+    from datetime import date, timedelta
+    c = _client()
+    to_date = date.today().isoformat()
+    from_date = (date.today() - timedelta(days=10)).isoformat()
+    try:
+        aggs = c.get_aggs("I:VIX", 1, "day", from_date, to_date, adjusted=False, sort="desc", limit=3)
+        for a in (aggs or []):
+            if a.close:
+                return float(a.close)
+    except Exception as e:
+        logger.debug("get_vix failed: %s", e)
+    return None
+
+
+def get_close_prices(ticker: str, days: int = 250) -> list[float]:
+    """Daily close prices ascending for the last N calendar days. Used for MA/HV computation."""
+    from datetime import date, timedelta
+    c = _client()
+    to_date = date.today().isoformat()
+    from_date = (date.today() - timedelta(days=days + 60)).isoformat()
+    try:
+        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=days + 60)
+        closes = [float(a.close) for a in (aggs or []) if a.close]
+        return closes[-days:] if len(closes) > days else closes
+    except Exception as e:
+        logger.warning("get_close_prices failed for %s: %s", ticker, e)
+        return []
+
+
+def get_ticker_snapshot(ticker: str) -> dict:
+    """Current price, day change %, OHLCV for a single equity ticker."""
+    c = _client()
+    try:
+        snap = c.get_snapshot_ticker("stocks", ticker)
+        if not snap:
+            return {}
+        day = snap.day
+        prev = snap.prev_day
+        return {
+            "price": float(day.close or 0) if day else 0,
+            "open": float(day.open or 0) if day else 0,
+            "high": float(day.high or 0) if day else 0,
+            "low": float(day.low or 0) if day else 0,
+            "volume": float(day.volume or 0) if day else 0,
+            "vwap": float(day.vwap or 0) if day else 0,
+            "change_pct": round(float(snap.todays_change_percent or 0), 2),
+            "prev_close": float(prev.close or 0) if prev else 0,
+        }
+    except Exception as e:
+        logger.warning("get_ticker_snapshot failed for %s: %s", ticker, e)
+        return {}
+
+
+def get_analyst_ratings(ticker: str, limit: int = 5) -> list[dict]:
+    """Recent analyst upgrades/downgrades and price targets via Polygon Benzinga feed."""
+    c = _client()
+    try:
+        items = c.list_benzinga_analyst_insights(
+            ticker=ticker, limit=limit, sort="published_utc", order="desc"
+        )
+        result = []
+        for item in (items or []):
+            result.append({
+                "analyst": getattr(item, "analyst", None),
+                "rating": getattr(item, "rating_current", None),
+                "prior_rating": getattr(item, "rating_prior", None),
+                "action": getattr(item, "action_company", None),
+                "pt": getattr(item, "pt_current", None),
+                "prior_pt": getattr(item, "pt_prior", None),
+                "published": getattr(item, "published_utc", None),
+            })
+            if len(result) >= limit:
+                break
+        return result
+    except Exception as e:
+        logger.debug("get_analyst_ratings failed for %s: %s", ticker, e)
+        return []
+
+
+def get_financials(ticker: str) -> dict:
+    """
+    Latest annual financials from Polygon (SEC-sourced).
+    Returns normalized dict: revenue, gross_profit, net_income, operating_cash_flow,
+    free_cash_flow, total_debt, cash, equity.
+    """
+    c = _client()
+
+    def _val(obj, *attrs):
+        for a in attrs:
+            v = getattr(obj, a, None)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    pass
+        return None
+
+    result: dict = {}
+    try:
+        items = list(c.list_financials(
+            ticker=ticker, timeframe="annual", limit=1, order="desc", include_sources=False
+        ))
+        if not items:
+            return result
+        fin = items[0]
+        fins = getattr(fin, "financials", None)
+        if not fins:
+            return result
+
+        inc = getattr(fins, "income_statement", None)
+        if inc:
+            result["revenue"] = _val(inc, "revenues", "revenue")
+            result["gross_profit"] = _val(inc, "gross_profit")
+            result["operating_income"] = _val(inc, "operating_income_loss")
+            result["net_income"] = _val(inc, "net_income_loss")
+
+        bs = getattr(fins, "balance_sheet", None)
+        if bs:
+            result["total_debt"] = _val(bs, "long_term_debt")
+            result["cash"] = _val(bs, "cash_and_cash_equivalents_including_restricted_cash", "cash")
+            result["equity"] = _val(bs, "equity")
+
+        cf = getattr(fins, "cash_flow_statement", None)
+        if cf:
+            ocf = _val(cf, "net_cash_flow_from_operating_activities")
+            capex = _val(cf, "capital_expenditure")
+            result["operating_cash_flow"] = ocf
+            result["capex"] = capex
+            if ocf is not None and capex is not None:
+                result["free_cash_flow"] = ocf + capex  # capex is negative in SEC
+    except Exception as e:
+        logger.debug("get_financials failed for %s: %s", ticker, e)
+
+    return result
+
+
 def get_news(ticker: str | None = None, limit: int = 5) -> list[dict]:
     """Recent news articles, returned as plain dicts."""
     c = _client()

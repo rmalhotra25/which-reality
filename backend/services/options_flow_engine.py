@@ -1,12 +1,13 @@
 """
-Options Flow Scanner — detects unusual activity using yfinance options chains.
+Options Flow Scanner — detects unusual activity using Polygon options chain snapshots
+as the primary data source, falling back to yfinance if Polygon returns nothing.
 
 For each ticker in the universe:
-  1. Fetch the nearest 2 expiry dates via yfinance
-  2. For each expiry, scan calls and puts for vol/OI anomalies
-  3. Compute notional premium (volume × mid × 100)
+  1. Fetch price via Polygon snapshot (fallback: Finnhub quote)
+  2. Fetch full options chain snapshot from Polygon (Greeks, IV, volume, OI included)
+  3. For each contract, compute vol/OI anomalies and notional premium
   4. Flag contracts where vol/OI ≥ 2x with meaningful volume
-  5. Optionally enrich with Polygon Greeks if available
+  5. If Polygon returns empty, fall back to yfinance options chain scan
   6. Pass top alerts to Claude for interpretation
 """
 import logging
@@ -15,14 +16,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
-import pandas as pd
-import yfinance as yf
-
 logger = logging.getLogger(__name__)
 
 # Most liquid US equity options — highest volume, tightest spreads
 FLOW_UNIVERSE = [
-    # ETFs first — highest options volume, most reliable yfinance data
+    # ETFs first — highest options volume, most reliable data
     "SPY", "QQQ", "IWM", "SOXL", "TQQQ", "GLD",
     # Mega-cap tech
     "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA",
@@ -46,163 +44,309 @@ MAX_ALERTS_PER_TICKER = 2
 
 def _earnings_context(ticker: str) -> str | None:
     try:
-        cal = yf.Ticker(ticker).calendar
-        if not isinstance(cal, dict):
+        from services.finnhub_client import get_earnings_this_month
+        days = get_earnings_this_month(ticker)
+        if days is None:
             return None
-        ed_raw = cal.get("Earnings Date")
-        if ed_raw is None:
-            return None
-        if hasattr(ed_raw, "__iter__") and not isinstance(ed_raw, str):
-            ed_list = [d for d in ed_raw if d is not None]
-            ed_raw = ed_list[0] if ed_list else None
-        if ed_raw is None:
-            return None
-        earnings_date = pd.Timestamp(ed_raw).date()
-        days = (earnings_date - date.today()).days
-        if -14 <= days <= 0:
-            return f"Earnings {abs(days)}d ago ({earnings_date})"
-        elif 1 <= days <= 30:
-            return f"Earnings in {days}d ({earnings_date})"
+        if days == 0:
+            return "Earnings today"
+        if 1 <= days <= 30:
+            return f"Earnings in {days}d"
         return None
     except Exception:
         return None
 
 
-def _fetch_ticker_flow(ticker: str) -> list[dict]:
-    """Return unusual flow alerts for a single ticker using yfinance options chains."""
+def _get_price_polygon(ticker: str) -> float | None:
+    """Fetch current price from Polygon snapshot. Returns None on failure."""
     try:
-        t = yf.Ticker(ticker)
+        from services.polygon_client import _client
+        snap = _client().get_snapshot_ticker("stocks", ticker)
+        if snap and snap.day and snap.day.close and float(snap.day.close) > 0:
+            return float(snap.day.close)
+        if snap and snap.last_trade and snap.last_trade.price and float(snap.last_trade.price) > 0:
+            return float(snap.last_trade.price)
+    except Exception as e:
+        logger.debug("Polygon price snapshot failed for %s: %s", ticker, e)
+    return None
 
-        # Current price
-        price = None
+
+def _get_price_finnhub(ticker: str) -> float | None:
+    """Fetch current price from Finnhub quote. Returns None on failure."""
+    try:
+        from services.finnhub_client import get_quote
+        q = get_quote(ticker)
+        price = float(q.get("c") or 0)
+        return price if price > 0 else None
+    except Exception as e:
+        logger.debug("Finnhub price failed for %s: %s", ticker, e)
+    return None
+
+
+def _fetch_ticker_flow_polygon(ticker: str, price: float, earnings_ctx: str | None) -> list[dict]:
+    """Scan a ticker using Polygon options chain snapshots. Returns alert dicts."""
+    from services.polygon_client import get_options_chain_snapshot
+    today = date.today()
+    alerts = []
+
+    # Fetch both calls and puts in one pass (no contract_type filter so we get both)
+    snaps = get_options_chain_snapshot(
+        ticker, dte_max=30, near_price=price, strike_pct_range=0.25
+    )
+    if not snaps:
+        return []
+
+    for snap in snaps:
         try:
-            price = float(t.fast_info.last_price or 0)
+            details = snap.details
+            if not details:
+                continue
+
+            strike = float(details.strike_price or 0)
+            if strike <= 0:
+                continue
+
+            opt_type = (details.contract_type or "").lower()
+            if opt_type not in ("call", "put"):
+                continue
+
+            expiry_str = details.expiration_date  # "YYYY-MM-DD"
+            if not expiry_str:
+                continue
+            expiry_dt = date.fromisoformat(expiry_str)
+            dte = (expiry_dt - today).days
+            if dte < 0:
+                continue
+
+            volume = int(snap.day.volume or 0) if snap.day else 0
+            if volume < MIN_VOLUME:
+                continue
+
+            oi = int(snap.open_interest or 0)
+            vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
+            is_new_contract = oi == 0
+
+            if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
+                continue
+
+            # Mid premium: prefer last_quote midpoint, then (bid+ask)/2, then last_trade
+            mid = 0.0
+            bid = 0.0
+            ask = 0.0
+            if snap.last_quote:
+                bid = float(snap.last_quote.bid or 0)
+                ask = float(snap.last_quote.ask or 0)
+                if snap.last_quote.midpoint and float(snap.last_quote.midpoint) > 0:
+                    mid = float(snap.last_quote.midpoint)
+                elif bid > 0 and ask > 0:
+                    mid = round((bid + ask) / 2, 2)
+            if mid <= 0 and snap.last_trade and snap.last_trade.price:
+                mid = float(snap.last_trade.price or 0)
+            if mid <= 0:
+                continue
+
+            notional = round(volume * mid * 100)
+            if notional < MIN_NOTIONAL:
+                continue
+
+            iv_pct = None
+            if snap.implied_volatility:
+                iv_pct = round(float(snap.implied_volatility) * 100, 1)
+
+            if opt_type == "call":
+                pct_otm = round((strike - price) / price * 100, 1)
+                breakeven = round(strike + mid, 2)
+                pct_move_needed = round((breakeven - price) / price * 100, 1)
+            else:
+                pct_otm = round((price - strike) / price * 100, 1)
+                breakeven = round(strike - mid, 2)
+                pct_move_needed = round((price - breakeven) / price * 100, 1)
+
+            # Greeks — may be None when market is closed
+            delta = gamma = theta = vega = None
+            if snap.greeks:
+                delta = round(float(snap.greeks.delta), 2) if snap.greeks.delta is not None else None
+                gamma = round(float(snap.greeks.gamma), 4) if snap.greeks.gamma is not None else None
+                theta = round(float(snap.greeks.theta), 2) if snap.greeks.theta is not None else None
+                vega = round(float(snap.greeks.vega), 2) if snap.greeks.vega is not None else None
+
+            alerts.append({
+                "ticker": ticker,
+                "price": round(price, 2),
+                "option_type": opt_type,
+                "strike": strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "volume": volume,
+                "open_interest": oi,
+                "vol_oi_ratio": vol_oi_ratio,
+                "is_new_contract": is_new_contract,
+                "mid_premium": round(mid, 2),
+                "bid": round(bid, 2),
+                "ask": round(ask, 2),
+                "notional": notional,
+                "pct_otm": pct_otm,
+                "sentiment": "bullish" if opt_type == "call" else "bearish",
+                "earnings_context": earnings_ctx,
+                "breakeven": breakeven,
+                "pct_move_needed": pct_move_needed,
+                "iv_pct": iv_pct,
+                "hv_pct": None,
+                "iv_hv_ratio": None,
+                "premium_rating": None,
+                "delta": delta,
+                "gamma": gamma,
+                "theta": theta,
+                "vega": vega,
+            })
         except Exception:
-            pass
+            continue
+
+    return alerts
+
+
+def _fetch_ticker_flow_yfinance(ticker: str, earnings_ctx: str | None) -> list[dict]:
+    """Fallback: scan a ticker using yfinance options chains. Returns alert dicts."""
+    import yfinance as yf
+    import pandas as pd
+
+    t = yf.Ticker(ticker)
+
+    price = None
+    try:
+        price = float(t.fast_info.last_price or 0)
+    except Exception:
+        pass
+    if not price or price <= 0:
+        return []
+
+    expiries = t.options
+    if not expiries:
+        return []
+    expiries_to_scan = expiries[:2]
+
+    today = date.today()
+    alerts = []
+
+    for expiry_str in expiries_to_scan:
+        try:
+            chain = t.option_chain(expiry_str)
+        except Exception:
+            continue
+
+        expiry_dt = date.fromisoformat(expiry_str)
+        dte = (expiry_dt - today).days
+
+        for opt_type, df in [("call", chain.calls), ("put", chain.puts)]:
+            if df is None or df.empty:
+                continue
+            for _, row in df.iterrows():
+                try:
+                    strike = float(row.get("strike") or 0)
+                    if strike <= 0:
+                        continue
+
+                    volume = int(row.get("volume") or 0)
+                    if volume < MIN_VOLUME:
+                        continue
+
+                    oi = int(row.get("openInterest") or 0)
+                    vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
+                    is_new_contract = oi == 0
+
+                    if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
+                        continue
+
+                    bid = float(row.get("bid") or 0)
+                    ask = float(row.get("ask") or 0)
+                    mid = round((bid + ask) / 2, 2) if bid > 0 else float(row.get("lastPrice") or 0)
+                    if mid <= 0:
+                        continue
+
+                    notional = round(volume * mid * 100)
+                    if notional < MIN_NOTIONAL:
+                        continue
+
+                    iv_pct = round(float(row.get("impliedVolatility") or 0) * 100, 1) or None
+
+                    if opt_type == "call":
+                        pct_otm = round((strike - price) / price * 100, 1)
+                        breakeven = round(strike + mid, 2)
+                        pct_move_needed = round((breakeven - price) / price * 100, 1)
+                    else:
+                        pct_otm = round((price - strike) / price * 100, 1)
+                        breakeven = round(strike - mid, 2)
+                        pct_move_needed = round((price - breakeven) / price * 100, 1)
+
+                    alerts.append({
+                        "ticker": ticker,
+                        "price": round(price, 2),
+                        "option_type": opt_type,
+                        "strike": strike,
+                        "expiry": expiry_str,
+                        "dte": dte,
+                        "volume": volume,
+                        "open_interest": oi,
+                        "vol_oi_ratio": vol_oi_ratio,
+                        "is_new_contract": is_new_contract,
+                        "mid_premium": mid,
+                        "bid": bid,
+                        "ask": ask,
+                        "notional": notional,
+                        "pct_otm": pct_otm,
+                        "sentiment": "bullish" if opt_type == "call" else "bearish",
+                        "earnings_context": earnings_ctx,
+                        "breakeven": breakeven,
+                        "pct_move_needed": pct_move_needed,
+                        "iv_pct": iv_pct,
+                        "hv_pct": None,
+                        "iv_hv_ratio": None,
+                        "premium_rating": None,
+                        "delta": None,
+                        "gamma": None,
+                        "theta": None,
+                        "vega": None,
+                    })
+                except Exception:
+                    continue
+
+    return alerts
+
+
+def _fetch_ticker_flow(ticker: str) -> list[dict]:
+    """Return unusual flow alerts for a single ticker.
+
+    Primary path: Polygon options chain snapshot (includes Greeks).
+    Fallback: yfinance options chain scan if Polygon returns nothing.
+    """
+    try:
+        earnings_ctx = _earnings_context(ticker)
+
+        # --- Price: Polygon first, Finnhub fallback ---
+        price = _get_price_polygon(ticker)
+        if not price:
+            price = _get_price_finnhub(ticker)
         if not price or price <= 0:
             return []
 
-        # Available expiry dates — scan nearest 2
-        expiries = t.options
-        if not expiries:
-            return []
-        expiries_to_scan = expiries[:2]
+        # --- Primary: Polygon options chain snapshot ---
+        alerts: list[dict] = []
+        try:
+            alerts = _fetch_ticker_flow_polygon(ticker, price, earnings_ctx)
+        except Exception as e:
+            logger.warning("Polygon options scan failed for %s: %s", ticker, e)
 
-        earnings_ctx = _earnings_context(ticker)
-        today = date.today()
-        alerts = []
-
-        for expiry_str in expiries_to_scan:
+        # --- Fallback: yfinance if Polygon returned nothing ---
+        if not alerts:
+            logger.debug("Polygon returned no alerts for %s, falling back to yfinance", ticker)
             try:
-                chain = t.option_chain(expiry_str)
-            except Exception:
-                continue
+                alerts = _fetch_ticker_flow_yfinance(ticker, earnings_ctx)
+            except Exception as e:
+                logger.warning("yfinance fallback also failed for %s: %s", ticker, e)
 
-            expiry_dt = date.fromisoformat(expiry_str)
-            dte = (expiry_dt - today).days
-
-            for opt_type, df in [("call", chain.calls), ("put", chain.puts)]:
-                if df is None or df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    try:
-                        strike = float(row.get("strike") or 0)
-                        if strike <= 0:
-                            continue
-
-                        volume = int(row.get("volume") or 0)
-                        if volume < MIN_VOLUME:
-                            continue
-
-                        oi = int(row.get("openInterest") or 0)
-                        vol_oi_ratio = round(volume / oi, 1) if oi > 0 else 99.0
-                        is_new_contract = oi == 0
-
-                        if vol_oi_ratio < MIN_VOL_OI_RATIO and oi >= 500:
-                            continue
-
-                        bid = float(row.get("bid") or 0)
-                        ask = float(row.get("ask") or 0)
-                        mid = round((bid + ask) / 2, 2) if bid > 0 else float(row.get("lastPrice") or 0)
-                        if mid <= 0:
-                            continue
-
-                        notional = round(volume * mid * 100)
-                        if notional < MIN_NOTIONAL:
-                            continue
-
-                        iv_pct = round(float(row.get("impliedVolatility") or 0) * 100, 1) or None
-
-                        if opt_type == "call":
-                            pct_otm = round((strike - price) / price * 100, 1)
-                            breakeven = round(strike + mid, 2)
-                            pct_move_needed = round((breakeven - price) / price * 100, 1)
-                        else:
-                            pct_otm = round((price - strike) / price * 100, 1)
-                            breakeven = round(strike - mid, 2)
-                            pct_move_needed = round((price - breakeven) / price * 100, 1)
-
-                        alerts.append({
-                            "ticker": ticker,
-                            "price": round(price, 2),
-                            "option_type": opt_type,
-                            "strike": strike,
-                            "expiry": expiry_str,
-                            "dte": dte,
-                            "volume": volume,
-                            "open_interest": oi,
-                            "vol_oi_ratio": vol_oi_ratio,
-                            "is_new_contract": is_new_contract,
-                            "mid_premium": mid,
-                            "bid": bid,
-                            "ask": ask,
-                            "notional": notional,
-                            "pct_otm": pct_otm,
-                            "sentiment": "bullish" if opt_type == "call" else "bearish",
-                            "earnings_context": earnings_ctx,
-                            "breakeven": breakeven,
-                            "pct_move_needed": pct_move_needed,
-                            "iv_pct": iv_pct,
-                            "hv_pct": None,
-                            "iv_hv_ratio": None,
-                            "premium_rating": None,
-                            "delta": None,
-                            "gamma": None,
-                            "theta": None,
-                            "vega": None,
-                        })
-                    except Exception:
-                        continue
-
-        # Try to enrich top alerts with Polygon Greeks
         alerts.sort(key=lambda x: x["notional"], reverse=True)
         top = alerts[:MAX_ALERTS_PER_TICKER]
-        for alert in top:
-            try:
-                from services.polygon_client import get_options_chain_snapshot
-                snaps = get_options_chain_snapshot(
-                    ticker, dte_max=alert["dte"] + 2,
-                    contract_type=alert["option_type"],
-                    near_price=price, strike_pct_range=0.05,
-                )
-                best = None
-                for snap in snaps:
-                    if not snap.details:
-                        continue
-                    if abs(float(snap.details.strike_price or 0) - alert["strike"]) < 0.01:
-                        best = snap
-                        break
-                if best and best.greeks:
-                    alert["delta"] = round(float(best.greeks.delta), 2) if best.greeks.delta is not None else None
-                    alert["gamma"] = round(float(best.greeks.gamma), 4) if best.greeks.gamma is not None else None
-                    alert["theta"] = round(float(best.greeks.theta), 2) if best.greeks.theta is not None else None
-                    alert["vega"] = round(float(best.greeks.vega), 2) if best.greeks.vega is not None else None
-                if best and best.implied_volatility:
-                    alert["iv_pct"] = round(float(best.implied_volatility) * 100, 1)
-            except Exception:
-                pass
-
-        logger.info("flow scan %s: %d alerts from %d expiries", ticker, len(top), len(expiries_to_scan))
+        logger.info("flow scan %s: %d alerts (polygon primary)", ticker, len(top))
         return top
 
     except Exception as e:
@@ -261,9 +405,10 @@ def run_flow_scan() -> dict:
         if ticker not in seen_tickers:
             catalyst: dict = {"change_pct": None, "news": []}
             try:
-                fi = yf.Ticker(ticker).fast_info
-                prev = float(fi.previous_close or 0)
-                curr = float(fi.last_price or 0)
+                from services.finnhub_client import get_quote
+                q = get_quote(ticker)
+                prev = float(q.get("pc") or 0)
+                curr = float(q.get("c") or 0)
                 if prev > 0:
                     catalyst["change_pct"] = round((curr - prev) / prev * 100, 2)
             except Exception:
@@ -295,5 +440,5 @@ def run_flow_scan() -> dict:
         "put_notional": put_notional,
         "sentiment_ratio": sentiment_ratio,
         "overall_sentiment": overall,
-        "data_source": "yfinance options chains + Polygon Greeks",
+        "data_source": "polygon_options + finnhub",
     }

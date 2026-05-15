@@ -1,14 +1,12 @@
 """
 Fetches VIX + SPY data and classifies the current market regime.
-- SPY: via Finnhub (reliable, API-keyed)
-- VIX: via yfinance as fallback (single ticker call, rarely blocked)
+- SPY: via Finnhub (primary), Polygon aggs (secondary)
+- VIX: via Polygon index aggregates (primary), yfinance as fallback
 Results cached in-memory for 30 minutes.
 """
 import logging
 import time
 from datetime import datetime, timezone
-
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -61,18 +59,28 @@ def _fetch() -> dict:
 
 
 def _fetch_vix() -> float | None:
-    """VIX via yfinance — single ticker, rarely blocked."""
+    """VIX via Polygon index aggregates, yfinance as fallback."""
     try:
+        from services.polygon_client import get_vix
+        v = get_vix()
+        if v:
+            return v
+    except Exception:
+        pass
+    # Fallback: yfinance
+    try:
+        import yfinance as yf
         hist = yf.Ticker("^VIX").history(period="5d")
         if not hist.empty:
             return float(hist["Close"].iloc[-1])
     except Exception as e:
-        logger.debug("VIX yfinance fetch failed: %s", e)
+        logger.debug("VIX yfinance fallback failed: %s", e)
     return None
 
 
 def _fetch_spy() -> tuple[float | None, float | None, float | None]:
-    """SPY price + MA50 + MA200 via Finnhub candles."""
+    """SPY price + MA50 + MA200 via Finnhub primary, Polygon secondary, yfinance last resort."""
+    # Primary: Finnhub candles (already in place)
     try:
         from services.finnhub_client import get_candles
         candles = get_candles("SPY", days=300)
@@ -85,16 +93,17 @@ def _fetch_spy() -> tuple[float | None, float | None, float | None]:
     except Exception as e:
         logger.debug("SPY Finnhub fetch failed: %s", e)
 
-    # Fallback to yfinance for SPY
+    # Secondary: Polygon aggs
     try:
-        hist = yf.Ticker("SPY").history(period="1y")
-        if not hist.empty:
-            price = float(hist["Close"].iloc[-1])
-            ma50 = float(hist["Close"].tail(50).mean()) if len(hist) >= 50 else None
-            ma200 = float(hist["Close"].tail(200).mean()) if len(hist) >= 200 else None
+        from services.polygon_client import get_close_prices
+        closes = get_close_prices("SPY", days=250)
+        if closes:
+            price = closes[-1]
+            ma50 = sum(closes[-50:]) / min(50, len(closes)) if len(closes) >= 20 else None
+            ma200 = sum(closes[-200:]) / min(200, len(closes)) if len(closes) >= 50 else None
             return price, ma50, ma200
     except Exception as e:
-        logger.debug("SPY yfinance fallback failed: %s", e)
+        logger.debug("SPY Polygon fetch failed: %s", e)
 
     return None, None, None
 

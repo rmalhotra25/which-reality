@@ -2,6 +2,7 @@ import json
 import re
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List
 
@@ -54,7 +55,21 @@ def _latest_wheel_batch(db: Session) -> List[WheelRecommendation]:
 @router.get("/recommendations")
 def get_wheel_recommendations(db: Session = Depends(get_db)):
     from services.finnhub_client import get_earnings_this_month
+    from services.iv_rank_service import get_iv_rank
     recs = _latest_wheel_batch(db)
+
+    # Fetch IV rank concurrently for all tickers
+    tickers = [rec.ticker for rec in recs]
+    iv_rank_cache = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(get_iv_rank, t): t for t in set(tickers)}
+        for fut in as_completed(futures, timeout=30):
+            t = futures[fut]
+            try:
+                iv_rank_cache[t] = fut.result(timeout=10)
+            except Exception:
+                iv_rank_cache[t] = {}
+
     result = []
     for rec in recs:
         d = WheelRecommendationSchema.model_validate(rec).model_dump()
@@ -62,6 +77,7 @@ def get_wheel_recommendations(db: Session = Depends(get_db)):
             d["earnings_days"] = get_earnings_this_month(rec.ticker)
         except Exception:
             d["earnings_days"] = None
+        d["iv_rank"] = iv_rank_cache.get(rec.ticker, {})
         result.append(d)
     return result
 

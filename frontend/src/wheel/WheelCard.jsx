@@ -72,6 +72,43 @@ const sizingStyle = (isOver) => ({
   marginTop: '-4px',
 })
 
+function IvRankBadge({ ivData }) {
+  if (!ivData || ivData.iv_rank == null) return null
+  const rank = ivData.iv_rank
+  const isHigh = rank >= 50
+  const isLow = rank < 25
+  const color = isHigh ? '#68d391' : isLow ? '#fc8181' : '#fbd38d'
+  const bg = isHigh ? '#0a2218' : isLow ? '#2d1515' : '#2d2000'
+  const border = isHigh ? '#276749' : isLow ? '#742a2a' : '#b7791f'
+  const icon = isHigh ? '🔥' : isLow ? '❄️' : '〜'
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'8px 12px',
+                  background:bg, border:`1px solid ${border}`, borderRadius:'8px' }}>
+      <span style={{ fontSize:'16px', lineHeight:1, flexShrink:0 }}>{icon}</span>
+      <div style={{ flex:1 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+          <span style={{ fontSize:'12px', fontWeight:700, color }}>
+            IV Rank {rank}
+          </span>
+          <span style={{ fontSize:'11px', color:'#718096' }}>
+            · {ivData.current_iv_pct}% IV · 52w range: {ivData.iv_52w_low_pct}%–{ivData.iv_52w_high_pct}%
+          </span>
+        </div>
+        <div style={{ fontSize:'11px', color:'#a0aec0', marginTop:'1px' }}>{ivData.signal}</div>
+      </div>
+      {/* Simple rank bar */}
+      <div style={{ width:'60px', flexShrink:0 }}>
+        <div style={{ height:'4px', background:'#2d3748', borderRadius:'2px', overflow:'hidden' }}>
+          <div style={{ width:`${rank}%`, height:'100%', background:color, borderRadius:'2px' }} />
+        </div>
+        <div style={{ fontSize:'9px', color:'#718096', textAlign:'right', marginTop:'2px' }}>
+          {ivData.iv_percentile}th pctile
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AssignmentBadge({ chance, risk }) {
   const cfg = RISK_CONFIG[risk] || RISK_CONFIG.MODERATE
   const pct = chance != null ? Math.round(chance) : null
@@ -136,6 +173,8 @@ export default function WheelCard({ rec, account, onAccepted }) {
         </div>
       )}
 
+      <IvRankBadge ivData={rec.iv_rank} />
+
       <AssignmentBadge chance={rec.assignment_chance_pct} risk={rec.assignment_risk} />
 
       {rec.earnings_days != null && rec.earnings_days <= 14 && (
@@ -178,7 +217,7 @@ export default function WheelCard({ rec, account, onAccepted }) {
               {rec.put_premium ? `$${rec.put_premium}` : '—'}
             </td>
             <td style={s.td}>IV Rank</td>
-            <td style={s.tdVal}>{rec.iv_rank ? `${rec.iv_rank}` : '—'}</td>
+            <td style={s.tdVal}>{rec.iv_rank?.iv_rank != null ? `${rec.iv_rank.iv_rank}` : '—'}</td>
           </tr>
           {(rec.pct_otm != null || rec.breakeven != null) && (
             <tr>

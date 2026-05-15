@@ -13,7 +13,7 @@ class WheelRecommendationSchema(BaseModel):
     put_strike: Optional[float] = None
     put_expiry: Optional[str] = None
     put_premium: Optional[float] = None
-    iv_rank: Optional[float] = None
+    iv_rank: Optional[dict] = None
     # Dual confidence scores
     quant_score: Optional[float] = None
     qual_score: Optional[float] = None

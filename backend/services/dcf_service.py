@@ -168,6 +168,77 @@ def _mechanial_scenarios(d: dict) -> dict:
     }
 
 
+def _monte_carlo_dcf(
+    revenue_0: float,
+    market_cap: float,
+    shares_m: float,
+    dr: float,
+    scenarios: dict,
+    n: int = 10_000,
+) -> dict:
+    """
+    Monte Carlo DCF: draws each key input from a normal distribution centred on the
+    base scenario with std = (bull - bear) / 4 (so the bull-bear range covers ~95% of draws).
+    Returns intrinsic value distribution, per-share percentiles, and a probability of undervaluation.
+    """
+    try:
+        import numpy
+
+        base = scenarios["base"]
+        bull = scenarios["bull"]
+        bear = scenarios["bear"]
+
+        g1_mean, g1_std = base["g1"], max((bull["g1"] - bear["g1"]) / 4, 0.01)
+        g2_mean, g2_std = base["g2"], max((bull["g2"] - bear["g2"]) / 4, 0.005)
+        fm_mean, fm_std = base["fm"], max((bull["fm"] - bear["fm"]) / 4, 0.01)
+        tg_mean = base.get("tg", 0.025)
+
+        rng = numpy.random.default_rng(42)  # deterministic seed for reproducibility
+        g1_s = numpy.clip(rng.normal(g1_mean, g1_std, n), -0.30, 1.50)
+        g2_s = numpy.clip(rng.normal(g2_mean, g2_std, n), -0.30, 0.60)
+        fm_s = numpy.clip(rng.normal(fm_mean, fm_std, n), 0.01, 0.85)
+        dr_s = numpy.clip(rng.normal(dr, 0.015, n), 0.05, 0.30)
+
+        pvs = numpy.zeros(n)
+        for i in range(n):
+            g1, g2, fm, dr_i = g1_s[i], g2_s[i], fm_s[i], dr_s[i]
+            tg = min(tg_mean, dr_i - 0.005)
+            rev = revenue_0
+            pv = 0.0
+            for yr in range(1, 6):
+                rev *= (1 + g1)
+                pv += (rev * fm) / (1 + dr_i) ** yr
+            for yr in range(6, 11):
+                rev *= (1 + g2)
+                pv += (rev * fm) / (1 + dr_i) ** yr
+            terminal = rev * fm * (1 + tg) / (dr_i - tg) / (1 + dr_i) ** 10
+            pvs[i] = pv + terminal
+
+        per_share = pvs / shares_m if shares_m > 0 else pvs
+        current_price = market_cap / shares_m if shares_m > 0 else None
+
+        counts, edges = numpy.histogram(per_share, bins=25)
+        histogram = [{"x": round(float(edges[i]), 2), "count": int(counts[i])} for i in range(len(counts))]
+
+        return {
+            "n_simulations": n,
+            "prob_undervalued_pct": round(float(numpy.mean(pvs > market_cap) * 100), 1),
+            "per_share": {
+                "p10": round(float(numpy.percentile(per_share, 10)), 2),
+                "p25": round(float(numpy.percentile(per_share, 25)), 2),
+                "median": round(float(numpy.median(per_share)), 2),
+                "mean": round(float(numpy.mean(per_share)), 2),
+                "p75": round(float(numpy.percentile(per_share, 75)), 2),
+                "p90": round(float(numpy.percentile(per_share, 90)), 2),
+            },
+            "histogram": histogram,
+            "current_price": round(current_price, 2) if current_price else None,
+        }
+    except Exception as e:
+        logger.warning("Monte Carlo DCF failed: %s", e)
+        return {}
+
+
 def analyze(ticker: str) -> dict:
     """
     Full DCF analysis for a single ticker.
@@ -217,6 +288,7 @@ def analyze(ticker: str) -> dict:
 
     # Per-share prices
     shares_m = d.get("shares_outstanding") or 0
+    mc = _monte_carlo_dcf(revenue_0, market_cap, shares_m, dr, scenarios)
     current_price = None
     price_targets = {}
     if shares_m > 0:
@@ -273,4 +345,5 @@ def analyze(ticker: str) -> dict:
         "dcf_base_price": price_targets.get("base"),
         "dcf_bear_price": price_targets.get("bear"),
         "recommendation": recommendation,
+        "monte_carlo": mc,
     }

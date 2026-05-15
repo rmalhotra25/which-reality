@@ -186,16 +186,21 @@ def _get_fundamentals(ticker: str) -> dict | None:
             0
         )
 
-        # Dividend yield: try several Finnhub field names; value is in % (e.g. 3.5 → 3.5%)
-        div_yield = (
+        # Dividend yield: try several Finnhub field names.
+        # Finnhub returns this in % (e.g. 3.5 means 3.5%), but some API versions
+        # return decimal (0.035). Normalise to percentage.
+        div_yield_raw = (
             metrics.get("dividendYieldIndicatedAnnual") or
             metrics.get("currentDividendYieldTTM") or
             metrics.get("dividendYield5Y") or
             0
         )
+        # Normalise: if value looks like a decimal (< 0.25) convert to %
+        div_yield = div_yield_raw * 100 if 0 < div_yield_raw < 0.25 else div_yield_raw
 
-        # Payout ratio: Finnhub returns as % (e.g. 65.0 means 65%)
-        payout = metrics.get("payoutRatioTTM") or 0
+        # Payout ratio: Finnhub may return % (65) or decimal (0.65)
+        payout_raw = metrics.get("payoutRatioTTM") or 0
+        payout = payout_raw * 100 if 0 < payout_raw < 2.0 else payout_raw
 
         return {
             "ticker": ticker,
@@ -340,18 +345,19 @@ def _prefilter_dividend(fundamentals: list[dict]) -> list[str]:
         rev_g = f.get("revenue_growth") or 0
         gm = f.get("gross_margin") or 0
 
-        if yield_ < 3.5:   rejected["yield"] += 1; continue
-        if payout > 65:    rejected["payout"] += 1; continue
-        if rev_g < 5:      rejected["rev_growth"] += 1; continue
-        if mc < 5_000:     rejected["market_cap"] += 1; continue
-        if gm < 20:        rejected["gross_margin"] += 1; continue
+        # Thresholds set for current market (2025): yields compressed, mature companies grow ~2-4%
+        if yield_ < 2.0:   rejected["yield"] += 1; continue      # was 3.5 — too strict vs current yields
+        if payout > 70:    rejected["payout"] += 1; continue      # was 65
+        if rev_g < 2:      rejected["rev_growth"] += 1; continue  # was 5 — too strict for dividend cos
+        if mc < 2_000:     rejected["market_cap"] += 1; continue  # was 5000M — now $2B
+        if gm < 15:        rejected["gross_margin"] += 1; continue # was 20
         survivors.append(f["ticker"])
 
     logger.info(
-        "Dividend pre-filter: %d / %d passed | rejections by criterion: %s",
+        "Dividend pre-filter: %d / %d passed | rejections: %s",
         len(survivors), len(fundamentals), rejected,
     )
-    return survivors
+    return survivors, rejected
 
 
 def run_dividend_scan(force: bool = False) -> dict:
@@ -373,12 +379,13 @@ def run_dividend_scan(force: bool = False) -> dict:
 
         logger.info("Dividend scan: pre-filtering %d tickers", len(universe))
         fundamentals = _batch_fundamentals(universe, "dividend", "prefetch")
-        survivors = _prefilter_dividend(fundamentals)
+        survivors, rejection_stats = _prefilter_dividend(fundamentals)
 
         if not survivors:
-            logger.warning("Dividend scan: no stocks passed pre-filter")
+            logger.warning("Dividend scan: no stocks passed pre-filter — rejections: %s", rejection_stats)
             result = {"results": [], "scanned_at": datetime.now(timezone.utc).isoformat(),
-                      "universe_size": len(universe), "survivors": 0, "mode": "dividend"}
+                      "universe_size": len(universe), "survivors": 0, "mode": "dividend",
+                      "rejection_stats": rejection_stats, "fundamentals_fetched": len(fundamentals)}
             _save_cache("dividend", result)
             return result
 
@@ -401,6 +408,7 @@ def run_dividend_scan(force: bool = False) -> dict:
             "survivors": len(survivors),
             "qualified": len(trigger_results),
             "mode": "dividend",
+            "rejection_stats": rejection_stats,
         }
         _save_cache("dividend", result)
         return result
@@ -464,7 +472,7 @@ def _prefilter_movers_fundamentals(fundamentals: list[dict]) -> list[str]:
         "Movers fundamental pre-filter: %d / %d passed | rejections: %s",
         len(survivors), len(fundamentals), rejected,
     )
-    return survivors
+    return survivors, rejected
 
 
 def run_mover_scan(force: bool = False) -> dict:
@@ -490,12 +498,13 @@ def run_mover_scan(force: bool = False) -> dict:
         # Stage 2: Finnhub fundamental filter
         logger.info("Mover scan: fetching fundamentals for %d tickers", len(volume_survivors))
         fundamentals = _batch_fundamentals(volume_survivors, "movers", "fundamental_filter")
-        fundamental_survivors = _prefilter_movers_fundamentals(fundamentals)
+        fundamental_survivors, rejection_stats = _prefilter_movers_fundamentals(fundamentals)
 
         if not fundamental_survivors:
-            logger.warning("Mover scan: no stocks passed pre-filter")
+            logger.warning("Mover scan: no stocks passed — rejections: %s", rejection_stats)
             result = {"results": [], "scanned_at": datetime.now(timezone.utc).isoformat(),
-                      "universe_size": len(universe), "survivors": 0, "mode": "movers"}
+                      "universe_size": len(universe), "survivors": 0, "mode": "movers",
+                      "rejection_stats": rejection_stats}
             _save_cache("movers", result)
             return result
 

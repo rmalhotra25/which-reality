@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/api/advanced-scanner", tags=["Advanced Scanner"])
 
@@ -52,3 +52,25 @@ def refresh_scan(scan_type: str):
         return {"status": "already_running", "message": f"{scan_type} scan is already in progress"}
     launch_scan_background(scan_type)
     return {"status": "started", "message": f"{scan_type} scan launched in background"}
+
+
+@router.get("/debug/{ticker}")
+def debug_fundamentals(ticker: str):
+    """Return raw Finnhub metrics for a ticker — used to diagnose pre-filter issues."""
+    from services.finnhub_client import get_basic_financials
+    metrics = get_basic_financials(ticker.upper())
+    # Return the fields relevant to scanner pre-filters
+    fields = [
+        "dividendYieldIndicatedAnnual", "currentDividendYieldTTM", "dividendYield5Y",
+        "dividendPerShareAnnual", "dividendPerShareTTM",
+        "payoutRatioTTM",
+        "revenueGrowthTTMYoy", "revenueGrowth3M",
+        "grossMarginTTM", "marketCapitalization",
+        "10DayAverageTradingVolumeMillion", "3MonthAverageTradingVolumeMillion",
+        "psTTM", "52WeekHigh", "beta",
+    ]
+    return {
+        "ticker": ticker.upper(),
+        "raw_metrics": {k: metrics.get(k) for k in fields},
+        "all_keys_count": len(metrics),
+    }

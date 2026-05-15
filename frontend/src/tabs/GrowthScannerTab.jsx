@@ -335,8 +335,8 @@ export default function GrowthScannerTab() {
         {current?.scanned_at && (
           <span style={{ marginLeft: '8px', color: '#4a5568' }}>
             · Last scan: {relativeTime(current.scanned_at)}
-            {current.universe_size && ` · ${current.universe_size} stocks screened`}
-            {current.survivors && ` · ${current.survivors} passed filters`}
+            {current.universe_size != null && ` · ${current.universe_size} stocks screened`}
+            {current.survivors != null && ` · ${current.survivors} passed filters`}
           </span>
         )}
       </div>
@@ -354,11 +354,19 @@ export default function GrowthScannerTab() {
         <div style={s.emptyBox}>
           <div style={{ fontSize: '32px', marginBottom: '8px' }}>🔍</div>
           <div style={{ fontWeight: 600, marginBottom: '4px' }}>No results this scan</div>
-          <div style={{ fontSize: '13px' }}>
-            {mode === 'dividend'
-              ? 'No dividend achievers cleared the score ≥5 bar today.'
-              : 'No big movers cleared all filters today.'}
+          <div style={{ fontSize: '13px', marginBottom: current.rejection_stats ? '10px' : '0' }}>
+            {current.survivors === 0
+              ? `All ${current.fundamentals_fetched ?? current.universe_size} stocks failed fundamental pre-filter.`
+              : `${current.survivors} stocks passed pre-filter but none had sufficient trigger scores.`}
           </div>
+          {current.rejection_stats && (
+            <div style={{ fontSize: '11px', color: '#4a5568', textAlign: 'left', display: 'inline-block' }}>
+              {Object.entries(current.rejection_stats)
+                .filter(([, v]) => v > 0)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(' · ')}
+            </div>
+          )}
         </div>
       )}
 
@@ -366,7 +374,7 @@ export default function GrowthScannerTab() {
         <>
           <div style={{ fontSize: '13px', color: '#a0aec0', marginBottom: '12px' }}>
             Top {current.results.length} {modeLabel[mode]} picks
-            {mode === 'dividend' && ' · Minimum trigger score 5/8'}
+            {mode === 'dividend' && ' · Ranked by trigger score'}
             {mode === 'movers' && ' · Ranked by Monte Carlo × base upside'}
           </div>
           <div style={s.grid}>

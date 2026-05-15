@@ -258,7 +258,7 @@ export default function DcfTab() {
           🧮 DCF Valuation
         </h2>
         <p style={{ fontSize: '13px', color: '#718096', margin: 0 }}>
-          CAPM-derived WACC · Reverse DCF (what growth the market is pricing in) · Claude-set scenario parameters
+          CAPM-derived WACC · Reverse DCF · Claude scenario parameters · Monte Carlo (10,000 simulations)
         </p>
       </div>
 
@@ -374,6 +374,9 @@ export default function DcfTab() {
               }.
             </div>
           </div>
+
+          {/* Monte Carlo */}
+          <MonteCarloSection mc={r.monte_carlo} currentPrice={r.current_price} />
 
           {/* DCF scenarios */}
           <div>

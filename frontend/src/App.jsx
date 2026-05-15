@@ -12,12 +12,14 @@ import DayTradeTab from './tabs/DayTradeTab'
 import OptionsFlowTab from './tabs/OptionsFlowTab'
 import DiscoveryTab from './tabs/DiscoveryTab'
 import DcfTab from './tabs/DcfTab'
+import StockTriggersTab from './tabs/StockTriggersTab'
 
 const TABS = [
   { id: 'daytrade',     label: '⚡ Day Scanner' },
   { id: 'flow',         label: '🌊 Options Flow' },
   { id: 'discovery',    label: '🔭 Discovery' },
   { id: 'dcf',          label: '🧮 DCF Valuation' },
+  { id: 'triggers',     label: '🎯 Stock Triggers' },
   { id: 'options',      label: '📈 Options Trading' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
@@ -130,6 +132,7 @@ export default function App() {
           {activeTab === 'performance'  && <PerformanceTab />}
           {activeTab === 'discovery'    && <DiscoveryTab />}
           {activeTab === 'dcf'          && <DcfTab />}
+          {activeTab === 'triggers'     && <StockTriggersTab />}
         </TabErrorBoundary>
       </main>
     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -17,6 +17,209 @@ const PROTECTION_CONFIG = {
   high:     { color: '#fc8181', bg: '#2d1515', border: '#742a2a', label: 'High downside risk — position size accordingly' },
 }
 
+// ─── Watchlist storage ────────────────────────────────────────────────────────
+const WL_KEY = 'trigger_watchlist'
+const PORT_KEY = 'trigger_portfolio'
+
+function loadWatchlist() {
+  try { return JSON.parse(localStorage.getItem(WL_KEY) || '[]') } catch { return [] }
+}
+function saveWatchlist(wl) {
+  try { localStorage.setItem(WL_KEY, JSON.stringify(wl)) } catch {}
+}
+function loadPortfolio() {
+  try { return JSON.parse(localStorage.getItem(PORT_KEY) || '[]') } catch { return [] }
+}
+function savePortfolio(p) {
+  try { localStorage.setItem(PORT_KEY, JSON.stringify(p)) } catch {}
+}
+
+function isStale(item) {
+  if (!item.lastChecked) return true
+  const last = new Date(item.lastChecked)
+  const now = new Date()
+  const diffHours = (now - last) / 36e5
+  // Stale if different calendar day or >6 hours
+  return last.toDateString() !== now.toDateString() || diffHours > 6
+}
+
+function relativeTime(iso) {
+  if (!iso) return ''
+  const diff = (Date.now() - new Date(iso)) / 1000
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`
+  return `${Math.round(diff / 86400)}d ago`
+}
+
+function shortDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// ─── Upgrade alert banner ─────────────────────────────────────────────────────
+function UpgradeAlerts({ upgrades, onAnalyze, onDismiss }) {
+  if (!upgrades.length) return null
+  return (
+    <div style={{
+      background: '#0a2218', border: '2px solid #276749',
+      borderRadius: '12px', padding: '16px 20px', marginBottom: '20px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <span style={{ fontSize: '20px' }}>🚀</span>
+        <span style={{ fontSize: '15px', fontWeight: 800, color: '#48bb78' }}>
+          Watchlist Upgrades — Confirm your entry
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {upgrades.map(u => {
+          const cfg = ACTION_CONFIG[u.action] || ACTION_CONFIG['WATCH']
+          return (
+            <div key={u.ticker} style={{
+              display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+              padding: '10px 14px',
+              background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: '8px',
+            }}>
+              <span style={{ fontSize: '18px', fontWeight: 900, color: '#e2e8f0', minWidth: '56px' }}>{u.ticker}</span>
+              <span style={{ fontSize: '12px', color: '#718096' }}>was WATCH →</span>
+              <span style={{
+                padding: '3px 10px', fontSize: '12px', fontWeight: 800, borderRadius: '6px',
+                background: cfg.badge, color: cfg.badgeText,
+              }}>
+                {cfg.icon} {u.action}
+              </span>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: cfg.color }}>
+                Score {u.score}/8
+              </span>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => onAnalyze(u.ticker)}
+                  style={{ padding: '5px 14px', background: cfg.badge, color: cfg.badgeText, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                >
+                  View Analysis
+                </button>
+                <button
+                  onClick={() => onDismiss(u.ticker)}
+                  style={{ padding: '5px 10px', background: 'transparent', color: '#4a5568', border: '1px solid #2d3748', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── Watchlist section ────────────────────────────────────────────────────────
+function WatchlistSection({ watchlist, refreshProgress, onAnalyze, onRemove, onRefreshAll }) {
+  if (!watchlist.length) return null
+
+  const staleCount = watchlist.filter(isStale).length
+  const anyLoading = Object.values(refreshProgress).includes('loading')
+
+  return (
+    <div style={{ marginBottom: '24px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+        <div>
+          <span style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em' }}>
+            TRIGGER WATCHLIST — catching the falling knife
+          </span>
+          {anyLoading && (
+            <span style={{ marginLeft: '10px', fontSize: '11px', color: '#b7791f' }}>
+              ⟳ Refreshing analysis…
+            </span>
+          )}
+        </div>
+        {staleCount > 0 && !anyLoading && (
+          <button
+            onClick={onRefreshAll}
+            style={{ padding: '4px 12px', background: '#2d2000', color: '#fbd38d', border: '1px solid #b7791f', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+          >
+            ⟳ Refresh {staleCount} stale
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {watchlist.map(item => {
+          const displayAction = item.currentAction || item.actionAtAdd
+          const displayScore = item.currentScore ?? item.scoreAtAdd
+          const cfg = ACTION_CONFIG[displayAction] || ACTION_CONFIG['WATCH']
+          const prog = refreshProgress[item.ticker]
+          const isLoading = prog === 'loading'
+          const isError = prog === 'error'
+          const upgraded = item.upgradedFrom === 'WATCH' &&
+            (item.currentAction === 'SMALL BUY' || item.currentAction === 'STRONG BUY')
+          const deteriorated = item.currentScore != null && item.currentScore < item.scoreAtAdd
+          const scoreChanged = item.currentScore != null && item.currentScore !== item.scoreAtAdd
+
+          return (
+            <div key={item.ticker} style={{
+              display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+              padding: '10px 14px',
+              background: upgraded ? cfg.bg : '#1a1f2e',
+              border: `1px solid ${upgraded ? cfg.border : '#2d3748'}`,
+              borderRadius: '8px',
+              opacity: isLoading ? 0.7 : 1,
+            }}>
+              {/* Ticker */}
+              <span style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0', minWidth: '52px' }}>
+                {item.ticker}
+              </span>
+
+              {/* Current action badge */}
+              <span style={{
+                padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '6px',
+                background: cfg.badge, color: cfg.badgeText,
+              }}>
+                {isLoading ? '⟳' : cfg.icon} {displayScore}/8 {displayAction}
+              </span>
+
+              {/* Score change indicator */}
+              {scoreChanged && !isLoading && (
+                <span style={{ fontSize: '11px', color: upgraded ? '#48bb78' : deteriorated ? '#fc8181' : '#718096' }}>
+                  {upgraded ? '↑ upgraded' : deteriorated ? '↓ deteriorated' : ''}
+                  {` (was ${item.scoreAtAdd}/8)`}
+                </span>
+              )}
+
+              {/* Date info */}
+              <span style={{ fontSize: '11px', color: '#4a5568' }}>
+                Added {shortDate(item.addedAt)}
+                {item.lastChecked && ` · checked ${relativeTime(item.lastChecked)}`}
+              </span>
+
+              {isError && (
+                <span style={{ fontSize: '11px', color: '#fc8181' }}>⚠ refresh failed</span>
+              )}
+
+              {/* Actions */}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', flexShrink: 0 }}>
+                <button
+                  onClick={() => onAnalyze(item.ticker)}
+                  disabled={isLoading}
+                  style={{ padding: '4px 12px', background: '#2b6cb0', color: '#fff', border: 'none', borderRadius: '6px', cursor: isLoading ? 'not-allowed' : 'pointer', fontSize: '11px', fontWeight: 600 }}
+                >
+                  Analyze
+                </button>
+                <button
+                  onClick={() => onRemove(item.ticker)}
+                  style={{ padding: '4px 10px', background: 'transparent', color: '#4a5568', border: '1px solid #2d3748', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Score badge ──────────────────────────────────────────────────────────────
 function TriggerBadge({ score, action, blocked, suggestedSize }) {
   const cfg = ACTION_CONFIG[action] || ACTION_CONFIG['WATCH']
@@ -26,22 +229,18 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
       borderRadius: '12px', padding: '20px 24px',
       display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap',
     }}>
-      {/* Score circle */}
       <div style={{ textAlign: 'center', flexShrink: 0 }}>
         <div style={{
           width: '80px', height: '80px', borderRadius: '50%',
           background: cfg.badge, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
         }}>
-          <span style={{ fontSize: '28px', fontWeight: 900, color: cfg.badgeText, lineHeight: 1 }}>
-            {score}
-          </span>
+          <span style={{ fontSize: '28px', fontWeight: 900, color: cfg.badgeText, lineHeight: 1 }}>{score}</span>
           <span style={{ fontSize: '11px', color: cfg.badgeText, opacity: 0.8 }}>/8</span>
         </div>
         <div style={{ fontSize: '10px', color: '#718096', marginTop: '4px' }}>TRIGGER SCORE</div>
       </div>
 
-      {/* Action label + size */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
           <span style={{ fontSize: '22px' }}>{cfg.icon}</span>
@@ -66,14 +265,9 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
         )}
       </div>
 
-      {/* Score bar */}
       <div style={{ flex: 1, minWidth: '160px' }}>
         <div style={{ height: '8px', background: '#1a1f2e', borderRadius: '4px', overflow: 'hidden' }}>
-          <div style={{
-            width: `${(score / 8) * 100}%`, height: '100%',
-            background: cfg.badge, borderRadius: '4px',
-            transition: 'width 0.4s ease',
-          }} />
+          <div style={{ width: `${(score / 8) * 100}%`, height: '100%', background: cfg.badge, borderRadius: '4px', transition: 'width 0.4s ease' }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '10px', color: '#4a5568' }}>
           <span>0</span><span>WATCH 3</span><span>BUY 5</span><span>STRONG 7</span><span>8</span>
@@ -86,49 +280,24 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
 // ─── Score breakdown ──────────────────────────────────────────────────────────
 function ScoreBreakdown({ breakdown }) {
   if (!breakdown) return null
-  const items = [
-    breakdown.monte_carlo,
-    breakdown.ma,
-    breakdown.earnings,
-    breakdown.bear,
-    breakdown.base,
-  ].filter(Boolean)
-
+  const items = [breakdown.monte_carlo, breakdown.ma, breakdown.earnings, breakdown.bear, breakdown.base].filter(Boolean)
   return (
     <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '10px', padding: '16px 20px' }}>
-      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '12px' }}>
-        POINT BREAKDOWN
-      </div>
+      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '12px' }}>POINT BREAKDOWN</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {items.map((item, i) => {
           const earned = item.earned
           const isWarning = item.warning
-          const dotColor = earned === null ? '#4a5568'
-            : earned === item.max ? '#68d391'
-            : earned > 0 ? '#fbd38d'
-            : isWarning ? '#ed8936'
-            : '#fc8181'
+          const dotColor = earned === null ? '#4a5568' : earned === item.max ? '#68d391' : earned > 0 ? '#fbd38d' : isWarning ? '#ed8936' : '#fc8181'
           return (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              {/* Points earned */}
               <div style={{ display: 'flex', gap: '3px', flexShrink: 0 }}>
                 {Array.from({ length: item.max }).map((_, j) => (
-                  <div key={j} style={{
-                    width: '10px', height: '10px', borderRadius: '50%',
-                    background: earned !== null && j < earned ? dotColor : '#2d3748',
-                    border: `1px solid ${dotColor}`,
-                  }} />
+                  <div key={j} style={{ width: '10px', height: '10px', borderRadius: '50%', background: earned !== null && j < earned ? dotColor : '#2d3748', border: `1px solid ${dotColor}` }} />
                 ))}
               </div>
-              {/* Label */}
-              <span style={{ fontSize: '12px', color: '#718096', minWidth: '90px', flexShrink: 0 }}>
-                {item.label}
-              </span>
-              {/* Detail */}
-              <span style={{ fontSize: '12px', color: isWarning ? '#ed8936' : earned ? '#e2e8f0' : '#718096' }}>
-                {item.detail}
-              </span>
-              {/* Earned badge */}
+              <span style={{ fontSize: '12px', color: '#718096', minWidth: '90px', flexShrink: 0 }}>{item.label}</span>
+              <span style={{ fontSize: '12px', color: isWarning ? '#ed8936' : earned ? '#e2e8f0' : '#718096' }}>{item.detail}</span>
               <span style={{ marginLeft: 'auto', fontSize: '11px', fontWeight: 700, color: dotColor, flexShrink: 0 }}>
                 {earned === null ? '—' : `+${earned}`}
               </span>
@@ -140,52 +309,41 @@ function ScoreBreakdown({ breakdown }) {
   )
 }
 
-// ─── MA status card ───────────────────────────────────────────────────────────
+// ─── MA status ────────────────────────────────────────────────────────────────
 function MaStatusCard({ ma50, aboveMa, crossover5d, currentPrice }) {
   if (ma50 == null) return null
-  const isAbove = aboveMa
-  const color = crossover5d ? '#48bb78' : isAbove ? '#68d391' : '#fc8181'
-  const bg = crossover5d ? '#0a2218' : isAbove ? '#0a1a10' : '#2d1515'
-  const border = crossover5d ? '#276749' : isAbove ? '#2f855a' : '#742a2a'
+  const color = crossover5d ? '#48bb78' : aboveMa ? '#68d391' : '#fc8181'
+  const bg = crossover5d ? '#0a2218' : aboveMa ? '#0a1a10' : '#2d1515'
+  const border = crossover5d ? '#276749' : aboveMa ? '#2f855a' : '#742a2a'
   return (
     <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: '8px', padding: '12px 16px' }}>
-      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>
-        50-DAY MOVING AVERAGE
-      </div>
+      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>50-DAY MOVING AVERAGE</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '16px', fontWeight: 700, color }}>
-          {crossover5d ? '🚀 Golden cross (last 5 days)' : isAbove ? '↑ Above MA' : '↓ Below MA'}
+          {crossover5d ? '🚀 Golden cross (last 5 days)' : aboveMa ? '↑ Above MA' : '↓ Below MA'}
         </span>
         <span style={{ fontSize: '13px', color: '#a0aec0' }}>
           MA: ${ma50.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           {currentPrice && ` · Price: $${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         </span>
         {currentPrice && ma50 && (
-          <span style={{ fontSize: '12px', color }}>
-            ({((currentPrice - ma50) / ma50 * 100).toFixed(1)}% vs MA)
-          </span>
+          <span style={{ fontSize: '12px', color }}>({((currentPrice - ma50) / ma50 * 100).toFixed(1)}% vs MA)</span>
         )}
       </div>
     </div>
   )
 }
 
-// ─── Bear protection card ─────────────────────────────────────────────────────
-function BearProtectionCard({ level, label, bearUpside }) {
+// ─── Bear protection ──────────────────────────────────────────────────────────
+function BearProtectionCard({ level, bearUpside }) {
   if (!level) return null
   const cfg = PROTECTION_CONFIG[level] || PROTECTION_CONFIG.moderate
   return (
     <div style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: '8px', padding: '12px 16px' }}>
-      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '4px' }}>
-        BEAR CASE PROTECTION
-      </div>
+      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '4px' }}>BEAR CASE PROTECTION</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '16px', fontWeight: 700, color: cfg.color }}>{cfg.label}</span>
-        {bearUpside != null && (
-          <span style={{ fontSize: '13px', color: '#a0aec0' }}>
-            Bear case: <span style={{ color: cfg.color, fontWeight: 600 }}>{bearUpside > 0 ? '+' : ''}{bearUpside}%</span>
-          </span>
-        )}
+        {bearUpside != null && <span style={{ fontSize: '13px', color: '#a0aec0' }}>Bear case: <span style={{ color: cfg.color, fontWeight: 600 }}>{bearUpside > 0 ? '+' : ''}{bearUpside}%</span></span>}
       </div>
     </div>
   )
@@ -200,42 +358,27 @@ function PortfolioSummary({ portfolio, selected, onSelect, onRemove }) {
     return b.score - a.score
   })
   return (
-    <div style={{ marginBottom: '24px' }}>
+    <div style={{ marginBottom: '20px' }}>
       <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>
-        PORTFOLIO WATCHLIST — ranked by trigger score
+        RECENTLY ANALYZED — ranked by score
       </div>
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         {sorted.map(s => {
           const cfg = ACTION_CONFIG[s.action] || ACTION_CONFIG['WATCH']
           const isActive = s.ticker === selected
           return (
-            <div
-              key={s.ticker}
-              onClick={() => onSelect(s.ticker)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                padding: '6px 10px 6px 12px',
-                background: isActive ? cfg.badge : '#1a1f2e',
-                border: `1px solid ${isActive ? cfg.border : '#2d3748'}`,
-                borderRadius: '8px', cursor: 'pointer',
-                transition: 'all 0.15s',
-              }}
-            >
-              <span style={{ fontSize: '13px', fontWeight: 700, color: isActive ? cfg.badgeText : '#e2e8f0' }}>
-                {s.ticker}
-              </span>
-              <span style={{
-                fontSize: '11px', fontWeight: 700,
-                padding: '1px 6px', borderRadius: '4px',
-                background: cfg.badge, color: cfg.badgeText,
-              }}>
+            <div key={s.ticker} onClick={() => onSelect(s.ticker)} style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '6px 10px 6px 12px',
+              background: isActive ? cfg.badge : '#1a1f2e',
+              border: `1px solid ${isActive ? cfg.border : '#2d3748'}`,
+              borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s',
+            }}>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: isActive ? cfg.badgeText : '#e2e8f0' }}>{s.ticker}</span>
+              <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', background: cfg.badge, color: cfg.badgeText }}>
                 {s.blocked ? '⛔' : s.score}/8
               </span>
-              <span
-                onClick={e => { e.stopPropagation(); onRemove(s.ticker) }}
-                style={{ fontSize: '11px', color: '#4a5568', cursor: 'pointer', marginLeft: '2px', lineHeight: 1 }}
-                title="Remove"
-              >×</span>
+              <span onClick={e => { e.stopPropagation(); onRemove(s.ticker) }} style={{ fontSize: '11px', color: '#4a5568', cursor: 'pointer', marginLeft: '2px', lineHeight: 1 }} title="Remove">×</span>
             </div>
           )
         })}
@@ -244,13 +387,10 @@ function PortfolioSummary({ portfolio, selected, onSelect, onRemove }) {
   )
 }
 
-// ─── DCF sub-components (preserved from DCF tab) ─────────────────────────────
+// ─── DCF sub-components ───────────────────────────────────────────────────────
 function MetricPill({ label, value }) {
   return (
-    <div style={{
-      background: '#0f1117', border: '1px solid #2d3748',
-      borderRadius: '6px', padding: '6px 10px', textAlign: 'center', minWidth: '60px',
-    }}>
+    <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '6px', padding: '6px 10px', textAlign: 'center', minWidth: '60px' }}>
       <div style={{ fontSize: '10px', color: '#718096', marginBottom: '2px' }}>{label}</div>
       <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{value}</div>
     </div>
@@ -260,26 +400,10 @@ function MetricPill({ label, value }) {
 function ScenarioCard({ label, price, upside, g1Pct, fcfPct, highlight }) {
   const up = upside ?? 0
   return (
-    <div style={{
-      flex: '1', minWidth: '110px',
-      background: highlight ? '#0d2112' : '#161b27',
-      border: `1px solid ${highlight ? '#2f855a' : '#2d3748'}`,
-      borderRadius: '10px', padding: '14px 12px', textAlign: 'center',
-    }}>
-      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '8px' }}>
-        {label}
-      </div>
-      {price != null && (
-        <div style={{
-          fontSize: '20px', fontWeight: 800, marginBottom: '2px',
-          color: label === 'BULL' ? '#68d391' : label === 'BEAR' ? '#fc8181' : '#90cdf4',
-        }}>
-          ${price.toLocaleString()}
-        </div>
-      )}
-      <div style={{ fontSize: '14px', fontWeight: 700, color: up >= 0 ? '#68d391' : '#fc8181', marginBottom: '8px' }}>
-        {upside != null ? `${up > 0 ? '+' : ''}${up}%` : '—'}
-      </div>
+    <div style={{ flex: '1', minWidth: '110px', background: highlight ? '#0d2112' : '#161b27', border: `1px solid ${highlight ? '#2f855a' : '#2d3748'}`, borderRadius: '10px', padding: '14px 12px', textAlign: 'center' }}>
+      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '8px' }}>{label}</div>
+      {price != null && <div style={{ fontSize: '20px', fontWeight: 800, marginBottom: '2px', color: label === 'BULL' ? '#68d391' : label === 'BEAR' ? '#fc8181' : '#90cdf4' }}>${price.toLocaleString()}</div>}
+      <div style={{ fontSize: '14px', fontWeight: 700, color: up >= 0 ? '#68d391' : '#fc8181', marginBottom: '8px' }}>{upside != null ? `${up > 0 ? '+' : ''}${up}%` : '—'}</div>
       <div style={{ fontSize: '11px', color: '#718096', lineHeight: 1.5 }}>
         <div>Rev growth yr1-5: {g1Pct}%</div>
         <div>FCF margin: {fcfPct}%</div>
@@ -344,9 +468,7 @@ function MonteCarloSection({ mc, currentPrice }) {
             {hist.map((bar, i) => {
               const heightPct = maxCount > 0 ? (bar.count / maxCount) * 100 : 0
               const isCurrentBin = currentPrice && bar.x <= currentPrice && (hist[i+1]?.x || Infinity) > currentPrice
-              return (
-                <div key={i} title={`$${bar.x} — ${bar.count} simulations`} style={{ flex: 1, height: `${heightPct}%`, minHeight: bar.count > 0 ? '2px' : '0', background: isCurrentBin ? '#f6e05e' : '#2b6cb0', opacity: 0.85, borderRadius: '1px 1px 0 0' }} />
-              )
+              return <div key={i} title={`$${bar.x} — ${bar.count} simulations`} style={{ flex: 1, height: `${heightPct}%`, minHeight: bar.count > 0 ? '2px' : '0', background: isCurrentBin ? '#f6e05e' : '#2b6cb0', opacity: 0.85, borderRadius: '1px 1px 0 0' }} />
             })}
           </div>
           <div style={{ fontSize: '9px', color: '#4a5568', marginTop: '3px', textAlign: 'center' }}>
@@ -358,7 +480,6 @@ function MonteCarloSection({ mc, currentPrice }) {
   )
 }
 
-// ─── Main tab ─────────────────────────────────────────────────────────────────
 const RECO_CONFIG = {
   'Strong Buy': { bg: '#1a3a2a', border: '#2f855a', color: '#68d391', icon: '🚀' },
   'Buy':        { bg: '#0a1628', border: '#2b6cb0', color: '#90cdf4', icon: '↑' },
@@ -375,13 +496,7 @@ function RecoChip({ rec }) {
   )
 }
 
-function loadPortfolio() {
-  try { return JSON.parse(localStorage.getItem('trigger_portfolio') || '[]') } catch { return [] }
-}
-function savePortfolio(p) {
-  try { localStorage.setItem('trigger_portfolio', JSON.stringify(p)) } catch {}
-}
-
+// ─── Main tab ─────────────────────────────────────────────────────────────────
 export default function StockTriggersTab() {
   const [ticker, setTicker] = useState('')
   const [loading, setLoading] = useState(false)
@@ -389,6 +504,112 @@ export default function StockTriggersTab() {
   const [error, setError] = useState(null)
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [portfolio, setPortfolio] = useState(loadPortfolio)
+
+  // Watchlist state
+  const [watchlist, setWatchlist] = useState(loadWatchlist)
+  const [refreshProgress, setRefreshProgress] = useState({})    // {ticker: 'loading'|'done'|'error'}
+  const [upgrades, setUpgrades] = useState([])                   // [{ticker, action, score}]
+  const [dismissedUpgrades, setDismissedUpgrades] = useState([]) // [ticker]
+  const didAutoRefresh = useRef(false)
+
+  // Auto-refresh stale watchlist items on mount
+  useEffect(() => {
+    if (didAutoRefresh.current) return
+    didAutoRefresh.current = true
+    const stale = watchlist.filter(isStale)
+    if (stale.length > 0) refreshItems(stale)
+  }, []) // eslint-disable-line
+
+  async function refreshItems(items) {
+    const prog = {}
+    items.forEach(it => { prog[it.ticker] = 'loading' })
+    setRefreshProgress(prev => ({ ...prev, ...prog }))
+
+    const newUpgrades = []
+
+    await Promise.allSettled(items.map(async item => {
+      try {
+        const resp = await fetch(`${API}/api/triggers/${encodeURIComponent(item.ticker)}`)
+        const body = await resp.json().catch(() => ({}))
+        if (!resp.ok) throw new Error(body.detail || `Error ${resp.status}`)
+
+        const prevAction = item.currentAction || item.actionAtAdd
+        const wasWatch = prevAction === 'WATCH'
+        const nowBetter = body.trigger_action === 'SMALL BUY' || body.trigger_action === 'STRONG BUY'
+
+        setWatchlist(prev => {
+          const next = prev.map(w => {
+            if (w.ticker !== item.ticker) return w
+            return {
+              ...w,
+              currentScore: body.trigger_score,
+              currentAction: body.trigger_action,
+              currentBlocked: body.trigger_blocked,
+              upgradedFrom: (wasWatch && nowBetter) ? 'WATCH' : w.upgradedFrom,
+              lastChecked: new Date().toISOString(),
+              refreshError: null,
+            }
+          })
+          saveWatchlist(next)
+          return next
+        })
+
+        if (wasWatch && nowBetter) {
+          newUpgrades.push({ ticker: item.ticker, action: body.trigger_action, score: body.trigger_score })
+        }
+        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'done' }))
+      } catch (e) {
+        setWatchlist(prev => {
+          const next = prev.map(w => w.ticker !== item.ticker ? w : {
+            ...w, lastChecked: new Date().toISOString(), refreshError: e.message,
+          })
+          saveWatchlist(next)
+          return next
+        })
+        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'error' }))
+      }
+    }))
+
+    if (newUpgrades.length) setUpgrades(prev => [...prev, ...newUpgrades])
+  }
+
+  function handleRefreshAll() {
+    refreshItems(watchlist.filter(isStale))
+  }
+
+  function addToWatchlist(r) {
+    setWatchlist(prev => {
+      if (prev.some(w => w.ticker === r.ticker)) return prev
+      const entry = {
+        ticker: r.ticker,
+        scoreAtAdd: r.trigger_score,
+        actionAtAdd: r.trigger_action,
+        addedAt: new Date().toISOString(),
+        currentScore: null,
+        currentAction: null,
+        upgradedFrom: null,
+        lastChecked: null,
+        refreshError: null,
+      }
+      const next = [...prev, entry]
+      saveWatchlist(next)
+      return next
+    })
+  }
+
+  function removeFromWatchlist(sym) {
+    setWatchlist(prev => {
+      const next = prev.filter(w => w.ticker !== sym)
+      saveWatchlist(next)
+      return next
+    })
+    setRefreshProgress(prev => { const n = { ...prev }; delete n[sym]; return n })
+    setUpgrades(prev => prev.filter(u => u.ticker !== sym))
+  }
+
+  function dismissUpgrade(sym) {
+    setDismissedUpgrades(prev => [...prev, sym])
+  }
 
   async function analyze(t) {
     const sym = (t || ticker).trim().toUpperCase()
@@ -402,15 +623,9 @@ export default function StockTriggersTab() {
       const body = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(body.detail || `Error ${resp.status}`)
       setResult(body)
-      // Upsert into portfolio
       setPortfolio(prev => {
         const filtered = prev.filter(p => p.ticker !== sym)
-        const entry = {
-          ticker: sym,
-          score: body.trigger_score,
-          action: body.trigger_action,
-          blocked: body.trigger_blocked,
-        }
+        const entry = { ticker: sym, score: body.trigger_score, action: body.trigger_action, blocked: body.trigger_blocked }
         const next = [...filtered, entry].sort((a, b) => {
           if (a.blocked && !b.blocked) return 1
           if (!a.blocked && b.blocked) return -1
@@ -427,20 +642,16 @@ export default function StockTriggersTab() {
   }
 
   function removeFromPortfolio(sym) {
-    setPortfolio(prev => {
-      const next = prev.filter(p => p.ticker !== sym)
-      savePortfolio(next)
-      return next
-    })
-    if (selectedTicker === sym) {
-      setSelectedTicker(null)
-      setResult(null)
-    }
+    setPortfolio(prev => { const next = prev.filter(p => p.ticker !== sym); savePortfolio(next); return next })
+    if (selectedTicker === sym) { setSelectedTicker(null); setResult(null) }
   }
 
   function handleKey(e) { if (e.key === 'Enter') analyze() }
 
   const r = result
+  const inWatchlist = r && watchlist.some(w => w.ticker === r.ticker)
+  const isWatch = r && r.trigger_action === 'WATCH'
+  const visibleUpgrades = upgrades.filter(u => !dismissedUpgrades.includes(u.ticker))
 
   return (
     <div style={{ maxWidth: '900px' }}>
@@ -454,7 +665,23 @@ export default function StockTriggersTab() {
         </p>
       </div>
 
-      {/* Portfolio summary */}
+      {/* Upgrade alerts */}
+      <UpgradeAlerts
+        upgrades={visibleUpgrades}
+        onAnalyze={sym => { setTicker(sym); analyze(sym) }}
+        onDismiss={dismissUpgrade}
+      />
+
+      {/* Watchlist */}
+      <WatchlistSection
+        watchlist={watchlist}
+        refreshProgress={refreshProgress}
+        onAnalyze={sym => { setTicker(sym); analyze(sym) }}
+        onRemove={removeFromWatchlist}
+        onRefreshAll={handleRefreshAll}
+      />
+
+      {/* Recently analyzed portfolio */}
       <PortfolioSummary
         portfolio={portfolio}
         selected={selectedTicker}
@@ -510,7 +737,7 @@ export default function StockTriggersTab() {
       {r && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-          {/* ── Stock header ── */}
+          {/* Stock header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <div style={{ fontSize: '26px', fontWeight: 800, color: '#90cdf4' }}>{r.ticker}</div>
@@ -519,7 +746,7 @@ export default function StockTriggersTab() {
             <RecoChip rec={r.recommendation} />
           </div>
 
-          {/* ── Trigger badge ── */}
+          {/* Trigger badge */}
           <TriggerBadge
             score={r.trigger_score}
             action={r.trigger_action}
@@ -527,29 +754,56 @@ export default function StockTriggersTab() {
             suggestedSize={r.suggested_position_size}
           />
 
-          {/* ── Score breakdown ── */}
+          {/* Watch-it button — only shown for WATCH scores (2-4) */}
+          {isWatch && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '12px',
+              padding: '12px 16px',
+              background: '#2d2000', border: '1px solid #b7791f', borderRadius: '8px',
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d' }}>
+                  👁 This stock is a WATCH — not ready yet
+                </div>
+                <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>
+                  Add to your watchlist. When it scores 5+ (SMALL BUY or STRONG BUY) you'll get an alert at the top of this tab.
+                </div>
+              </div>
+              {inWatchlist ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                  <span style={{ fontSize: '12px', color: '#68d391', fontWeight: 600 }}>✓ In watchlist</span>
+                  <button
+                    onClick={() => removeFromWatchlist(r.ticker)}
+                    style={{ padding: '5px 10px', background: 'transparent', color: '#4a5568', border: '1px solid #2d3748', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => addToWatchlist(r)}
+                  style={{ padding: '8px 18px', background: '#b7791f', color: '#fefcbf', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 700, flexShrink: 0 }}
+                >
+                  + Add to Watchlist
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Score breakdown */}
           <ScoreBreakdown breakdown={r.trigger_breakdown} />
 
-          {/* ── MA + Bear protection side-by-side ── */}
+          {/* MA + Bear side-by-side */}
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '240px' }}>
-              <MaStatusCard
-                ma50={r.ma50}
-                aboveMa={r.above_ma}
-                crossover5d={r.crossover_5d}
-                currentPrice={r.current_price}
-              />
+              <MaStatusCard ma50={r.ma50} aboveMa={r.above_ma} crossover5d={r.crossover_5d} currentPrice={r.current_price} />
             </div>
             <div style={{ flex: 1, minWidth: '240px' }}>
-              <BearProtectionCard
-                level={r.bear_protection_level}
-                label={r.bear_protection_label}
-                bearUpside={r.dcf_bear_upside}
-              />
+              <BearProtectionCard level={r.bear_protection_level} bearUpside={r.dcf_bear_upside} />
             </div>
           </div>
 
-          {/* ── Earnings warning ── */}
+          {/* Earnings warning */}
           {r.earnings_days != null && r.earnings_days <= 14 && (
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '12px 16px', background: '#2d1800', border: '1px solid #c05621', borderRadius: '8px' }}>
               <span style={{ fontSize: '18px', lineHeight: 1, flexShrink: 0 }}>⚠️</span>
@@ -564,13 +818,12 @@ export default function StockTriggersTab() {
             </div>
           )}
 
-          {/* ─────────────────── DCF SECTION (preserved exactly) ─────────────── */}
+          {/* DCF section */}
           <div style={{ borderTop: '1px solid #2d3748', paddingTop: '20px' }}>
             <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '16px' }}>
               FULL DCF ANALYSIS — CAPM WACC · Reverse DCF · Monte Carlo (10,000 simulations)
             </div>
 
-            {/* Market context */}
             <div style={{ marginBottom: '16px' }}>
               <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '8px' }}>MARKET CONTEXT</div>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -586,11 +839,8 @@ export default function StockTriggersTab() {
               </div>
             </div>
 
-            {/* Reverse DCF */}
             <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px', marginBottom: '16px' }}>
-              <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>
-                REVERSE DCF — GROWTH RATE THE MARKET IS CURRENTLY PRICING IN
-              </div>
+              <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>REVERSE DCF — GROWTH RATE THE MARKET IS CURRENTLY PRICING IN</div>
               <div style={{ fontSize: '24px', fontWeight: 800, color: '#fbd38d' }}>{r.implied_growth_pct}% / year</div>
               <div style={{ fontSize: '12px', color: '#a0aec0', marginTop: '4px', lineHeight: 1.6 }}>
                 At today's market cap of ${r.market_cap_b}B, investors are implying {r.implied_growth_pct}% annual revenue growth over the next decade. Our base case DCF implies{' '}
@@ -603,22 +853,14 @@ export default function StockTriggersTab() {
               </div>
             </div>
 
-            {/* Monte Carlo */}
             <div style={{ marginBottom: '16px' }}>
               <MonteCarloSection mc={r.monte_carlo} currentPrice={r.current_price} />
             </div>
 
-            {/* DCF Scenarios */}
             <div style={{ marginBottom: '16px' }}>
               <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>
                 DCF SCENARIOS
-                <span style={{
-                  marginLeft: '8px', padding: '1px 7px',
-                  background: r.used_claude_params ? '#0a1628' : '#1a1a1a',
-                  color: r.used_claude_params ? '#4299e1' : '#718096',
-                  border: `1px solid ${r.used_claude_params ? '#2b6cb0' : '#2d3748'}`,
-                  borderRadius: '4px', fontSize: '10px',
-                }}>
+                <span style={{ marginLeft: '8px', padding: '1px 7px', background: r.used_claude_params ? '#0a1628' : '#1a1a1a', color: r.used_claude_params ? '#4299e1' : '#718096', border: `1px solid ${r.used_claude_params ? '#2b6cb0' : '#2d3748'}`, borderRadius: '4px', fontSize: '10px' }}>
                   {r.used_claude_params ? 'Claude parameters' : 'mechanical fallback'}
                 </span>
               </div>
@@ -629,7 +871,6 @@ export default function StockTriggersTab() {
               </div>
             </div>
 
-            {/* Claude reasoning */}
             {r.scenario_reasoning && (
               <div style={{ background: '#0a1628', border: '1px solid #2b6cb0', borderRadius: '8px', padding: '14px 16px' }}>
                 <div style={{ fontSize: '11px', color: '#4299e1', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>

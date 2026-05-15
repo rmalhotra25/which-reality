@@ -77,6 +77,150 @@ function ScenarioCard({ label, price, upside, g1Pct, fcfPct, highlight }) {
   )
 }
 
+function MonteCarloSection({ mc, currentPrice }) {
+  if (!mc || mc.prob_undervalued_pct == null) return null
+  const ps = mc.per_share
+  const prob = mc.prob_undervalued_pct
+  const probColor = prob >= 60 ? '#68d391' : prob >= 40 ? '#fbd38d' : '#fc8181'
+  const probBg = prob >= 60 ? '#0a2218' : prob >= 40 ? '#2d2000' : '#2d1515'
+  const probBorder = prob >= 60 ? '#276749' : prob >= 40 ? '#b7791f' : '#742a2a'
+
+  // Percentile range bar — show p10 to p90 range, mark median and current price
+  const allVals = [ps.p10, ps.p25, ps.median, ps.p75, ps.p90, currentPrice].filter(Boolean)
+  const barMin = Math.min(...allVals) * 0.92
+  const barMax = Math.max(...allVals) * 1.08
+  const pct = v => `${Math.max(0, Math.min(100, (v - barMin) / (barMax - barMin) * 100)).toFixed(1)}%`
+
+  // Histogram bars
+  const hist = mc.histogram || []
+  const maxCount = hist.length ? Math.max(...hist.map(h => h.count)) : 1
+
+  return (
+    <div style={{
+      background: '#0f1117', border: '1px solid #2d3748',
+      borderRadius: '10px', padding: '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: '16px',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <span style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em' }}>
+            MONTE CARLO DCF
+          </span>
+          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#4a5568' }}>
+            {mc.n_simulations?.toLocaleString()} simulations
+          </span>
+        </div>
+      </div>
+
+      {/* Probability + percentile row */}
+      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {/* Probability box */}
+        <div style={{
+          padding: '16px 20px', minWidth: '130px', textAlign: 'center',
+          background: probBg, border: `1px solid ${probBorder}`, borderRadius: '10px',
+          flexShrink: 0,
+        }}>
+          <div style={{ fontSize: '36px', fontWeight: 900, color: probColor, lineHeight: 1 }}>
+            {prob}%
+          </div>
+          <div style={{ fontSize: '11px', color: '#a0aec0', marginTop: '6px', lineHeight: 1.4 }}>
+            chance stock is<br />undervalued today
+          </div>
+        </div>
+
+        {/* Percentile table + range bar */}
+        <div style={{ flex: 1, minWidth: '220px' }}>
+          <div style={{ fontSize: '11px', color: '#718096', marginBottom: '10px', fontWeight: 600 }}>
+            INTRINSIC VALUE RANGE (PER SHARE)
+          </div>
+
+          {/* Percentile numbers */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+            {[['p10', '10th'], ['p25', '25th'], ['median', '50th'], ['p75', '75th'], ['p90', '90th']].map(([k, label]) => (
+              <div key={k} style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '10px', color: '#4a5568', marginBottom: '2px' }}>{label}</div>
+                <div style={{
+                  fontSize: '13px', fontWeight: 700,
+                  color: k === 'median' ? '#90cdf4' : '#e2e8f0'
+                }}>
+                  ${ps[k]?.toLocaleString()}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Range bar */}
+          <div style={{ position: 'relative', height: '24px', background: '#1a1f2e', borderRadius: '4px', overflow: 'visible' }}>
+            {/* p25-p75 box (IQR) */}
+            <div style={{
+              position: 'absolute',
+              left: pct(ps.p25), width: `calc(${pct(ps.p75)} - ${pct(ps.p25)})`,
+              top: '4px', height: '16px',
+              background: '#2b6cb0', borderRadius: '3px', opacity: 0.6,
+            }} />
+            {/* p10-p90 line */}
+            <div style={{
+              position: 'absolute',
+              left: pct(ps.p10), width: `calc(${pct(ps.p90)} - ${pct(ps.p10)})`,
+              top: '11px', height: '2px', background: '#4a5568',
+            }} />
+            {/* Median marker */}
+            <div style={{
+              position: 'absolute', left: pct(ps.median),
+              top: '2px', width: '2px', height: '20px',
+              background: '#90cdf4', transform: 'translateX(-1px)',
+            }} />
+            {/* Current price marker */}
+            {currentPrice && (
+              <div style={{
+                position: 'absolute', left: pct(currentPrice),
+                top: '2px', width: '2px', height: '20px',
+                background: '#f6e05e', transform: 'translateX(-1px)',
+              }} />
+            )}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '10px', color: '#4a5568' }}>
+            <span>◼ IQR (p25–p75)</span>
+            {currentPrice && <span style={{ color: '#f6e05e' }}>▲ Current ${currentPrice}</span>}
+            <span style={{ color: '#90cdf4' }}>| Median</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Histogram */}
+      {hist.length > 0 && (
+        <div>
+          <div style={{ fontSize: '10px', color: '#4a5568', marginBottom: '6px' }}>
+            Distribution of 10,000 simulated intrinsic values (per share)
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '1px', height: '48px' }}>
+            {hist.map((bar, i) => {
+              const heightPct = maxCount > 0 ? (bar.count / maxCount) * 100 : 0
+              const isCurrentBin = currentPrice && bar.x <= currentPrice && (hist[i + 1]?.x || Infinity) > currentPrice
+              return (
+                <div
+                  key={i}
+                  title={`$${bar.x} — ${bar.count} simulations`}
+                  style={{
+                    flex: 1, height: `${heightPct}%`, minHeight: bar.count > 0 ? '2px' : '0',
+                    background: isCurrentBin ? '#f6e05e' : '#2b6cb0',
+                    opacity: 0.85, borderRadius: '1px 1px 0 0',
+                  }}
+                />
+              )
+            })}
+          </div>
+          <div style={{ fontSize: '9px', color: '#4a5568', marginTop: '3px', textAlign: 'center' }}>
+            {currentPrice && <span style={{ color: '#f6e05e' }}>■ Current price bin  </span>}
+            ■ DCF value distribution
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function DcfTab() {
   const [ticker, setTicker] = useState('')
   const [loading, setLoading] = useState(false)

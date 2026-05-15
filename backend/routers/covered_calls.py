@@ -26,6 +26,7 @@ def analyze_covered_calls(req: CoveredCallRequest):
 
     from services.stock_data import StockDataService
     from services.claude_analyst import ClaudeAnalyst
+    from services.iv_rank_service import get_iv_rank
 
     stock_data = StockDataService()
     analyst = ClaudeAnalyst()
@@ -67,6 +68,7 @@ def analyze_covered_calls(req: CoveredCallRequest):
         result["dte"] = call_tiers.get("dte")
         result["atm_iv_pct"] = call_tiers.get("atm_iv_pct")
         result["options_type"] = call_tiers.get("options_type", "weekly")
+        result["iv_rank"] = get_iv_rank(ticker)
         return result
     except Exception as e:
         logger.error("Covered call analysis failed for %s: %s", ticker, e)

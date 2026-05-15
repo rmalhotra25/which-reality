@@ -186,6 +186,13 @@ const s = {
   },
   disclaimer: { fontSize: '11px', color: '#4a5568', marginTop: '16px' },
   dataSourceNote: { fontSize: '12px', color: '#4a5568', marginTop: '4px' },
+  statPill: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  statLabel: { fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 },
+  statVal: { fontSize: '14px', fontWeight: 700, color: '#e2e8f0' },
 }
 
 function fmt(val) {
@@ -396,10 +403,33 @@ export default function CoveredCallsTab() {
               <div style={s.metaLabel}>ATM IV</div>
               <div style={s.metaValue}>{result.atm_iv_pct ?? '—'}%</div>
             </div>
+            {result.iv_rank?.iv_rank != null && (
+              <div style={s.statPill}>
+                <span style={s.statLabel}>IV Rank</span>
+                <span style={{
+                  ...s.statVal,
+                  color: result.iv_rank.iv_rank >= 50 ? '#68d391' : result.iv_rank.iv_rank < 25 ? '#fc8181' : '#fbd38d'
+                }}>
+                  {result.iv_rank.iv_rank}
+                  <span style={{ fontSize:'10px', color:'#718096', marginLeft:'3px' }}>/ 100</span>
+                </span>
+              </div>
+            )}
             {result.iv_environment && (
               <div style={s.ivNote}>{result.iv_environment}</div>
             )}
           </div>
+
+          {result.iv_rank?.label === 'high' && (
+            <div style={{ fontSize:'12px', color:'#68d391', padding:'4px 0' }}>
+              🔥 IV Rank {result.iv_rank.iv_rank} — premium is historically rich. Good time to sell calls.
+            </div>
+          )}
+          {result.iv_rank?.label === 'low' && (
+            <div style={{ fontSize:'12px', color:'#fc8181', padding:'4px 0' }}>
+              ❄️ IV Rank {result.iv_rank.iv_rank} — premium is historically cheap. Consider waiting for higher IV.
+            </div>
+          )}
 
           {result.options_type === 'monthly' && (
             <div style={{ ...s.dataSourceNote, color: '#f6e05e', marginBottom: '8px' }}>

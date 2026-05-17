@@ -14,11 +14,11 @@ DIVIDEND INCOME SCANNER
   score lower on a growth-focused trigger system, so we surface all that pass filters).
 
 BIG MOVER SCANNER
-  Universe : S&P 500 + Nasdaq 100 (~600 tickers, hardcoded — update semi-annually)
-  Pre-filter: revenue growth >= 15%, market cap $1B-$50B, avg volume >= 500k shares,
-              current price <= 75% of 52-week high
-  Note: P/S filter removed — high-growth stocks rarely have P/S <= 8; ranking by
-        Monte Carlo × base upside naturally handles valuation.
+  Universe : S&P 500 + Nasdaq 100 (~500 tickers, hardcoded — update semi-annually)
+  Pre-filter: Polygon volume ≥ 1M (fast batch), then revenue growth >= 10%,
+              market cap >= $1B, avg Finnhub volume >= 500k (skip if null).
+  Note: No market cap ceiling — high-growth stocks often scale past $50B.
+        No P/S filter — valuation handled by Monte Carlo × base upside ranking.
   Rank by (Monte Carlo % × base case upside); top 5 shown; labeled SPECULATIVE.
 
 Cache     : /tmp/ (writable on all deployments including Render free tier), 24-hour TTL.
@@ -443,9 +443,9 @@ def _prefilter_movers_polygon(tickers: list[str]) -> list[str]:
             snaps = get_snapshots_batch(batch)
             for ticker in batch:
                 snap = snaps.get(ticker)
-                if snap and snap.get("volume", 0) >= 200_000:
+                if snap and snap.get("volume", 0) >= 1_000_000:
                     survivors.append(ticker)
-        logger.info("Movers Polygon pre-filter: %d / %d passed (volume ≥200k)", len(survivors), len(tickers))
+        logger.info("Movers Polygon pre-filter: %d / %d passed (volume ≥1M)", len(survivors), len(tickers))
         return survivors
     except Exception as e:
         logger.warning("Polygon pre-filter failed — using full universe: %s", e)
@@ -465,8 +465,8 @@ def _prefilter_movers_fundamentals(fundamentals: list[dict]) -> list[str]:
         rev_g = f.get("revenue_growth") or 0
         avg_vol_m = f.get("avg_volume_m") or 0  # millions
 
-        if rev_g < 15:                          rejected["rev_growth"] += 1; continue
-        if not (1_000 <= mc <= 50_000):         rejected["market_cap"] += 1; continue
+        if rev_g < 10:                           rejected["rev_growth"] += 1; continue
+        if mc < 1_000:                           rejected["market_cap"] += 1; continue
         # Volume: skip filter if Finnhub didn't return the field (avg_vol_m == 0)
         if avg_vol_m > 0 and avg_vol_m * 1_000_000 < 500_000:
             rejected["volume"] += 1; continue

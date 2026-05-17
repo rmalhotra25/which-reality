@@ -172,6 +172,24 @@ def run_advanced_scans() -> None:
         logger.error("Overnight mover scan failed: %s", e, exc_info=True)
 
 
+def run_top_rated_scan_job() -> None:
+    """Run the top-rated market scanner — fires daily at 10 AM Eastern."""
+    import datetime as _dt
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping top-rated scan — not a trading day")
+        return
+
+    logger.info("Scheduler: running top-rated market scan")
+    from services.top_rated_scanner_service import run_top_rated_scan
+    try:
+        run_top_rated_scan(force=True)
+        logger.info("Scheduler: top-rated scan complete")
+    except Exception as e:
+        logger.error("Top-rated scan failed: %s", e, exc_info=True)
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -219,6 +237,15 @@ def start_scheduler() -> BackgroundScheduler:
         run_advanced_scans,
         CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=EASTERN),
         id="advanced_scans_overnight",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 10:00 AM Eastern — top-rated market scanner (after open, prices settled)
+    scheduler.add_job(
+        run_top_rated_scan_job,
+        CronTrigger(day_of_week="mon-fri", hour=10, minute=0, timezone=EASTERN),
+        id="top_rated_scan_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )

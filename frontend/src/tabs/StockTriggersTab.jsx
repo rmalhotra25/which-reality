@@ -39,7 +39,6 @@ function isStale(item) {
   const last = new Date(item.lastChecked)
   const now = new Date()
   const diffHours = (now - last) / 36e5
-  // Stale if different calendar day or >6 hours
   return last.toDateString() !== now.toDateString() || diffHours > 6
 }
 
@@ -55,6 +54,40 @@ function relativeTime(iso) {
 function shortDate(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// ─── Sub-tab nav ──────────────────────────────────────────────────────────────
+function SubTabs({ active, onChange, watchlistCount, upgradeCount }) {
+  const tabs = [
+    { id: 'analysis', label: '🔍 Analysis' },
+    { id: 'top_rated', label: '⭐ Top Rated' },
+    { id: 'watchlist', label: `👁 Watchlist${watchlistCount ? ` (${watchlistCount})` : ''}${upgradeCount ? ` 🔥${upgradeCount}` : ''}` },
+  ]
+  return (
+    <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid #2d3748', paddingBottom: '0' }}>
+      {tabs.map(t => (
+        <button
+          key={t.id}
+          onClick={() => onChange(t.id)}
+          style={{
+            padding: '8px 18px',
+            background: active === t.id ? '#1a1f2e' : 'transparent',
+            color: active === t.id ? '#90cdf4' : '#718096',
+            border: active === t.id ? '1px solid #2d3748' : '1px solid transparent',
+            borderBottom: active === t.id ? '1px solid #1a1f2e' : '1px solid transparent',
+            borderRadius: '8px 8px 0 0',
+            cursor: 'pointer',
+            fontSize: '13px',
+            fontWeight: active === t.id ? 700 : 400,
+            marginBottom: '-1px',
+            transition: 'all 0.15s',
+          }}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 // ─── Upgrade alert banner ─────────────────────────────────────────────────────
@@ -115,7 +148,15 @@ function UpgradeAlerts({ upgrades, onAnalyze, onDismiss }) {
 
 // ─── Watchlist section ────────────────────────────────────────────────────────
 function WatchlistSection({ watchlist, refreshProgress, onAnalyze, onRemove, onRefreshAll }) {
-  if (!watchlist.length) return null
+  if (!watchlist.length) {
+    return (
+      <div style={{ color: '#4a5568', textAlign: 'center', padding: '40px 24px', fontSize: '13px' }}>
+        <div style={{ fontSize: '28px', marginBottom: '10px' }}>👁</div>
+        No stocks in your watchlist yet.<br />
+        Analyze a stock and click <strong style={{ color: '#fbd38d' }}>+ Add to Watchlist</strong> when it scores WATCH.
+      </div>
+    )
+  }
 
   const staleCount = watchlist.filter(isStale).length
   const anyLoading = Object.values(refreshProgress).includes('loading')
@@ -165,38 +206,28 @@ function WatchlistSection({ watchlist, refreshProgress, onAnalyze, onRemove, onR
               borderRadius: '8px',
               opacity: isLoading ? 0.7 : 1,
             }}>
-              {/* Ticker */}
               <span style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0', minWidth: '52px' }}>
                 {item.ticker}
               </span>
-
-              {/* Current action badge */}
               <span style={{
                 padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '6px',
                 background: cfg.badge, color: cfg.badgeText,
               }}>
                 {isLoading ? '⟳' : cfg.icon} {displayScore}/8 {displayAction}
               </span>
-
-              {/* Score change indicator */}
               {scoreChanged && !isLoading && (
                 <span style={{ fontSize: '11px', color: upgraded ? '#48bb78' : deteriorated ? '#fc8181' : '#718096' }}>
                   {upgraded ? '↑ upgraded' : deteriorated ? '↓ deteriorated' : ''}
                   {` (was ${item.scoreAtAdd}/8)`}
                 </span>
               )}
-
-              {/* Date info */}
               <span style={{ fontSize: '11px', color: '#4a5568' }}>
                 Added {shortDate(item.addedAt)}
                 {item.lastChecked && ` · checked ${relativeTime(item.lastChecked)}`}
               </span>
-
               {isError && (
                 <span style={{ fontSize: '11px', color: '#fc8181' }}>⚠ refresh failed</span>
               )}
-
-              {/* Actions */}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', flexShrink: 0 }}>
                 <button
                   onClick={() => onAnalyze(item.ticker)}
@@ -496,8 +527,344 @@ function RecoChip({ rec }) {
   )
 }
 
-// ─── Main tab ─────────────────────────────────────────────────────────────────
-export default function StockTriggersTab() {
+// ─── Top Rated scanner ────────────────────────────────────────────────────────
+function TopRatedCard({ stock, onAnalyze }) {
+  const cfg = ACTION_CONFIG[stock.action] || ACTION_CONFIG['WATCH']
+  const mc = stock.monte_carlo || {}
+  const prob = mc.prob_undervalued_pct
+
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: '10px', padding: '16px 18px',
+      display: 'flex', alignItems: 'flex-start', gap: '14px', flexWrap: 'wrap',
+    }}>
+      {/* Score circle */}
+      <div style={{ textAlign: 'center', flexShrink: 0 }}>
+        <div style={{
+          width: '52px', height: '52px', borderRadius: '50%',
+          background: cfg.badge, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+        }}>
+          <span style={{ fontSize: '20px', fontWeight: 900, color: cfg.badgeText, lineHeight: 1 }}>{stock.score}</span>
+          <span style={{ fontSize: '10px', color: cfg.badgeText, opacity: 0.8 }}>/8</span>
+        </div>
+      </div>
+
+      {/* Main info */}
+      <div style={{ flex: 1, minWidth: '200px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '18px', fontWeight: 900, color: '#e2e8f0' }}>{stock.ticker}</span>
+          {stock.name && stock.name !== stock.ticker && (
+            <span style={{ fontSize: '12px', color: '#718096' }}>{stock.name}</span>
+          )}
+          <span style={{
+            padding: '2px 8px', fontSize: '11px', fontWeight: 700, borderRadius: '4px',
+            background: cfg.badge, color: cfg.badgeText,
+          }}>
+            {cfg.icon} {stock.action}
+          </span>
+          {stock.blocked && (
+            <span style={{ padding: '2px 8px', fontSize: '10px', color: '#ed8936', border: '1px solid #c05621', borderRadius: '4px' }}>
+              ⛔ Earnings in {stock.earnings_days}d
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', fontSize: '12px', color: '#a0aec0', marginBottom: '8px' }}>
+          {stock.current_price != null && <span>Price: <strong style={{ color: '#e2e8f0' }}>${stock.current_price.toLocaleString()}</strong></span>}
+          {stock.market_cap_b != null && <span>Mkt Cap: <strong style={{ color: '#e2e8f0' }}>${stock.market_cap_b}B</strong></span>}
+          {stock.revenue_growth_pct != null && <span>Rev Growth: <strong style={{ color: stock.revenue_growth_pct > 0 ? '#68d391' : '#fc8181' }}>{stock.revenue_growth_pct > 0 ? '+' : ''}{stock.revenue_growth_pct}%</strong></span>}
+          {stock.dcf_base_upside != null && <span>Base Upside: <strong style={{ color: stock.dcf_base_upside > 0 ? '#68d391' : '#fc8181' }}>{stock.dcf_base_upside > 0 ? '+' : ''}{stock.dcf_base_upside}%</strong></span>}
+          {prob != null && <span>MC: <strong style={{ color: prob >= 85 ? '#68d391' : prob >= 70 ? '#fbd38d' : '#a0aec0' }}>{prob}%</strong></span>}
+        </div>
+
+        {/* Mini breakdown */}
+        {stock.breakdown && (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {[
+              { key: 'monte_carlo', label: 'MC' },
+              { key: 'ma', label: 'MA' },
+              { key: 'earnings', label: 'Earn' },
+              { key: 'bear', label: 'Bear' },
+              { key: 'base', label: 'Base' },
+            ].map(({ key, label }) => {
+              const item = stock.breakdown[key] || {}
+              const earned = item.earned
+              const dotColor = earned === null ? '#4a5568' : earned === item.max ? '#68d391' : earned > 0 ? '#fbd38d' : '#fc8181'
+              return (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                  <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: dotColor }} />
+                  <span style={{ fontSize: '10px', color: '#718096' }}>{label}</span>
+                  <span style={{ fontSize: '10px', color: dotColor, fontWeight: 700 }}>
+                    {earned === null ? '—' : `${earned}/${item.max}`}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={() => onAnalyze(stock.ticker)}
+        style={{
+          padding: '7px 16px', background: '#2b6cb0', color: '#fff',
+          border: 'none', borderRadius: '7px', cursor: 'pointer',
+          fontSize: '12px', fontWeight: 600, flexShrink: 0, alignSelf: 'flex-start',
+        }}
+      >
+        Full Analysis →
+      </button>
+    </div>
+  )
+}
+
+function NearTriggerCard({ stock, onAnalyze }) {
+  return (
+    <div style={{
+      background: '#1a1f2e', border: '1px solid #2d3748',
+      borderRadius: '10px', padding: '14px 16px',
+      display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap',
+    }}>
+      <div style={{
+        width: '40px', height: '40px', borderRadius: '50%',
+        background: '#b7791f', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>
+        <span style={{ fontSize: '16px', fontWeight: 900, color: '#fefcbf', lineHeight: 1 }}>{stock.score}</span>
+        <span style={{ fontSize: '9px', color: '#fefcbf', opacity: 0.8 }}>/8</span>
+      </div>
+
+      <div style={{ flex: 1, minWidth: '150px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+          <span style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0' }}>{stock.ticker}</span>
+          {stock.name && stock.name !== stock.ticker && (
+            <span style={{ fontSize: '11px', color: '#718096' }}>{stock.name}</span>
+          )}
+        </div>
+        {stock.near_trigger_message && (
+          <div style={{ fontSize: '12px', color: '#fbd38d' }}>
+            ⚡ {stock.near_trigger_message}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={() => onAnalyze(stock.ticker)}
+        style={{
+          padding: '5px 14px', background: 'transparent', color: '#90cdf4',
+          border: '1px solid #2b6cb0', borderRadius: '6px', cursor: 'pointer',
+          fontSize: '11px', fontWeight: 600, flexShrink: 0,
+        }}
+      >
+        Analyze →
+      </button>
+    </div>
+  )
+}
+
+function TopRatedTab({ onAnalyze }) {
+  const [data, setData] = useState(null)
+  const [status, setStatus] = useState(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const pollRef = useRef(null)
+
+  const fetchResults = async () => {
+    try {
+      const resp = await fetch(`${API}/api/top-rated/results`)
+      const body = await resp.json().catch(() => ({}))
+      if (body.scanning) {
+        startPolling()
+      } else {
+        setData(body)
+        stopPolling()
+      }
+    } catch (e) {
+      console.error('Top rated fetch error', e)
+    }
+  }
+
+  const fetchStatus = async () => {
+    try {
+      const resp = await fetch(`${API}/api/top-rated/status`)
+      const body = await resp.json().catch(() => ({}))
+      setStatus(body)
+      if (body.status === 'complete' || body.status === 'error' || !body.status) {
+        stopPolling()
+        if (body.status === 'complete') fetchResults()
+      }
+    } catch {}
+  }
+
+  const startPolling = () => {
+    if (pollRef.current) return
+    pollRef.current = setInterval(fetchStatus, 3000)
+  }
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  useEffect(() => {
+    fetchResults()
+    fetchStatus()
+    return () => stopPolling()
+  }, []) // eslint-disable-line
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setData(null)
+    try {
+      await fetch(`${API}/api/top-rated/refresh`, { method: 'POST' })
+      startPolling()
+    } catch {}
+    setRefreshing(false)
+  }
+
+  const isRunning = status?.status === 'running'
+  const phase = status?.phase || ''
+  const phasePct = isRunning ? (
+    phase === 'stage1_price_volume' ? 10 :
+    phase === 'stage1_fundamentals' ? (10 + ((status?.current || 0) / Math.max(status?.total || 1, 1)) * 40) :
+    phase === 'stage2_scoring' ? (50 + ((status?.current || 0) / Math.max(status?.total || 1, 1)) * 45) :
+    95
+  ) : 0
+
+  const phaseLabel = {
+    init: 'Initializing…',
+    stage1_price_volume: 'Stage 1 · Fetching price & volume…',
+    stage1_fundamentals: `Stage 1 · Fetching fundamentals… (${status?.current || 0}/${status?.total || '?'})`,
+    stage2_scoring: `Stage 2 · Scoring… ${status?.current_ticker ? `· ${status.current_ticker}` : ''} (${status?.current || 0}/${status?.total || '?'})`,
+    done: 'Complete',
+  }[phase] || phase
+
+  return (
+    <div>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <p style={{ fontSize: '13px', color: '#718096', margin: '0 0 4px' }}>
+            S&P 500 + Nasdaq 100 · Two-stage funnel · 7/8 trigger score required
+          </p>
+          {data?.scanned_at && (
+            <div style={{ fontSize: '11px', color: '#4a5568' }}>
+              Last scan: {relativeTime(data.scanned_at)}
+              {data.universe_count && ` · ${data.universe_count} tickers → ${data.stage1b_survivors} passed filters → ${data.stage2_scored} scored`}
+            </div>
+          )}
+          {status?.last_cached_at && !data?.scanned_at && (
+            <div style={{ fontSize: '11px', color: '#4a5568' }}>
+              Cache: {relativeTime(status.last_cached_at)}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRunning || refreshing}
+          style={{
+            padding: '7px 16px',
+            background: isRunning || refreshing ? '#2d3748' : '#1a3a2a',
+            color: isRunning || refreshing ? '#718096' : '#68d391',
+            border: `1px solid ${isRunning || refreshing ? '#2d3748' : '#2f855a'}`,
+            borderRadius: '7px', cursor: isRunning || refreshing ? 'not-allowed' : 'pointer',
+            fontSize: '12px', fontWeight: 600,
+          }}
+        >
+          {isRunning ? '⟳ Scanning…' : '⟳ Refresh Scan'}
+        </button>
+      </div>
+
+      {/* Progress bar */}
+      {isRunning && (
+        <div style={{ marginBottom: '20px' }}>
+          <div style={{ fontSize: '12px', color: '#fbd38d', marginBottom: '6px' }}>{phaseLabel}</div>
+          <div style={{ height: '6px', background: '#1a1f2e', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{
+              width: `${phasePct}%`, height: '100%',
+              background: 'linear-gradient(90deg, #276749, #48bb78)',
+              borderRadius: '3px', transition: 'width 0.5s ease',
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Status error */}
+      {status?.status === 'error' && (
+        <div style={{ color: '#fc8181', padding: '12px 16px', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>
+          Scan error: {status.error}
+        </div>
+      )}
+
+      {/* No data yet */}
+      {!data && !isRunning && !status?.error && (
+        <div style={{ color: '#4a5568', textAlign: 'center', padding: '60px 24px', fontSize: '13px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>⭐</div>
+          No scan results yet. Click <strong style={{ color: '#68d391' }}>Refresh Scan</strong> to run the first scan.
+          <br /><span style={{ fontSize: '11px', marginTop: '8px', display: 'block' }}>Scans run automatically at 10 AM Eastern on trading days.</span>
+        </div>
+      )}
+
+      {/* Results */}
+      {data && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {/* Top Rated section */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#48bb78', letterSpacing: '0.06em' }}>
+                ⭐ TOP RATED — 7/8 TRIGGER SCORE
+              </span>
+              <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.top_rated?.length || 0} stocks)</span>
+            </div>
+            {data.top_rated?.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {data.top_rated.map(s => (
+                  <TopRatedCard key={s.ticker} stock={s} onAnalyze={t => onAnalyze(t)} />
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: '#4a5568', padding: '20px 16px', background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', fontSize: '13px', textAlign: 'center' }}>
+                No stocks reached 7/8 this scan. Check Near Trigger for close candidates.
+              </div>
+            )}
+          </div>
+
+          {/* Near Trigger section */}
+          {data.near_trigger?.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d', letterSpacing: '0.06em' }}>
+                  ⚡ NEAR TRIGGER — 6/8 (one criterion away)
+                </span>
+                <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.near_trigger.length})</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {data.near_trigger.map(s => (
+                  <NearTriggerCard key={s.ticker} stock={s} onAnalyze={t => onAnalyze(t)} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Scan stats */}
+          <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px' }}>
+            <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>SCAN EFFICIENCY</div>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '12px' }}>
+              <span>Universe: <strong style={{ color: '#e2e8f0' }}>{data.universe_count}</strong></span>
+              <span>After price/vol: <strong style={{ color: '#e2e8f0' }}>{data.stage1a_survivors}</strong></span>
+              <span>After fundamentals: <strong style={{ color: '#e2e8f0' }}>{data.stage1b_survivors}</strong></span>
+              <span>Scored: <strong style={{ color: '#e2e8f0' }}>{data.stage2_scored}</strong></span>
+              <span>MC skipped: <strong style={{ color: '#4a5568' }}>{data.skipped_mc_count}</strong></span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Analysis tab ─────────────────────────────────────────────────────────────
+function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
   const [ticker, setTicker] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -505,111 +872,21 @@ export default function StockTriggersTab() {
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [portfolio, setPortfolio] = useState(loadPortfolio)
 
-  // Watchlist state
-  const [watchlist, setWatchlist] = useState(loadWatchlist)
-  const [refreshProgress, setRefreshProgress] = useState({})    // {ticker: 'loading'|'done'|'error'}
-  const [upgrades, setUpgrades] = useState([])                   // [{ticker, action, score}]
-  const [dismissedUpgrades, setDismissedUpgrades] = useState([]) // [ticker]
-  const didAutoRefresh = useRef(false)
-
-  // Auto-refresh stale watchlist items on mount
+  // Listen for cross-tab navigation (Top Rated / Watchlist → Analysis)
   useEffect(() => {
-    if (didAutoRefresh.current) return
-    didAutoRefresh.current = true
-    const stale = watchlist.filter(isStale)
-    if (stale.length > 0) refreshItems(stale)
+    const handler = e => {
+      if (e.detail) {
+        setTicker(e.detail)
+        analyze(e.detail)
+      }
+    }
+    window.addEventListener('analyze-ticker', handler)
+    return () => window.removeEventListener('analyze-ticker', handler)
   }, []) // eslint-disable-line
 
-  async function refreshItems(items) {
-    const prog = {}
-    items.forEach(it => { prog[it.ticker] = 'loading' })
-    setRefreshProgress(prev => ({ ...prev, ...prog }))
-
-    const newUpgrades = []
-
-    await Promise.allSettled(items.map(async item => {
-      try {
-        const resp = await fetch(`${API}/api/triggers/${encodeURIComponent(item.ticker)}`)
-        const body = await resp.json().catch(() => ({}))
-        if (!resp.ok) throw new Error(body.detail || `Error ${resp.status}`)
-
-        const prevAction = item.currentAction || item.actionAtAdd
-        const wasWatch = prevAction === 'WATCH'
-        const nowBetter = body.trigger_action === 'SMALL BUY' || body.trigger_action === 'STRONG BUY'
-
-        setWatchlist(prev => {
-          const next = prev.map(w => {
-            if (w.ticker !== item.ticker) return w
-            return {
-              ...w,
-              currentScore: body.trigger_score,
-              currentAction: body.trigger_action,
-              currentBlocked: body.trigger_blocked,
-              upgradedFrom: (wasWatch && nowBetter) ? 'WATCH' : w.upgradedFrom,
-              lastChecked: new Date().toISOString(),
-              refreshError: null,
-            }
-          })
-          saveWatchlist(next)
-          return next
-        })
-
-        if (wasWatch && nowBetter) {
-          newUpgrades.push({ ticker: item.ticker, action: body.trigger_action, score: body.trigger_score })
-        }
-        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'done' }))
-      } catch (e) {
-        setWatchlist(prev => {
-          const next = prev.map(w => w.ticker !== item.ticker ? w : {
-            ...w, lastChecked: new Date().toISOString(), refreshError: e.message,
-          })
-          saveWatchlist(next)
-          return next
-        })
-        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'error' }))
-      }
-    }))
-
-    if (newUpgrades.length) setUpgrades(prev => [...prev, ...newUpgrades])
-  }
-
-  function handleRefreshAll() {
-    refreshItems(watchlist.filter(isStale))
-  }
-
-  function addToWatchlist(r) {
-    setWatchlist(prev => {
-      if (prev.some(w => w.ticker === r.ticker)) return prev
-      const entry = {
-        ticker: r.ticker,
-        scoreAtAdd: r.trigger_score,
-        actionAtAdd: r.trigger_action,
-        addedAt: new Date().toISOString(),
-        currentScore: null,
-        currentAction: null,
-        upgradedFrom: null,
-        lastChecked: null,
-        refreshError: null,
-      }
-      const next = [...prev, entry]
-      saveWatchlist(next)
-      return next
-    })
-  }
-
-  function removeFromWatchlist(sym) {
-    setWatchlist(prev => {
-      const next = prev.filter(w => w.ticker !== sym)
-      saveWatchlist(next)
-      return next
-    })
-    setRefreshProgress(prev => { const n = { ...prev }; delete n[sym]; return n })
-    setUpgrades(prev => prev.filter(u => u.ticker !== sym))
-  }
-
-  function dismissUpgrade(sym) {
-    setDismissedUpgrades(prev => [...prev, sym])
-  }
+  const r = result
+  const inWatchlist = r && watchlist.some(w => w.ticker === r.ticker)
+  const isWatch = r && r.trigger_action === 'WATCH'
 
   async function analyze(t) {
     const sym = (t || ticker).trim().toUpperCase()
@@ -648,40 +925,8 @@ export default function StockTriggersTab() {
 
   function handleKey(e) { if (e.key === 'Enter') analyze() }
 
-  const r = result
-  const inWatchlist = r && watchlist.some(w => w.ticker === r.ticker)
-  const isWatch = r && r.trigger_action === 'WATCH'
-  const visibleUpgrades = upgrades.filter(u => !dismissedUpgrades.includes(u.ticker))
-
   return (
-    <div style={{ maxWidth: '900px' }}>
-      {/* Header */}
-      <div style={{ marginBottom: '20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#e2e8f0', margin: '0 0 4px' }}>
-          🎯 Stock Triggers
-        </h2>
-        <p style={{ fontSize: '13px', color: '#718096', margin: 0 }}>
-          DCF · Monte Carlo · 50-day MA crossover · Earnings calendar · 0–8 point trigger score
-        </p>
-      </div>
-
-      {/* Upgrade alerts */}
-      <UpgradeAlerts
-        upgrades={visibleUpgrades}
-        onAnalyze={sym => { setTicker(sym); analyze(sym) }}
-        onDismiss={dismissUpgrade}
-      />
-
-      {/* Watchlist */}
-      <WatchlistSection
-        watchlist={watchlist}
-        refreshProgress={refreshProgress}
-        onAnalyze={sym => { setTicker(sym); analyze(sym) }}
-        onRemove={removeFromWatchlist}
-        onRefreshAll={handleRefreshAll}
-      />
-
-      {/* Recently analyzed portfolio */}
+    <div>
       <PortfolioSummary
         portfolio={portfolio}
         selected={selectedTicker}
@@ -689,7 +934,6 @@ export default function StockTriggersTab() {
         onRemove={removeFromPortfolio}
       />
 
-      {/* Search */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '28px', alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           value={ticker}
@@ -736,8 +980,6 @@ export default function StockTriggersTab() {
 
       {r && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-          {/* Stock header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <div style={{ fontSize: '26px', fontWeight: 800, color: '#90cdf4' }}>{r.ticker}</div>
@@ -746,7 +988,6 @@ export default function StockTriggersTab() {
             <RecoChip rec={r.recommendation} />
           </div>
 
-          {/* Trigger badge */}
           <TriggerBadge
             score={r.trigger_score}
             action={r.trigger_action}
@@ -754,7 +995,6 @@ export default function StockTriggersTab() {
             suggestedSize={r.suggested_position_size}
           />
 
-          {/* Watch-it button — only shown for WATCH scores (2-4) */}
           {isWatch && (
             <div style={{
               display: 'flex', alignItems: 'center', gap: '12px',
@@ -766,7 +1006,7 @@ export default function StockTriggersTab() {
                   👁 This stock is a WATCH — not ready yet
                 </div>
                 <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>
-                  Add to your watchlist. When it scores 5+ (SMALL BUY or STRONG BUY) you'll get an alert at the top of this tab.
+                  Add to your watchlist. When it scores 5+ (SMALL BUY or STRONG BUY) you'll get an alert at the top of the Watchlist tab.
                 </div>
               </div>
               {inWatchlist ? (
@@ -790,10 +1030,8 @@ export default function StockTriggersTab() {
             </div>
           )}
 
-          {/* Score breakdown */}
           <ScoreBreakdown breakdown={r.trigger_breakdown} />
 
-          {/* MA + Bear side-by-side */}
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '240px' }}>
               <MaStatusCard ma50={r.ma50} aboveMa={r.above_ma} crossover5d={r.crossover_5d} currentPrice={r.current_price} />
@@ -803,7 +1041,6 @@ export default function StockTriggersTab() {
             </div>
           </div>
 
-          {/* Earnings warning */}
           {r.earnings_days != null && r.earnings_days <= 14 && (
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '12px 16px', background: '#2d1800', border: '1px solid #c05621', borderRadius: '8px' }}>
               <span style={{ fontSize: '18px', lineHeight: 1, flexShrink: 0 }}>⚠️</span>
@@ -818,7 +1055,6 @@ export default function StockTriggersTab() {
             </div>
           )}
 
-          {/* DCF section */}
           <div style={{ borderTop: '1px solid #2d3748', paddingTop: '20px' }}>
             <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '16px' }}>
               FULL DCF ANALYSIS — CAPM WACC · Reverse DCF · Monte Carlo (10,000 simulations)
@@ -885,6 +1121,171 @@ export default function StockTriggersTab() {
               </div>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main tab ─────────────────────────────────────────────────────────────────
+export default function StockTriggersTab() {
+  const [activeSubTab, setActiveSubTab] = useState('analysis')
+
+  const [watchlist, setWatchlist] = useState(loadWatchlist)
+  const [refreshProgress, setRefreshProgress] = useState({})
+  const [upgrades, setUpgrades] = useState([])
+  const [dismissedUpgrades, setDismissedUpgrades] = useState([])
+  const didAutoRefresh = useRef(false)
+
+  useEffect(() => {
+    if (didAutoRefresh.current) return
+    didAutoRefresh.current = true
+    const stale = watchlist.filter(isStale)
+    if (stale.length > 0) refreshItems(stale)
+  }, []) // eslint-disable-line
+
+  async function refreshItems(items) {
+    const prog = {}
+    items.forEach(it => { prog[it.ticker] = 'loading' })
+    setRefreshProgress(prev => ({ ...prev, ...prog }))
+
+    const newUpgrades = []
+
+    await Promise.allSettled(items.map(async item => {
+      try {
+        const resp = await fetch(`${API}/api/triggers/${encodeURIComponent(item.ticker)}`)
+        const body = await resp.json().catch(() => ({}))
+        if (!resp.ok) throw new Error(body.detail || `Error ${resp.status}`)
+
+        const prevAction = item.currentAction || item.actionAtAdd
+        const wasWatch = prevAction === 'WATCH'
+        const nowBetter = body.trigger_action === 'SMALL BUY' || body.trigger_action === 'STRONG BUY'
+
+        setWatchlist(prev => {
+          const next = prev.map(w => {
+            if (w.ticker !== item.ticker) return w
+            return {
+              ...w,
+              currentScore: body.trigger_score,
+              currentAction: body.trigger_action,
+              currentBlocked: body.trigger_blocked,
+              upgradedFrom: (wasWatch && nowBetter) ? 'WATCH' : w.upgradedFrom,
+              lastChecked: new Date().toISOString(),
+              refreshError: null,
+            }
+          })
+          saveWatchlist(next)
+          return next
+        })
+
+        if (wasWatch && nowBetter) {
+          newUpgrades.push({ ticker: item.ticker, action: body.trigger_action, score: body.trigger_score })
+        }
+        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'done' }))
+      } catch (e) {
+        setWatchlist(prev => {
+          const next = prev.map(w => w.ticker !== item.ticker ? w : {
+            ...w, lastChecked: new Date().toISOString(), refreshError: e.message,
+          })
+          saveWatchlist(next)
+          return next
+        })
+        setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'error' }))
+      }
+    }))
+
+    if (newUpgrades.length) setUpgrades(prev => [...prev, ...newUpgrades])
+  }
+
+  function addToWatchlist(r) {
+    setWatchlist(prev => {
+      if (prev.some(w => w.ticker === r.ticker)) return prev
+      const entry = {
+        ticker: r.ticker,
+        scoreAtAdd: r.trigger_score,
+        actionAtAdd: r.trigger_action,
+        addedAt: new Date().toISOString(),
+        currentScore: null,
+        currentAction: null,
+        upgradedFrom: null,
+        lastChecked: null,
+        refreshError: null,
+      }
+      const next = [...prev, entry]
+      saveWatchlist(next)
+      return next
+    })
+  }
+
+  function removeFromWatchlist(sym) {
+    setWatchlist(prev => {
+      const next = prev.filter(w => w.ticker !== sym)
+      saveWatchlist(next)
+      return next
+    })
+    setRefreshProgress(prev => { const n = { ...prev }; delete n[sym]; return n })
+    setUpgrades(prev => prev.filter(u => u.ticker !== sym))
+  }
+
+  function dismissUpgrade(sym) {
+    setDismissedUpgrades(prev => [...prev, sym])
+  }
+
+  const visibleUpgrades = upgrades.filter(u => !dismissedUpgrades.includes(u.ticker))
+
+  // Called from Top Rated or Watchlist to jump to Analysis tab for a ticker
+  function jumpToAnalysis(ticker) {
+    setActiveSubTab('analysis')
+    // Small delay so tab switch renders first
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('analyze-ticker', { detail: ticker }))
+    }, 50)
+  }
+
+  return (
+    <div style={{ maxWidth: '900px' }}>
+      <div style={{ marginBottom: '16px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#e2e8f0', margin: '0 0 4px' }}>
+          🎯 Stock Triggers
+        </h2>
+        <p style={{ fontSize: '13px', color: '#718096', margin: 0 }}>
+          DCF · Monte Carlo · 50-day MA crossover · Earnings calendar · 0–8 point trigger score
+        </p>
+      </div>
+
+      <SubTabs
+        active={activeSubTab}
+        onChange={setActiveSubTab}
+        watchlistCount={watchlist.length}
+        upgradeCount={visibleUpgrades.length}
+      />
+
+      {activeSubTab === 'analysis' && (
+        <AnalysisTab
+          watchlist={watchlist}
+          addToWatchlist={addToWatchlist}
+          removeFromWatchlist={removeFromWatchlist}
+        />
+      )}
+
+      {activeSubTab === 'top_rated' && (
+        <TopRatedTab onAnalyze={jumpToAnalysis} />
+      )}
+
+      {activeSubTab === 'watchlist' && (
+        <div>
+          <UpgradeAlerts
+            upgrades={visibleUpgrades}
+            onAnalyze={ticker => { jumpToAnalysis(ticker) }}
+            onDismiss={dismissUpgrade}
+          />
+          <WatchlistSection
+            watchlist={watchlist}
+            refreshProgress={refreshProgress}
+            onAnalyze={ticker => { jumpToAnalysis(ticker) }}
+            onRemove={removeFromWatchlist}
+            onRefreshAll={() => refreshItems(watchlist.filter(isStale))}
+          />
         </div>
       )}
     </div>

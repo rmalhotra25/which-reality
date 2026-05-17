@@ -277,11 +277,7 @@ def _score_ticker(ticker: str, metrics: dict, snapshot_price: float | None = Non
             dcf_for_score, ma_data, earnings_days
         )
 
-        # Use Polygon snapshot price if available, else estimate from DCF mc/shares
-        current_price = snapshot_price
-        if current_price is None:
-            shares_m = metrics.get("shareOutstanding") or 0
-            current_price = round(mc_val / shares_m, 2) if shares_m > 0 else None
+        current_price = snapshot_price  # from Polygon batch snapshot
 
         return {
             "ticker": ticker,
@@ -314,7 +310,7 @@ def _near_trigger_message(r: dict) -> str:
     bd = r.get("breakdown") or {}
 
     mc_bd = bd.get("monte_carlo") or {}
-    if mc_bd.get("earned", -1) == 0:
+    if mc_bd.get("earned", 0) < 2:
         prob = (r.get("monte_carlo") or {}).get("prob_undervalued_pct")
         if prob is not None:
             return f"Needs MC ≥85% (currently {prob}%)"

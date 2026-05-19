@@ -1066,7 +1066,21 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
                 <MetricPill label="Price" value={r.current_price != null ? `$${r.current_price}` : '—'} />
                 <MetricPill label="Mkt Cap" value={`$${r.market_cap_b}B`} />
                 <MetricPill label="Rev Growth" value={`${r.revenue_growth_pct}%`} />
-                <MetricPill label="Gross Margin" value={`${r.gross_margin_pct}%`} />
+                {r.gross_margin_note === 'reported' ? (
+                  <MetricPill label="Gross Margin" value={`${r.gross_margin_pct}%`} />
+                ) : (
+                  <div
+                    title="⚠️ Gross margin data unavailable or unreliable from data source. FCF margin assumptions derived from operating margin and sector benchmarks."
+                    style={{
+                      background: '#0f1117', border: '1px solid #744210',
+                      borderRadius: '6px', padding: '6px 10px', textAlign: 'center',
+                      minWidth: '60px', cursor: 'help',
+                    }}
+                  >
+                    <div style={{ fontSize: '10px', color: '#718096', marginBottom: '2px' }}>Gross Margin</div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d' }}>N/A ⚠</div>
+                  </div>
+                )}
                 <MetricPill label="FCF Margin" value={`${r.fcf_margin_pct}%`} />
                 <MetricPill label="P/E" value={r.pe ?? '—'} />
                 <MetricPill label="P/S" value={r.ps ?? '—'} />

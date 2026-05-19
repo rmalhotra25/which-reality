@@ -224,6 +224,17 @@ def analyze_trigger(ticker: str) -> dict:
     dcf = dcf_analyze(ticker)
 
     ma_data = _fetch_ma_data(ticker)
+
+    # Re-anchor above_ma to the Finnhub current price (same price shown to user).
+    # Polygon historical closes can lag intraday moves; this keeps the MA badge
+    # and the score consistent with the price displayed on screen.
+    if ma_data and dcf.get("current_price"):
+        current_price = dcf["current_price"]
+        ma_data["above_ma"] = current_price > ma_data["ma50"]
+        # Crossover is invalid if price has since fallen back below MA
+        if not ma_data["above_ma"]:
+            ma_data["crossover_5d"] = False
+
     try:
         earnings_days = get_earnings_this_month(ticker)
     except Exception:

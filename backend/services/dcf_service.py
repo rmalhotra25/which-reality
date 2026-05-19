@@ -66,10 +66,28 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "net_margin, and sector benchmarks instead."
     )
 
+    sector = profile.get("finnhubIndustry", "Unknown")
+    debt_equity = (
+        metrics.get("debtToEquityAnnual") or
+        metrics.get("totalDebt/totalEquityAnnual") or
+        metrics.get("longTermDebt/totalEquityAnnual")
+    )
+
+    # Temporary debug — remove after fix confirmed
+    print(f"=== WACC DEBUG for {ticker} ===")
+    print(f"d['debt_equity']: {debt_equity}")
+    print(f"sector: {sector}")
+    print(f"Relevant Finnhub metric keys:")
+    relevant_keys = {k: v for k, v in metrics.items()
+                     if any(term in k.lower()
+                     for term in ['debt', 'equity', 'leverage'])}
+    print(json.dumps(relevant_keys, indent=2))
+    print(f"=== END WACC DEBUG ===")
+
     return {
         "ticker": ticker,
         "name": profile.get("name", ticker),
-        "sector": profile.get("finnhubIndustry", "Unknown"),
+        "sector": sector,
         "market_cap": mc,
         "shares_outstanding": profile.get("shareOutstanding"),
         "beta": metrics.get("beta"),
@@ -84,11 +102,7 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "ps": metrics.get("psTTM"),
         "roe": metrics.get("roeTTM"),
         "roic": roic,
-        "debt_equity": (
-            metrics.get("debtToEquityAnnual") or
-            metrics.get("totalDebt/totalEquityAnnual") or
-            metrics.get("longTermDebt/totalEquityAnnual")
-        ),
+        "debt_equity": debt_equity,
         "current_ratio": metrics.get("currentRatioAnnual"),
         "return_1y": metrics.get("52WeekPriceReturnDaily"),
         "return_6m": metrics.get("26WeekPriceReturnDaily"),

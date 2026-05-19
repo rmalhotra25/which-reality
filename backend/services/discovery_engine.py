@@ -198,11 +198,39 @@ def _add_derived_signals(fundamentals: list[dict]) -> None:
         d["earnings_yield"] = 1.0 / pe if 2 < pe < 200 else None
 
 
-def _wacc_from_beta(beta) -> float:
-    """CAPM-derived discount rate: Rf=4.5%, ERP=5.5%, clamped to [7%, 20%]."""
-    if not beta or beta <= 0:
-        return 0.115   # default 11.5% when beta unavailable
-    return max(0.07, min(0.20, 0.045 + float(beta) * 0.055))
+_RF = 0.045
+_ERP = 0.055
+
+_FINANCIAL_SECTORS = {
+    "Banking", "Banks", "Insurance",
+    "Financial Services", "Capital Markets",
+    "Diversified Financial Services",
+    "Consumer Finance", "Mortgage Finance",
+}
+
+
+def _wacc_from_beta(beta, debt_equity_ratio=0, sector=None) -> float:
+    """
+    CAPM cost of equity with optional debt adjustment.
+    For non-financial companies with D/E > 0.5, blends in after-tax cost of debt.
+    Clamped to [5.5%, 15%].
+    """
+    beta = beta or 1.0
+    cost_of_equity = _RF + float(beta) * _ERP
+
+    is_financial = sector in _FINANCIAL_SECTORS
+    has_real_leverage = debt_equity_ratio > 0.5 and not is_financial
+
+    if has_real_leverage:
+        weight_equity = 1 / (1 + debt_equity_ratio)
+        weight_debt = debt_equity_ratio / (1 + debt_equity_ratio)
+        cost_of_debt = 0.04  # investment-grade assumption
+        tax_rate = 0.21
+        wacc = (weight_equity * cost_of_equity +
+                weight_debt * cost_of_debt * (1 - tax_rate))
+        return max(0.055, min(wacc, 0.15))
+
+    return max(0.055, min(cost_of_equity, 0.15))
 
 
 def _reverse_dcf(market_cap: float, revenue_0: float, fcf_0: float,

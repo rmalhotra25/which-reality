@@ -53,6 +53,19 @@ def _build_fundamentals(ticker: str) -> dict | None:
         metrics.get("revenueGrowth1Q")
     )
 
+    gross_margin_raw = metrics.get("grossMarginTTM")
+    gross_margin_reliable = (
+        gross_margin_raw is not None and
+        gross_margin_raw > 0 and
+        gross_margin_raw < 95
+    )
+    gross_margin_note = (
+        "reported" if gross_margin_reliable else
+        "unreliable — Finnhub returned null or zero. "
+        "Derive FCF margin from operating_margin, "
+        "net_margin, and sector benchmarks instead."
+    )
+
     return {
         "ticker": ticker,
         "name": profile.get("name", ticker),
@@ -62,7 +75,8 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "beta": metrics.get("beta"),
         "revenue_growth": metrics.get("revenueGrowthTTMYoy"),
         "revenue_growth_q": rev_growth_q,
-        "gross_margin": metrics.get("grossMarginTTM"),
+        "gross_margin": gross_margin_raw,
+        "gross_margin_note": gross_margin_note,
         "operating_margin": metrics.get("operatingMarginTTM"),
         "net_margin": metrics.get("netProfitMarginTTM"),
         "fcf_margin": fcf_margin,
@@ -94,12 +108,15 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
             diff = rev_q - rev_g
             accel = f" (recent quarter: {round(rev_q, 1)}%, {'accelerating ↑' if diff > 3 else 'decelerating ↓' if diff < -3 else 'stable'})"
 
+        gross_margin_note = d.get("gross_margin_note", "reported")
+
         profile_str = (
             f"Company: {d['name']} ({d['ticker']})\n"
             f"Sector: {d['sector']}\n"
             f"Market Cap: ${round((d.get('market_cap') or 0) / 1000, 1)}B\n"
             f"Revenue Growth (TTM): {round(rev_g, 1)}%{accel}\n"
             f"Gross Margin: {round(d.get('gross_margin') or 0, 1)}%\n"
+            f"gross_margin_data_quality: {gross_margin_note}\n"
             f"Operating Margin: {round(d.get('operating_margin') or 0, 1)}%\n"
             f"Net Margin: {round(d.get('net_margin') or 0, 1)}%\n"
             f"FCF Margin: {round(max((d.get('fcf_margin') or 0) / 100, fcf_0) * 100, 1)}%\n"
@@ -122,7 +139,11 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
             "Think about: What is the realistic TAM growth? Can this company "
             "take/defend share? Where will margins land at maturity given "
             "competition and cost structure? What could go wrong? "
-            "Respond ONLY with a valid JSON object — no prose, no markdown."
+            "Respond ONLY with a valid JSON object — no prose, no markdown. "
+            "When gross_margin_data_quality indicates the gross margin is unreliable, "
+            "ignore the gross margin field entirely. Derive FCF margin assumptions from "
+            "operating_margin, net_margin, and your knowledge of the sector's typical "
+            "capital structure and capex intensity."
         )
 
         user = (
@@ -264,8 +285,12 @@ def analyze(ticker: str) -> dict:
     net_margin = (d.get("net_margin") or 0) / 100
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
-    # Beta-derived WACC
-    dr = _wacc_from_beta(d.get("beta"))
+    # Beta-derived WACC, debt-adjusted for non-financial companies with D/E > 0.5
+    dr = _wacc_from_beta(
+        beta=d.get("beta"),
+        debt_equity_ratio=d.get("debt_equity") or 0,
+        sector=d.get("sector"),
+    )
     wacc_pct = round(dr * 100, 1)
 
     # Reverse DCF
@@ -318,6 +343,7 @@ def analyze(ticker: str) -> dict:
         "current_price": current_price,
         "revenue_growth_pct": round(d.get("revenue_growth") or 0, 1),
         "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
+        "gross_margin_note": d.get("gross_margin_note", "reported"),
         "net_margin_pct": round(d.get("net_margin") or 0, 1),
         "fcf_margin_pct": round(max((d.get("fcf_margin") or 0) / 100, fcf_0) * 100, 1),
         "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
@@ -374,7 +400,11 @@ def analyze_quant(ticker: str) -> dict:
     net_margin = (d.get("net_margin") or 0) / 100
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
-    dr = _wacc_from_beta(d.get("beta"))
+    dr = _wacc_from_beta(
+        beta=d.get("beta"),
+        debt_equity_ratio=d.get("debt_equity") or 0,
+        sector=d.get("sector"),
+    )
     wacc_pct = round(dr * 100, 1)
     implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
 
@@ -418,6 +448,7 @@ def analyze_quant(ticker: str) -> dict:
         "current_price": current_price,
         "revenue_growth_pct": round(d.get("revenue_growth") or 0, 1),
         "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
+        "gross_margin_note": d.get("gross_margin_note", "reported"),
         "net_margin_pct": round(d.get("net_margin") or 0, 1),
         "fcf_margin_pct": round(max((d.get("fcf_margin") or 0) / 100, fcf_0) * 100, 1),
         "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,

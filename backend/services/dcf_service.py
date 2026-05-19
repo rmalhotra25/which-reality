@@ -68,21 +68,9 @@ def _build_fundamentals(ticker: str) -> dict | None:
 
     sector = profile.get("finnhubIndustry", "Unknown")
     debt_equity = (
-        metrics.get("debtToEquityAnnual") or
         metrics.get("totalDebt/totalEquityAnnual") or
-        metrics.get("longTermDebt/totalEquityAnnual")
+        metrics.get("longTermDebt/equityAnnual")
     )
-
-    # Temporary debug — remove after fix confirmed
-    print(f"=== WACC DEBUG for {ticker} ===")
-    print(f"d['debt_equity']: {debt_equity}")
-    print(f"sector: {sector}")
-    print(f"Relevant Finnhub metric keys:")
-    relevant_keys = {k: v for k, v in metrics.items()
-                     if any(term in k.lower()
-                     for term in ['debt', 'equity', 'leverage'])}
-    print(json.dumps(relevant_keys, indent=2))
-    print(f"=== END WACC DEBUG ===")
 
     return {
         "ticker": ticker,
@@ -310,10 +298,6 @@ def analyze(ticker: str) -> dict:
         sector=d.get("sector"),
     )
     wacc_pct = round(dr * 100, 1)
-    logger.info(
-        "DCF WACC DEBUG %s — beta=%s debt_equity=%s sector=%s wacc=%.1f%% gross_margin_note=%s",
-        ticker, d.get("beta"), d.get("debt_equity"), d.get("sector"), wacc_pct, d.get("gross_margin_note"),
-    )
 
     # Reverse DCF
     implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)

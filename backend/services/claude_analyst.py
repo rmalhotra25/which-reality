@@ -54,6 +54,7 @@ class ClaudeAnalyst:
         msg = self.client.messages.create(
             model=MODEL,
             max_tokens=max_tokens,
+            temperature=0.3,
             system=system,
             messages=[{"role": "user", "content": user}],
         )

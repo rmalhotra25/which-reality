@@ -9,13 +9,11 @@ import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
 import DiscoveryTab from './tabs/DiscoveryTab'
-import DcfTab from './tabs/DcfTab'
 import StockTriggersTab from './tabs/StockTriggersTab'
 
 const TABS = [
   { id: 'pulse',        label: '⚡ Market Pulse' },
   { id: 'discovery',   label: '🔭 Discovery' },
-  { id: 'dcf',         label: '🧮 DCF Valuation' },
   { id: 'triggers',    label: '🎯 Stock Triggers' },
   { id: 'options',     label: '📈 Options Trading' },
   { id: 'wheel',       label: '🔄 Wheel Strategy' },
@@ -125,7 +123,6 @@ export default function App() {
           {activeTab === 'watchlist'    && <WatchlistTab />}
           {activeTab === 'performance'  && <PerformanceTab />}
           {activeTab === 'discovery'    && <DiscoveryTab />}
-          {activeTab === 'dcf'          && <DcfTab />}
           {activeTab === 'triggers'     && <StockTriggersTab />}
         </TabErrorBoundary>
       </main>

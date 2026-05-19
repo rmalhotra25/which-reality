@@ -84,7 +84,11 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "ps": metrics.get("psTTM"),
         "roe": metrics.get("roeTTM"),
         "roic": roic,
-        "debt_equity": metrics.get("debtToEquityAnnual"),
+        "debt_equity": (
+            metrics.get("debtToEquityAnnual") or
+            metrics.get("totalDebt/totalEquityAnnual") or
+            metrics.get("longTermDebt/totalEquityAnnual")
+        ),
         "current_ratio": metrics.get("currentRatioAnnual"),
         "return_1y": metrics.get("52WeekPriceReturnDaily"),
         "return_6m": metrics.get("26WeekPriceReturnDaily"),
@@ -292,6 +296,10 @@ def analyze(ticker: str) -> dict:
         sector=d.get("sector"),
     )
     wacc_pct = round(dr * 100, 1)
+    logger.info(
+        "DCF WACC DEBUG %s — beta=%s debt_equity=%s sector=%s wacc=%.1f%% gross_margin_note=%s",
+        ticker, d.get("beta"), d.get("debt_equity"), d.get("sector"), wacc_pct, d.get("gross_margin_note"),
+    )
 
     # Reverse DCF
     implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)

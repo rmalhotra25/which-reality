@@ -632,12 +632,14 @@ class StockDataService:
                 near_price=near_price, strike_pct_range=0.25,
             )
             if not snapshots:
+                logger.warning("_polygon_options_chain: no snapshots returned for %s (near_price=%s, dte_max=%s)", ticker, near_price, dte_max)
                 return [], None
 
             today = date.today()
             # Polygon often doesn't populate underlying_asset.price — use near_price as seed
             underlying_price = near_price or None
             result = []
+            skipped_dte = skipped_mid = skipped_delta = skipped_exc = 0
 
             for snap in snapshots:
                 if not snap.details:
@@ -648,6 +650,7 @@ class StockDataService:
                     exp = str(snap.details.expiration_date)
                     dte = (date.fromisoformat(exp) - today).days
                     if dte < dte_min or dte > dte_max:
+                        skipped_dte += 1
                         continue
                     strike = float(snap.details.strike_price or 0)
                     if strike <= 0:
@@ -667,6 +670,7 @@ class StockDataService:
                     if mid <= 0 and snap.day and snap.day.close:
                         mid = float(snap.day.close)
                     if mid <= 0:
+                        skipped_mid += 1
                         continue
 
                     iv_pct = round(float(snap.implied_volatility or 0) * 100, 1)
@@ -690,6 +694,7 @@ class StockDataService:
                             theta_holder = -(_bs_put_theta_daily(underlying_price, strike, iv_dec, T) or 0)
 
                     if delta is None:
+                        skipped_delta += 1
                         continue
 
                     # theta_seller = income to the seller per share per day (positive)
@@ -712,11 +717,16 @@ class StockDataService:
                         "open_interest": int(snap.open_interest or 0),
                     })
                 except Exception:
+                    skipped_exc += 1
                     continue
 
+            logger.warning(
+                "_polygon_options_chain %s: kept=%d skipped(dte=%d mid=%d delta=%d exc=%d) underlying_price=%s",
+                ticker, len(result), skipped_dte, skipped_mid, skipped_delta, skipped_exc, underlying_price,
+            )
             return result, underlying_price
         except Exception as e:
-            logger.debug("_polygon_options_chain failed for %s: %s", ticker, e)
+            logger.warning("_polygon_options_chain failed for %s: %s", ticker, e)
             return [], None
 
     def get_put_tiers(self, ticker: str) -> dict | None:

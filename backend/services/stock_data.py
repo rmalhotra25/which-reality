@@ -917,8 +917,80 @@ class StockDataService:
                 "unlikely": _best_near_delta(0.16),
             }
         except Exception as e:
-            logger.warning("get_put_tiers failed for %s: %s", ticker, e)
-            return None
+            logger.warning("get_put_tiers yfinance path failed for %s: %s", ticker, e)
+
+        # --- Public.com fallback ---
+        try:
+            from services.public_client import get_option_expirations, get_option_chain
+            from datetime import date as _date
+            today = _date.today()
+            expirations = get_option_expirations(ticker)
+            if expirations:
+                target_expiry = None
+                for exp in sorted(expirations):
+                    dte_check = (_date.fromisoformat(exp) - today).days
+                    if 14 <= dte_check <= 45:
+                        target_expiry = exp
+                        break
+                if not target_expiry:
+                    target_expiry = sorted(expirations)[0]
+
+                price = _live_price
+                dte = (_date.fromisoformat(target_expiry) - today).days
+                puts = get_option_chain(ticker, target_expiry, "put")
+                puts = [p for p in puts if p.get("strike", 0) > 0 and p.get("mid", 0) > 0]
+
+                if puts and price and dte > 0:
+                    atm = min(puts, key=lambda p: abs(p["strike"] - price))
+                    atm_iv_pct = atm.get("iv_pct", 0)
+
+                    def _pub_tier(target_delta_abs: float) -> dict | None:
+                        valid = [p for p in puts if abs(p.get("delta", 0)) > 0]
+                        if not valid:
+                            return None
+                        best = min(valid, key=lambda p: abs(abs(p["delta"]) - target_delta_abs))
+                        if abs(abs(best["delta"]) - target_delta_abs) > 0.15:
+                            return None
+                        mid = best["mid"]
+                        strike = best["strike"]
+                        delta_abs = round(abs(best["delta"]), 2)
+                        theta = best.get("theta", 0) or 0
+                        breakeven = round(strike - mid, 2)
+                        drop_pct = round((price - breakeven) / price * 100, 1)
+                        ann_return = round((mid / strike) * (365 / dte) * 100, 1) if strike > 0 else None
+                        return {
+                            "strike": strike,
+                            "expiry": target_expiry,
+                            "dte": dte,
+                            "bid": best.get("bid", mid),
+                            "ask": best.get("ask", mid),
+                            "mid_premium": mid,
+                            "premium_per_contract": round(mid * 100, 2),
+                            "iv_pct": best.get("iv_pct", 0),
+                            "delta_abs": delta_abs,
+                            "assignment_chance_pct": round(delta_abs * 100),
+                            "daily_income_per_contract": round(abs(theta) * 100, 2) if theta else None,
+                            "breakeven": breakeven,
+                            "drop_to_breakeven_pct": drop_pct,
+                            "annualized_return_pct": ann_return,
+                            "volume": best.get("volume", 0),
+                            "open_interest": best.get("open_interest", 0),
+                        }
+
+                    return {
+                        "current_price": round(price, 2),
+                        "expiry": target_expiry,
+                        "dte": dte,
+                        "atm_iv_pct": atm_iv_pct,
+                        "data_source": "public_com",
+                        "likely": _pub_tier(0.45),
+                        "moderate": _pub_tier(0.30),
+                        "unlikely": _pub_tier(0.16),
+                    }
+        except Exception as e:
+            logger.warning("get_put_tiers Public.com path failed for %s: %s", ticker, e)
+
+        return None
 
     def snap_put_strike(self, ticker: str, suggested_strike: float, prefer_dte: tuple = (14, 45)) -> dict | None:
         """

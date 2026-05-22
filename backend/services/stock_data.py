@@ -661,6 +661,11 @@ class StockDataService:
                         mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
                     if mid <= 0 and snap.last_trade:
                         mid = float(snap.last_trade.price or 0)
+                    # Market-closed fallbacks: Polygon fair_market_value then prior day close
+                    if mid <= 0 and snap.fair_market_value:
+                        mid = float(snap.fair_market_value)
+                    if mid <= 0 and snap.day and snap.day.close:
+                        mid = float(snap.day.close)
                     if mid <= 0:
                         continue
 
@@ -803,7 +808,7 @@ class StockDataService:
                     "unlikely": _poly_tier(0.16),
                 }
         except Exception as e:
-            logger.debug("get_put_tiers Polygon path failed for %s: %s", ticker, e)
+            logger.warning("get_put_tiers Polygon path failed for %s: %s", ticker, e)
 
         # --- yfinance fallback ---
         if not _YF_AVAILABLE:

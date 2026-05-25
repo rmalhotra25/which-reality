@@ -178,7 +178,7 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
             '"platform_lock_in":"moderate","tam_expanding":"yes","network_effects":"no"}'
         )
 
-        raw = analyst._call(system, user, max_tokens=800)
+        raw = analyst._call(system, user, max_tokens=1000)
         clean = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
         clean = re.sub(r'\n?```$', '', clean.strip()).strip()
         parsed = json.loads(clean)
@@ -392,7 +392,7 @@ def analyze(ticker: str) -> dict:
         "platform_lock_in": cp.get("platform_lock_in") if used_claude else None,
         "tam_expanding": cp.get("tam_expanding") if used_claude else None,
         "network_effects": cp.get("network_effects") if used_claude else None,
-        "revenue_growth_annual_pct": round(d.get("revenue_growth_annual") or 0, 1),
+        "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
     }
 
 
@@ -498,5 +498,5 @@ def analyze_quant(ticker: str) -> dict:
         "platform_lock_in": None,
         "tam_expanding": None,
         "network_effects": None,
-        "revenue_growth_annual_pct": round(d.get("revenue_growth_annual") or 0, 1),
+        "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
     }

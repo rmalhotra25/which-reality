@@ -309,110 +309,25 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
 }
 
 // ─── Black-Scholes helpers for Put Selling Card ──────────────────────────────
-function normCdf(x) {
-  const sign = x < 0 ? -1 : 1
-  const t = 1.0 / (1.0 + 0.3275911 * Math.abs(x))
-  const y = 1.0 - (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x))
-  return 0.5 * (1.0 + sign * y)
-}
-
-function bsAssignmentProb(S, K, T, iv) {
-  if (T <= 0 || iv <= 0 || S <= 0 || K <= 0) return 0
-  const d2 = (Math.log(S / K) + (-0.5 * iv * iv) * T) / (iv * Math.sqrt(T))
-  return Math.round(normCdf(-d2) * 1000) / 10
-}
-
-function bsPutPremium(S, K, T, iv, r = 0.045) {
-  if (T <= 0 || iv <= 0 || S <= 0 || K <= 0) return null
-  const d1 = (Math.log(S / K) + (r + 0.5 * iv * iv) * T) / (iv * Math.sqrt(T))
-  const d2 = d1 - iv * Math.sqrt(T)
-  const put = K * Math.exp(-r * T) * normCdf(-d2) - S * normCdf(-d1)
-  const mid = Math.round(Math.max(put, 0.01) * 100) / 100
-  return { mid, low: Math.round(mid * 0.80 * 100) / 100, high: Math.round(mid * 1.20 * 100) / 100 }
-}
-
-function getThirdFriday(year, month) {
-  const firstDay = new Date(year, month, 1)
-  const dow = firstDay.getDay()
-  const daysToFri = (5 - dow + 7) % 7
-  return new Date(year, month, 1 + daysToFri + 14)
-}
-
-function computePutRec(r) {
-  const S = r.current_price
-  if (!S || S < 10) return null
-
-  const bearPrice = r.dcf_bear_price
-  const p10 = r.monte_carlo?.per_share?.p10
-  const bearCasePositive = bearPrice != null && bearPrice > S
-
-  const strikeA = S * 0.90
-  const candidates = [strikeA]
-  if (!bearCasePositive && bearPrice != null && bearPrice * 0.90 < S) candidates.push(bearPrice * 0.90)
-  if (p10 != null && p10 < S && p10 > 0) candidates.push(p10)
-
-  const valid = candidates.filter(c => c > 0 && c < S)
-  if (!valid.length) return null
-  const strike = Math.round(Math.max(...valid))
-
-  // Monthly expirations — next 5
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const expirations = []
-  let m = today.getMonth(), y = today.getFullYear()
-  while (expirations.length < 5) {
-    const exp = getThirdFriday(y, m); exp.setHours(0, 0, 0, 0)
-    const dte = Math.round((exp - today) / 86400000)
-    if (dte > 10) expirations.push({ date: exp, dte })
-    m++; if (m > 11) { m = 0; y++ }
-  }
-
-  const earningsLimit = r.earnings_days != null ? r.earnings_days - 14 : null
-  const validExps = expirations.filter(e => earningsLimit == null || e.dte < earningsLimit)
-  if (!validExps.length) return { earningsBlocked: true }
-
-  const sel = validExps.reduce((b, c) => Math.abs(c.dte - 35) < Math.abs(b.dte - 35) ? c : b)
-  const T = sel.dte / 365
-
-  const beta = r.beta || 1.0
-  const iv = beta < 0.9 ? 0.25 : beta < 1.3 ? 0.35 : beta < 1.8 ? 0.45 : 0.60
-
-  const assignProb = bsAssignmentProb(S, strike, T, iv)
-  const keptProb = Math.round((100 - assignProb) * 10) / 10
-  const prem = bsPutPremium(S, strike, T, iv)
-  const capital = strike * 100
-  const effectiveCost = prem ? Math.round((strike - prem.mid) * 100) / 100 : strike
-  const monthlyReturn = prem ? Math.round((prem.mid / capital) * (30 / sel.dte) * 1000) / 10 : null
-  const annualReturn = prem ? Math.round((prem.mid / capital) * (365 / sel.dte) * 1000) / 10 : null
-
-  const median = r.monte_carlo?.per_share?.median
-  const basePrice = r.dcf_base_price
-  const bearReturn = bearPrice != null ? Math.round((bearPrice / effectiveCost - 1) * 1000) / 10 : null
-  const medianReturn = median != null ? Math.round((median / effectiveCost - 1) * 1000) / 10 : null
-  const baseReturn = basePrice != null ? Math.round((basePrice / effectiveCost - 1) * 1000) / 10 : null
-
-  const expStr = sel.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-
-  return {
-    earningsBlocked: false,
-    strike, expStr, dte: sel.dte, iv, beta,
-    assignProb, keptProb, prem, capital,
-    effectiveCost, monthlyReturn, annualReturn,
-    bearReturn, medianReturn, baseReturn,
-    bearPrice, median, basePrice,
-    bearCasePositive,
-    checks: {
-      earningsClear: r.earnings_days == null || r.earnings_days > sel.dte + 14,
-      scoreGood: r.trigger_score >= 5,
-      bearAboveStrike: bearPrice != null && bearPrice > strike,
-      discountToDcf: median != null && effectiveCost < median,
-    },
-  }
-}
-
 function PutSellingCard({ r }) {
-  const S = r.current_price
+  const [tiers, setTiers] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
   const score = r.trigger_score
   const earningsDays = r.earnings_days
+  const S = r.current_price
+
+  useEffect(() => {
+    if (!r.ticker || score == null || score < 4 || !S || S < 10) return
+    if (earningsDays != null && earningsDays <= 14) return
+    setLoading(true)
+    setError(null)
+    fetch(`${API}/api/wheel/put-tiers/${encodeURIComponent(r.ticker)}`)
+      .then(res => res.ok ? res.json() : Promise.reject(res.status))
+      .then(data => { setTiers(data); setLoading(false) })
+      .catch(err => { setError(String(err)); setLoading(false) })
+  }, [r.ticker, score])
 
   if (score == null || score < 4) return null
   if (!S || S < 10) return null
@@ -429,24 +344,58 @@ function PutSellingCard({ r }) {
     )
   }
 
-  const rec = computePutRec(r)
-  if (!rec) return null
+  if (loading) {
+    return (
+      <div style={{ background: '#071420', border: '1px solid #2b4c7e', borderRadius: '12px', padding: '20px' }}>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: '#63b3ed', letterSpacing: '0.08em', marginBottom: '8px' }}>💰 PUT SELLING OPPORTUNITY</div>
+        <div style={{ fontSize: '13px', color: '#718096' }}>Loading real options data…</div>
+      </div>
+    )
+  }
 
-  if (rec.earningsBlocked) {
+  if (error || !tiers || !tiers.moderate) {
     return (
       <div style={{ background: '#1a0f00', border: '1px solid #744210', borderRadius: '10px', padding: '16px 20px' }}>
         <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbd38d', letterSpacing: '0.08em', marginBottom: '6px' }}>💰 PUT SELLING OPPORTUNITY</div>
         <div style={{ fontSize: '13px', color: '#ed8936' }}>
-          ⚠️ Earnings too close — no clean expiration available. Wait until after earnings to sell puts.
+          ⚠️ Options chain unavailable — check back during market hours.
         </div>
       </div>
     )
   }
 
-  const { strike, expStr, dte, assignProb, keptProb, prem, capital, effectiveCost,
-          monthlyReturn, annualReturn, bearReturn, medianReturn, baseReturn,
-          bearPrice, median, basePrice, bearCasePositive, checks, beta, iv } = rec
+  const tier = tiers.moderate
+  const strike = tier.strike
+  const dte = tier.dte
+  const mid = tier.mid_premium
+  const bid = tier.bid
+  const ask = tier.ask
+  const assignProb = tier.assignment_chance_pct
+  const keptProb = Math.round((100 - assignProb) * 10) / 10
+  const capital = strike * 100
+  const effectiveCost = tier.breakeven
+  const monthlyReturn = mid && dte > 0 ? Math.round((mid / strike) * (30 / dte) * 1000) / 10 : null
+  const annualReturn = tier.annualized_return_pct
 
+  // Format expiry date from ISO string (YYYY-MM-DD) — already holiday-corrected by Polygon
+  const [ey, em, ed] = tier.expiry.split('-').map(Number)
+  const expDate = new Date(ey, em - 1, ed)
+  const expStr = expDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+  const bearPrice = r.dcf_bear_price
+  const median = r.monte_carlo?.per_share?.median
+  const basePrice = r.dcf_base_price
+  const bearCasePositive = bearPrice != null && bearPrice > S
+  const bearReturn = bearPrice != null && effectiveCost > 0 ? Math.round((bearPrice / effectiveCost - 1) * 1000) / 10 : null
+  const medianReturn = median != null && effectiveCost > 0 ? Math.round((median / effectiveCost - 1) * 1000) / 10 : null
+  const baseReturn = basePrice != null && effectiveCost > 0 ? Math.round((basePrice / effectiveCost - 1) * 1000) / 10 : null
+
+  const checks = {
+    earningsClear: earningsDays == null || earningsDays > dte + 14,
+    scoreGood: score >= 5,
+    bearAboveStrike: bearPrice != null && bearPrice > strike,
+    discountToDcf: median != null && effectiveCost < median,
+  }
   const allGreen = checks.earningsClear && checks.scoreGood && checks.bearAboveStrike && checks.discountToDcf
   const fmt = (n, dec = 1) => n != null ? (n > 0 ? `+${n.toFixed(dec)}%` : `${n.toFixed(dec)}%`) : '—'
   const returnColor = n => n == null ? '#a0aec0' : n >= 0 ? '#68d391' : '#fc8181'
@@ -471,11 +420,9 @@ function PutSellingCard({ r }) {
         <div style={{ fontSize: '20px', fontWeight: 800, color: '#90cdf4', letterSpacing: '0.02em' }}>
           {r.ticker} PUT ${strike} exp {expStr} ({dte} days)
         </div>
-        {beta > 1.8 && (
-          <div style={{ fontSize: '11px', color: '#fbd38d', marginTop: '6px' }}>
-            High-volatility stock (beta {beta?.toFixed(2)}) — using {Math.round(iv * 100)}% IV estimate
-          </div>
-        )}
+        <div style={{ fontSize: '11px', color: '#718096', marginTop: '6px' }}>
+          Delta ~{tier.delta_abs?.toFixed(2)} · IV {tier.iv_pct?.toFixed(0)}% · Source: {tiers.data_source?.replace('_', ' ')}
+        </div>
       </div>
 
       {/* Section 2 — Income */}
@@ -483,8 +430,8 @@ function PutSellingCard({ r }) {
         <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>INCOME</div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {[
-            { label: 'Est. Premium', value: prem ? `$${prem.low}–$${prem.high}` : '—' },
-            { label: 'Capital Required', value: `$${capital.toLocaleString()}` },
+            { label: 'Bid / Ask', value: bid != null && ask != null ? `$${bid.toFixed(2)} / $${ask.toFixed(2)}` : '—' },
+            { label: 'Mid Premium', value: mid != null ? `$${mid.toFixed(2)}` : '—' },
             { label: 'Monthly Return', value: monthlyReturn != null ? `${monthlyReturn}%` : '—' },
             { label: 'Annualized', value: annualReturn != null ? `${annualReturn}%` : '—' },
           ].map(({ label, value }) => (
@@ -494,9 +441,11 @@ function PutSellingCard({ r }) {
             </div>
           ))}
         </div>
-        <div style={{ fontSize: '11px', color: '#718096', marginTop: '6px' }}>
-          Verify actual bid/ask in your broker before placing order
-        </div>
+        {tier.volume != null && (
+          <div style={{ fontSize: '11px', color: '#718096', marginTop: '6px' }}>
+            Volume {tier.volume?.toLocaleString()} · OI {tier.open_interest?.toLocaleString()}
+          </div>
+        )}
       </div>
 
       {/* Section 3 — Probabilities */}
@@ -518,8 +467,8 @@ function PutSellingCard({ r }) {
         <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>IF ASSIGNED</div>
         <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div style={{ fontSize: '13px', color: '#a0aec0' }}>
-            Effective cost basis: <span style={{ color: '#e2e8f0', fontWeight: 700 }}>${effectiveCost.toFixed(2)}</span>
-            <span style={{ fontSize: '11px', color: '#718096', marginLeft: '6px' }}>(strike ${strike} − premium ${prem?.mid ?? '—'})</span>
+            Effective cost basis: <span style={{ color: '#e2e8f0', fontWeight: 700 }}>${effectiveCost?.toFixed(2)}</span>
+            <span style={{ fontSize: '11px', color: '#718096', marginLeft: '6px' }}>(strike ${strike} − premium ${mid?.toFixed(2) ?? '—'})</span>
           </div>
           {[
             { label: 'vs Bear case', value: bearReturn, price: bearPrice, extra: bearCasePositive ? ' (bear case is positive)' : '' },
@@ -549,7 +498,7 @@ function PutSellingCard({ r }) {
           <Check ok={checks.earningsClear} label="Earnings clear (>14 days after expiry)" />
           <Check ok={checks.scoreGood} label={`Trigger score 5/8 or higher (current: ${score}/8)`} />
           <Check ok={checks.bearAboveStrike} label={`Bear case above strike (bear: $${bearPrice?.toFixed(2) ?? '—'} vs strike: $${strike})`} />
-          <Check ok={checks.discountToDcf} label={`Assignment at discount to DCF median ($${effectiveCost.toFixed(2)} vs $${median?.toFixed(2) ?? '—'})`} />
+          <Check ok={checks.discountToDcf} label={`Assignment at discount to DCF median ($${effectiveCost?.toFixed(2)} vs $${median?.toFixed(2) ?? '—'})`} />
           {allGreen ? (
             <div style={{ fontSize: '13px', fontWeight: 700, color: '#68d391', borderTop: '1px solid #1a2030', paddingTop: '10px' }}>
               ✅ Clean setup — proceed with confidence
@@ -564,8 +513,7 @@ function PutSellingCard({ r }) {
 
       {/* Disclaimer */}
       <div style={{ fontSize: '11px', color: '#4a5568', lineHeight: 1.6, borderTop: '1px solid #1a2030', paddingTop: '12px' }}>
-        Premium estimates are approximations using Black-Scholes. Verify actual bid/ask in your broker before trading.
-        Options involve risk of loss. Only sell cash-secured puts.
+        Live bid/ask data from Polygon. Options involve risk of loss. Only sell cash-secured puts.
       </div>
     </div>
   )

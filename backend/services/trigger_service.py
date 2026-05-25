@@ -211,6 +211,120 @@ def _calculate_score(
     return score, breakdown, action, suggested_size, blocked
 
 
+def _calculate_paradigm_score(dcf: dict) -> tuple:
+    """
+    Returns (score, breakdown, label).
+    Measures paradigm-shift characteristics that make DCF unreliable.
+    """
+    score = 0
+    breakdown: dict = {}
+
+    # ── 1. Revenue Acceleration ──────────────────────────────────────────────
+    rev_ttm = dcf.get("revenue_growth_pct") or 0
+    rev_annual = dcf.get("revenue_growth_annual_pct")
+    if rev_ttm > 30 and rev_annual is not None and rev_ttm > rev_annual:
+        score += 1
+        breakdown["revenue_accel"] = {
+            "earned": 1,
+            "detail": f"{rev_ttm}% TTM growth, accelerating from {round(rev_annual, 1)}% annual",
+        }
+    else:
+        if rev_ttm <= 30:
+            reason = f"{rev_ttm}% TTM growth — need >30% and accelerating"
+        elif rev_annual is None:
+            reason = f"{rev_ttm}% TTM growth — prior year data unavailable"
+        else:
+            reason = f"{rev_ttm}% TTM not accelerating vs {round(rev_annual, 1)}% annual"
+        breakdown["revenue_accel"] = {"earned": 0, "detail": reason}
+
+    # ── 2. Platform Lock-in (Claude) ─────────────────────────────────────────
+    lock_in = (dcf.get("platform_lock_in") or "").lower()
+    if lock_in == "strong":
+        score += 1
+        breakdown["platform_lock_in"] = {"earned": 1, "detail": "Strong switching costs per Claude"}
+    else:
+        breakdown["platform_lock_in"] = {
+            "earned": 0,
+            "detail": f"{lock_in.capitalize()} lock-in per Claude" if lock_in else "Claude data unavailable",
+        }
+
+    # ── 3. TAM Expansion (Claude) ────────────────────────────────────────────
+    tam = (dcf.get("tam_expanding") or "").lower()
+    if tam == "yes":
+        score += 1
+        breakdown["tam_expansion"] = {"earned": 1, "detail": "Structural TAM expansion per Claude"}
+    else:
+        breakdown["tam_expansion"] = {
+            "earned": 0,
+            "detail": "No structural TAM shift per Claude" if tam == "no" else "Claude data unavailable",
+        }
+
+    # ── 4. Winner-Take-Most ──────────────────────────────────────────────────
+    ps = dcf.get("ps") or 0
+    rev_g = dcf.get("revenue_growth_pct") or 0
+    if ps > 10 and rev_g > 25:
+        score += 1
+        breakdown["winner_take_most"] = {
+            "earned": 1,
+            "detail": f"P/S {ps}x with {rev_g}% growth — category winner pricing",
+        }
+    else:
+        missing = []
+        if not ps or ps <= 10:
+            missing.append(f"P/S {ps}x (need >10)")
+        if rev_g <= 25:
+            missing.append(f"growth {rev_g}% (need >25%)")
+        breakdown["winner_take_most"] = {"earned": 0, "detail": ", ".join(missing) or "N/A"}
+
+    # ── 5. Network Effects / Data Moat (Claude) ──────────────────────────────
+    net_fx = (dcf.get("network_effects") or "").lower()
+    if net_fx == "yes":
+        score += 1
+        breakdown["network_effects"] = {
+            "earned": 1,
+            "detail": "Network effects or proprietary data moat per Claude",
+        }
+    else:
+        breakdown["network_effects"] = {
+            "earned": 0,
+            "detail": "No significant network effects per Claude" if net_fx == "no" else "Claude data unavailable",
+        }
+
+    if score >= 4:
+        label = "STRONG"
+    elif score >= 2:
+        label = "MIXED"
+    else:
+        label = "TRADITIONAL"
+
+    return score, breakdown, label
+
+
+def _combined_recommendation(dcf_score: int, paradigm_score: int) -> tuple:
+    """Returns (label, description) from the 3×3 dual-lens matrix."""
+    if dcf_score >= 6:
+        if paradigm_score <= 1:
+            return "✅ DEEP VALUE BUY", "Undervalued on fundamentals. Traditional DCF is reliable here."
+        elif paradigm_score <= 3:
+            return "✅ QUALITY BUY", "Undervalued with growth optionality."
+        else:
+            return "🚀 EXCEPTIONAL OPPORTUNITY", "Rare: undervalued AND paradigm shift characteristics. Highest conviction."
+    elif dcf_score >= 3:
+        if paradigm_score <= 1:
+            return "👀 WATCH — DCF improving", "Getting cheaper. Wait for confirmation."
+        elif paradigm_score <= 3:
+            return "👀 WATCH — Mixed signals", "Some value but paradigm uncertain."
+        else:
+            return "⚡ PARADIGM WATCH", "Expensive on DCF but strong thesis. Hold existing. Don't add aggressively."
+    else:
+        if paradigm_score <= 1:
+            return "❌ PASS", "Overvalued. No paradigm case. Avoid."
+        elif paradigm_score <= 3:
+            return "⚠️ VALUATION RISK — MONITOR", "Expensive on DCF. Some thesis present but not enough to justify premium."
+        else:
+            return "⚡ PARADIGM HOLD", "DCF shows overvalued but strong paradigm shift case. Do not sell existing position. Do not add new capital until DCF improves."
+
+
 def analyze_trigger(ticker: str) -> dict:
     """
     Full trigger analysis: DCF + Monte Carlo + 50-day MA + earnings → trigger score.
@@ -244,6 +358,9 @@ def analyze_trigger(ticker: str) -> dict:
         dcf, ma_data, earnings_days
     )
 
+    paradigm_score, paradigm_breakdown, paradigm_label = _calculate_paradigm_score(dcf)
+    combined_label, combined_desc = _combined_recommendation(score, paradigm_score)
+
     bear_upside = dcf.get("dcf_bear_upside")
     if bear_upside is not None:
         bear_downside = abs(bear_upside) if bear_upside < 0 else 0
@@ -273,4 +390,9 @@ def analyze_trigger(ticker: str) -> dict:
         "earnings_days": earnings_days,
         "bear_protection_label": bear_protection_label,
         "bear_protection_level": bear_protection_level,
+        "paradigm_score": paradigm_score,
+        "paradigm_label": paradigm_label,
+        "paradigm_breakdown": paradigm_breakdown,
+        "combined_rec_label": combined_label,
+        "combined_rec_desc": combined_desc,
     }

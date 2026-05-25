@@ -790,6 +790,122 @@ function RecoChip({ rec }) {
   )
 }
 
+// ─── Dual-lens analysis ────────────────────────────────────────────────────────
+const COMBINED_REC_COLOR = {
+  '✅ DEEP VALUE BUY':          { color: '#68d391', border: '#276749', bg: '#0a2218' },
+  '✅ QUALITY BUY':             { color: '#68d391', border: '#2f855a', bg: '#0a1a0a' },
+  '🚀 EXCEPTIONAL OPPORTUNITY': { color: '#b794f4', border: '#6b46c1', bg: '#1a0a2e' },
+  '👀 WATCH — DCF improving':   { color: '#fbd38d', border: '#b7791f', bg: '#2d2000' },
+  '👀 WATCH — Mixed signals':   { color: '#fbd38d', border: '#975a16', bg: '#2d2000' },
+  '⚡ PARADIGM WATCH':          { color: '#90cdf4', border: '#2b6cb0', bg: '#0a1628' },
+  '❌ PASS':                    { color: '#fc8181', border: '#742a2a', bg: '#2d1515' },
+  '⚠️ VALUATION RISK — MONITOR': { color: '#ed8936', border: '#c05621', bg: '#2d1800' },
+  '⚡ PARADIGM HOLD':           { color: '#90cdf4', border: '#2b6cb0', bg: '#0a1628' },
+}
+
+function DualLensCard({ r }) {
+  const dcfScore = r.trigger_score ?? 0
+  const paradigmScore = r.paradigm_score
+  const paradigmLabel = r.paradigm_label
+  const combinedLabel = r.combined_rec_label
+  const combinedDesc = r.combined_rec_desc
+  const recStyle = COMBINED_REC_COLOR[combinedLabel] || { color: '#a0aec0', border: '#2d3748', bg: '#0f1117' }
+
+  const dcfColor = dcfScore >= 6 ? '#68d391' : dcfScore >= 3 ? '#fbd38d' : '#fc8181'
+  const dcfStrength = dcfScore >= 6 ? 'STRONG' : dcfScore >= 3 ? 'MODERATE' : 'WEAK'
+  const paradigmColor = paradigmScore >= 4 ? '#b794f4' : paradigmScore >= 2 ? '#fbd38d' : '#a0aec0'
+
+  return (
+    <div style={{
+      background: '#0a1628', border: '1px solid #2b6cb0',
+      borderRadius: '10px', padding: '16px',
+    }}>
+      <div style={{ fontSize: '11px', color: '#4299e1', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '14px' }}>
+        DUAL LENS ANALYSIS
+      </div>
+
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+        {/* Valuation lens */}
+        <div style={{ flex: 1, background: '#0f1117', borderRadius: '8px', padding: '12px', border: '1px solid #2d3748', textAlign: 'center' }}>
+          <div style={{ fontSize: '18px', marginBottom: '4px' }}>📊</div>
+          <div style={{ fontSize: '10px', color: '#718096', fontWeight: 600, letterSpacing: '0.06em', marginBottom: '6px' }}>VALUATION</div>
+          <div style={{ fontSize: '28px', fontWeight: 800, color: dcfColor, lineHeight: 1 }}>{dcfScore}/8</div>
+          <div style={{ fontSize: '11px', color: '#718096', marginTop: '4px' }}>{dcfStrength}</div>
+        </div>
+
+        {/* Paradigm lens */}
+        <div style={{ flex: 1, background: '#0f1117', borderRadius: '8px', padding: '12px', border: '1px solid #2d3748', textAlign: 'center' }}>
+          <div style={{ fontSize: '18px', marginBottom: '4px' }}>⚡</div>
+          <div style={{ fontSize: '10px', color: '#718096', fontWeight: 600, letterSpacing: '0.06em', marginBottom: '6px' }}>PARADIGM</div>
+          <div style={{ fontSize: '28px', fontWeight: 800, color: paradigmColor, lineHeight: 1 }}>
+            {paradigmScore != null ? `${paradigmScore}/5` : '—'}
+          </div>
+          <div style={{ fontSize: '11px', color: '#718096', marginTop: '4px' }}>{paradigmLabel || '—'}</div>
+        </div>
+      </div>
+
+      {combinedLabel && (
+        <div style={{
+          background: recStyle.bg, border: `1px solid ${recStyle.border}`,
+          borderRadius: '8px', padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: '14px', fontWeight: 700, color: recStyle.color, marginBottom: '4px' }}>
+            {combinedLabel}
+          </div>
+          {combinedDesc && (
+            <div style={{ fontSize: '12px', color: '#a0aec0', lineHeight: 1.55 }}>{combinedDesc}</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ParadigmBreakdown({ breakdown }) {
+  if (!breakdown) return null
+  const factors = [
+    { key: 'revenue_accel',    label: 'Revenue acceleration' },
+    { key: 'platform_lock_in', label: 'Platform lock-in' },
+    { key: 'tam_expansion',    label: 'TAM expansion' },
+    { key: 'winner_take_most', label: 'Winner-take-most dynamics' },
+    { key: 'network_effects',  label: 'Network effects / data moat' },
+  ]
+  const total = factors.reduce((s, f) => s + ((breakdown[f.key]?.earned) || 0), 0)
+  return (
+    <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px' }}>
+      <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>
+        PARADIGM SCORE BREAKDOWN
+        <span style={{ marginLeft: '8px', color: total >= 4 ? '#b794f4' : total >= 2 ? '#fbd38d' : '#a0aec0' }}>
+          {total}/5
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+        {factors.map(f => {
+          const factor = breakdown[f.key]
+          if (!factor) return null
+          const earned = factor.earned === 1
+          return (
+            <div key={f.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+              <span style={{ color: earned ? '#68d391' : '#4a5568', fontSize: '14px', flexShrink: 0, lineHeight: '18px' }}>
+                {earned ? '●' : '○'}
+              </span>
+              <div>
+                <span style={{ fontSize: '13px', color: earned ? '#e2e8f0' : '#718096' }}>
+                  {f.label}
+                  {earned && <span style={{ color: '#68d391', marginLeft: '6px', fontWeight: 700, fontSize: '11px' }}>+1</span>}
+                </span>
+                {factor.detail && (
+                  <div style={{ fontSize: '11px', color: '#4a5568', marginTop: '1px' }}>{factor.detail}</div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Top Rated scanner ────────────────────────────────────────────────────────
 function TopRatedCard({ stock, onAnalyze }) {
   const cfg = ACTION_CONFIG[stock.action] || ACTION_CONFIG['WATCH']
@@ -1243,13 +1359,12 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
 
       {r && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
-            <div>
-              <div style={{ fontSize: '26px', fontWeight: 800, color: '#90cdf4' }}>{r.ticker}</div>
-              <div style={{ fontSize: '14px', color: '#a0aec0', marginTop: '2px' }}>{r.name} · {r.sector}</div>
-            </div>
-            <RecoChip rec={r.recommendation} />
+          <div style={{ marginBottom: '4px' }}>
+            <div style={{ fontSize: '26px', fontWeight: 800, color: '#90cdf4' }}>{r.ticker}</div>
+            <div style={{ fontSize: '14px', color: '#a0aec0', marginTop: '2px' }}>{r.name} · {r.sector}</div>
           </div>
+
+          <DualLensCard r={r} />
 
           <TriggerBadge
             score={r.trigger_score}
@@ -1294,6 +1409,8 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
           )}
 
           <ScoreBreakdown breakdown={r.trigger_breakdown} />
+
+          <ParadigmBreakdown breakdown={r.paradigm_breakdown} />
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '240px' }}>

@@ -632,12 +632,14 @@ class StockDataService:
                 near_price=near_price, strike_pct_range=0.25,
             )
             if not snapshots:
+                logger.warning("_polygon_options_chain: no snapshots returned for %s (near_price=%s, dte_max=%s)", ticker, near_price, dte_max)
                 return [], None
 
             today = date.today()
             # Polygon often doesn't populate underlying_asset.price — use near_price as seed
             underlying_price = near_price or None
             result = []
+            skipped_dte = skipped_mid = skipped_delta = skipped_exc = 0
 
             for snap in snapshots:
                 if not snap.details:
@@ -648,6 +650,7 @@ class StockDataService:
                     exp = str(snap.details.expiration_date)
                     dte = (date.fromisoformat(exp) - today).days
                     if dte < dte_min or dte > dte_max:
+                        skipped_dte += 1
                         continue
                     strike = float(snap.details.strike_price or 0)
                     if strike <= 0:
@@ -661,7 +664,13 @@ class StockDataService:
                         mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
                     if mid <= 0 and snap.last_trade:
                         mid = float(snap.last_trade.price or 0)
+                    # Market-closed fallbacks: Polygon fair_market_value then prior day close
+                    if mid <= 0 and snap.fair_market_value:
+                        mid = float(snap.fair_market_value)
+                    if mid <= 0 and snap.day and snap.day.close:
+                        mid = float(snap.day.close)
                     if mid <= 0:
+                        skipped_mid += 1
                         continue
 
                     iv_pct = round(float(snap.implied_volatility or 0) * 100, 1)
@@ -685,6 +694,7 @@ class StockDataService:
                             theta_holder = -(_bs_put_theta_daily(underlying_price, strike, iv_dec, T) or 0)
 
                     if delta is None:
+                        skipped_delta += 1
                         continue
 
                     # theta_seller = income to the seller per share per day (positive)
@@ -707,11 +717,16 @@ class StockDataService:
                         "open_interest": int(snap.open_interest or 0),
                     })
                 except Exception:
+                    skipped_exc += 1
                     continue
 
+            logger.warning(
+                "_polygon_options_chain %s: kept=%d skipped(dte=%d mid=%d delta=%d exc=%d) underlying_price=%s",
+                ticker, len(result), skipped_dte, skipped_mid, skipped_delta, skipped_exc, underlying_price,
+            )
             return result, underlying_price
         except Exception as e:
-            logger.debug("_polygon_options_chain failed for %s: %s", ticker, e)
+            logger.warning("_polygon_options_chain failed for %s: %s", ticker, e)
             return [], None
 
     def get_put_tiers(self, ticker: str) -> dict | None:
@@ -803,7 +818,7 @@ class StockDataService:
                     "unlikely": _poly_tier(0.16),
                 }
         except Exception as e:
-            logger.debug("get_put_tiers Polygon path failed for %s: %s", ticker, e)
+            logger.warning("get_put_tiers Polygon path failed for %s: %s", ticker, e)
 
         # --- yfinance fallback ---
         if not _YF_AVAILABLE:
@@ -917,8 +932,80 @@ class StockDataService:
                 "unlikely": _best_near_delta(0.16),
             }
         except Exception as e:
-            logger.warning("get_put_tiers failed for %s: %s", ticker, e)
-            return None
+            logger.warning("get_put_tiers yfinance path failed for %s: %s", ticker, e)
+
+        # --- Public.com fallback ---
+        try:
+            from services.public_client import get_option_expirations, get_option_chain
+            from datetime import date as _date
+            today = _date.today()
+            expirations = get_option_expirations(ticker)
+            if expirations:
+                target_expiry = None
+                for exp in sorted(expirations):
+                    dte_check = (_date.fromisoformat(exp) - today).days
+                    if 14 <= dte_check <= 45:
+                        target_expiry = exp
+                        break
+                if not target_expiry:
+                    target_expiry = sorted(expirations)[0]
+
+                price = _live_price
+                dte = (_date.fromisoformat(target_expiry) - today).days
+                puts = get_option_chain(ticker, target_expiry, "put")
+                puts = [p for p in puts if p.get("strike", 0) > 0 and p.get("mid", 0) > 0]
+
+                if puts and price and dte > 0:
+                    atm = min(puts, key=lambda p: abs(p["strike"] - price))
+                    atm_iv_pct = atm.get("iv_pct", 0)
+
+                    def _pub_tier(target_delta_abs: float) -> dict | None:
+                        valid = [p for p in puts if abs(p.get("delta", 0)) > 0]
+                        if not valid:
+                            return None
+                        best = min(valid, key=lambda p: abs(abs(p["delta"]) - target_delta_abs))
+                        if abs(abs(best["delta"]) - target_delta_abs) > 0.15:
+                            return None
+                        mid = best["mid"]
+                        strike = best["strike"]
+                        delta_abs = round(abs(best["delta"]), 2)
+                        theta = best.get("theta", 0) or 0
+                        breakeven = round(strike - mid, 2)
+                        drop_pct = round((price - breakeven) / price * 100, 1)
+                        ann_return = round((mid / strike) * (365 / dte) * 100, 1) if strike > 0 else None
+                        return {
+                            "strike": strike,
+                            "expiry": target_expiry,
+                            "dte": dte,
+                            "bid": best.get("bid", mid),
+                            "ask": best.get("ask", mid),
+                            "mid_premium": mid,
+                            "premium_per_contract": round(mid * 100, 2),
+                            "iv_pct": best.get("iv_pct", 0),
+                            "delta_abs": delta_abs,
+                            "assignment_chance_pct": round(delta_abs * 100),
+                            "daily_income_per_contract": round(abs(theta) * 100, 2) if theta else None,
+                            "breakeven": breakeven,
+                            "drop_to_breakeven_pct": drop_pct,
+                            "annualized_return_pct": ann_return,
+                            "volume": best.get("volume", 0),
+                            "open_interest": best.get("open_interest", 0),
+                        }
+
+                    return {
+                        "current_price": round(price, 2),
+                        "expiry": target_expiry,
+                        "dte": dte,
+                        "atm_iv_pct": atm_iv_pct,
+                        "data_source": "public_com",
+                        "likely": _pub_tier(0.45),
+                        "moderate": _pub_tier(0.30),
+                        "unlikely": _pub_tier(0.16),
+                    }
+        except Exception as e:
+            logger.warning("get_put_tiers Public.com path failed for %s: %s", ticker, e)
+
+        return None
 
     def snap_put_strike(self, ticker: str, suggested_strike: float, prefer_dte: tuple = (14, 45)) -> dict | None:
         """

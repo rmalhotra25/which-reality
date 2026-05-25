@@ -94,6 +94,7 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "current_ratio": metrics.get("currentRatioAnnual"),
         "return_1y": metrics.get("52WeekPriceReturnDaily"),
         "return_6m": metrics.get("26WeekPriceReturnDaily"),
+        "revenue_growth_annual": metrics.get("revenueGrowthAnnual"),
     }
 
 
@@ -162,15 +163,22 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
             "Constraints: bull > base > bear for g1, g2, and fcf.\n"
             "Also return:\n"
             "- reasoning: 2-3 sentences explaining your key assumptions\n"
-            "- confidence: 'high' | 'medium' | 'low' (data quality / predictability)\n\n"
+            "- confidence: 'high' | 'medium' | 'low' (data quality / predictability)\n"
+            "- platform_lock_in: 'strong' / 'moderate' / 'weak' "
+            "(does this company have strong switching costs or platform lock-in?)\n"
+            "- tam_expanding: 'yes' / 'no' "
+            "(is the TAM expanding rapidly due to a structural shift — AI, energy transition, demographics, etc?)\n"
+            "- network_effects: 'yes' / 'no' "
+            "(does this company benefit from network effects or a proprietary data advantage that compounds with scale?)\n\n"
             "Return JSON:\n"
             '{"bull":{"g1":0.35,"g2":0.18,"fcf":0.32,"tg":0.035},'
             '"base":{"g1":0.22,"g2":0.12,"fcf":0.26,"tg":0.030},'
             '"bear":{"g1":0.08,"g2":0.05,"fcf":0.18,"tg":0.020},'
-            '"reasoning":"...","confidence":"medium"}'
+            '"reasoning":"...","confidence":"medium",'
+            '"platform_lock_in":"moderate","tam_expanding":"yes","network_effects":"no"}'
         )
 
-        raw = analyst._call(system, user, max_tokens=800)
+        raw = analyst._call(system, user, max_tokens=1000)
         clean = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
         clean = re.sub(r'\n?```$', '', clean.strip()).strip()
         parsed = json.loads(clean)
@@ -380,6 +388,11 @@ def analyze(ticker: str) -> dict:
         "dcf_bear_price": price_targets.get("bear"),
         "recommendation": recommendation,
         "monte_carlo": mc,
+        # Paradigm factors — from Claude when available
+        "platform_lock_in": cp.get("platform_lock_in") if used_claude else None,
+        "tam_expanding": cp.get("tam_expanding") if used_claude else None,
+        "network_effects": cp.get("network_effects") if used_claude else None,
+        "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
     }
 
 
@@ -482,4 +495,8 @@ def analyze_quant(ticker: str) -> dict:
         "dcf_bear_price": price_targets.get("bear"),
         "recommendation": recommendation,
         "monte_carlo": mc,
+        "platform_lock_in": None,
+        "tam_expanding": None,
+        "network_effects": None,
+        "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
     }

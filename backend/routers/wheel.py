@@ -264,6 +264,19 @@ def refresh_call_suggestion(pos_id: int, db: Session = Depends(get_db)):
     return {"status": "queued"}
 
 
+@router.get("/put-tiers/{ticker}")
+def get_put_tiers(ticker: str):
+    """Real options chain put tiers for a ticker (3 delta targets: ~0.45, ~0.30, ~0.16)."""
+    ticker = ticker.strip().upper()
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker.")
+    from services.stock_data import StockDataService
+    tiers = StockDataService().get_put_tiers(ticker)
+    if not tiers:
+        raise HTTPException(status_code=503, detail=f"Could not fetch options chain for {ticker}.")
+    return tiers
+
+
 @router.post("/custom-analyze")
 def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db)):
     """On-demand wheel strategy analysis for any ticker with real options chain data."""

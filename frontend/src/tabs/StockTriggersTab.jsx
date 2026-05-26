@@ -667,7 +667,7 @@ function EventRiskBanner({ discount, reason }) {
   return (
     <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: '8px', padding: '12px 16px' }}>
       <div style={{ fontSize: '11px', fontWeight: 700, color, letterSpacing: '0.08em', marginBottom: reason ? '4px' : 0 }}>
-        ⚠️ {label} — {pct}% DCF DISCOUNT APPLIED TO ALL SCENARIOS
+        ⚠️ {label} — {pct}% EVENT RISK DISCOUNT APPLIED TO DCF SCENARIOS
       </div>
       {reason && <div style={{ fontSize: '12px', color: '#a0aec0' }}>{reason}</div>}
     </div>

@@ -320,7 +320,7 @@ def _dcf_scenarios(d: dict, category: str, claude_params: dict | None = None) ->
     revenue_0 = market_cap / ps
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
-    dr = _wacc_from_beta(d.get("beta"))
+    dr = _wacc_from_beta(d.get("beta"), sector=d.get("sector"))
     wacc_pct = round(dr * 100, 1)
 
     if claude_params:

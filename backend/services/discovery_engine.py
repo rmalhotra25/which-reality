@@ -208,6 +208,25 @@ _FINANCIAL_SECTORS = {
     "Consumer Finance", "Mortgage Finance",
 }
 
+# Sector-specific WACC floors using Finnhub finnhubIndustry strings.
+# Replaces the previous universal 5.5% floor.
+_SECTOR_WACC_FLOORS = {
+    "Utilities": 0.055,
+    "Real Estate": 0.060, "REIT": 0.060,
+    "Energy": 0.065, "Oil & Gas": 0.065, "Oil, Gas & Consumable Fuels": 0.065,
+    "Consumer Defensive": 0.065, "Consumer Staples": 0.065,
+    "Healthcare": 0.070, "Biotechnology": 0.070,
+    "Medical Devices": 0.070, "Pharmaceuticals": 0.070, "Medical Instruments & Supplies": 0.070,
+    "Industrials": 0.075, "Aerospace & Defense": 0.075, "Manufacturing": 0.075,
+    "Technology": 0.080, "Software": 0.080, "Semiconductors": 0.080,
+    "Hardware": 0.080, "Internet": 0.080, "Electronic Components": 0.080,
+    "Banks": 0.085, "Banking": 0.085, "Insurance": 0.085,
+    "Financial Services": 0.085, "Capital Markets": 0.085,
+    "Diversified Financial Services": 0.085,
+    "Consumer Finance": 0.085, "Mortgage Finance": 0.085,
+}
+_DEFAULT_WACC_FLOOR = 0.070
+
 
 def _wacc_from_beta(beta, debt_equity_ratio=0, sector=None) -> float:
     """
@@ -221,6 +240,8 @@ def _wacc_from_beta(beta, debt_equity_ratio=0, sector=None) -> float:
     is_financial = sector in _FINANCIAL_SECTORS
     has_real_leverage = debt_equity_ratio > 0.5 and not is_financial
 
+    sector_floor = _SECTOR_WACC_FLOORS.get(sector, _DEFAULT_WACC_FLOOR)
+
     if has_real_leverage:
         weight_equity = 1 / (1 + debt_equity_ratio)
         weight_debt = debt_equity_ratio / (1 + debt_equity_ratio)
@@ -228,9 +249,9 @@ def _wacc_from_beta(beta, debt_equity_ratio=0, sector=None) -> float:
         tax_rate = 0.21
         wacc = (weight_equity * cost_of_equity +
                 weight_debt * cost_of_debt * (1 - tax_rate))
-        return max(0.055, min(wacc, 0.15))
+        return max(sector_floor, min(wacc, 0.15))
 
-    return max(0.055, min(cost_of_equity, 0.15))
+    return max(sector_floor, min(cost_of_equity, 0.15))
 
 
 def _reverse_dcf(market_cap: float, revenue_0: float, fcf_0: float,

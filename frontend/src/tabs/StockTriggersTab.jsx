@@ -654,10 +654,32 @@ function ScenarioCard({ label, price, upside, g1Pct, fcfPct, highlight }) {
   )
 }
 
+function EventRiskBanner({ discount, reason }) {
+  if (!discount || discount <= 0) return null
+  const pct = Math.round(discount * 100)
+  const label = discount >= 0.50 ? 'SEVERE EVENT RISK'
+    : discount >= 0.40 ? 'HIGH EVENT RISK'
+    : discount >= 0.25 ? 'MODERATE EVENT RISK'
+    : 'LOW EVENT RISK'
+  const color  = discount >= 0.40 ? '#fc8181' : discount >= 0.25 ? '#ed8936' : '#fbd38d'
+  const bg     = discount >= 0.40 ? '#2d1515' : discount >= 0.25 ? '#2d1a00' : '#2d2000'
+  const border = discount >= 0.40 ? '#742a2a' : discount >= 0.25 ? '#975a16' : '#b7791f'
+  return (
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: '8px', padding: '12px 16px' }}>
+      <div style={{ fontSize: '11px', fontWeight: 700, color, letterSpacing: '0.08em', marginBottom: reason ? '4px' : 0 }}>
+        ⚠️ {label} — {pct}% EVENT RISK DISCOUNT APPLIED TO DCF SCENARIOS
+      </div>
+      {reason && <div style={{ fontSize: '12px', color: '#a0aec0' }}>{reason}</div>}
+    </div>
+  )
+}
+
 function MonteCarloSection({ mc, currentPrice }) {
   if (!mc || mc.prob_undervalued_pct == null) return null
   const ps = mc.per_share
   const prob = mc.prob_undervalued_pct
+  const capped = prob >= 97
+  const displayProb = capped ? '97%+' : `${prob}%`
   const probColor = prob >= 60 ? '#68d391' : prob >= 40 ? '#fbd38d' : '#fc8181'
   const probBg    = prob >= 60 ? '#0a2218' : prob >= 40 ? '#2d2000' : '#2d1515'
   const probBorder = prob >= 60 ? '#276749' : prob >= 40 ? '#b7791f' : '#742a2a'
@@ -677,8 +699,13 @@ function MonteCarloSection({ mc, currentPrice }) {
       </div>
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <div style={{ padding: '16px 20px', minWidth: '130px', textAlign: 'center', background: probBg, border: `1px solid ${probBorder}`, borderRadius: '10px', flexShrink: 0 }}>
-          <div style={{ fontSize: '36px', fontWeight: 900, color: probColor, lineHeight: 1 }}>{prob}%</div>
+          <div style={{ fontSize: '36px', fontWeight: 900, color: probColor, lineHeight: 1 }}>{displayProb}</div>
           <div style={{ fontSize: '11px', color: '#a0aec0', marginTop: '6px', lineHeight: 1.4 }}>chance stock is<br />undervalued today</div>
+          {capped && (
+            <div style={{ fontSize: '10px', color: '#f6e05e', marginTop: '8px', lineHeight: 1.4, background: '#2d2a00', border: '1px solid #975a16', borderRadius: '4px', padding: '4px 6px' }}>
+              ⚠️ Model at maximum confidence — verify sector assumptions before acting
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, minWidth: '220px' }}>
           <div style={{ fontSize: '11px', color: '#718096', marginBottom: '10px', fontWeight: 600 }}>INTRINSIC VALUE RANGE (PER SHARE)</div>
@@ -903,7 +930,7 @@ function TopRatedCard({ stock, onAnalyze }) {
           {stock.market_cap_b != null && <span>Mkt Cap: <strong style={{ color: '#e2e8f0' }}>${stock.market_cap_b}B</strong></span>}
           {stock.revenue_growth_pct != null && <span>Rev Growth: <strong style={{ color: stock.revenue_growth_pct > 0 ? '#68d391' : '#fc8181' }}>{stock.revenue_growth_pct > 0 ? '+' : ''}{stock.revenue_growth_pct}%</strong></span>}
           {stock.dcf_base_upside != null && <span>Base Upside: <strong style={{ color: stock.dcf_base_upside > 0 ? '#68d391' : '#fc8181' }}>{stock.dcf_base_upside > 0 ? '+' : ''}{stock.dcf_base_upside}%</strong></span>}
-          {prob != null && <span>MC: <strong style={{ color: prob >= 85 ? '#68d391' : prob >= 70 ? '#fbd38d' : '#a0aec0' }}>{prob}%</strong></span>}
+          {prob != null && <span>MC: <strong style={{ color: prob >= 85 ? '#68d391' : prob >= 70 ? '#fbd38d' : '#a0aec0' }}>{prob >= 97 ? '97%+' : `${prob}%`}</strong></span>}
         </div>
 
         {/* Mini breakdown */}
@@ -1311,6 +1338,10 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
             <div style={{ fontSize: '26px', fontWeight: 800, color: '#90cdf4' }}>{r.ticker}</div>
             <div style={{ fontSize: '14px', color: '#a0aec0', marginTop: '2px' }}>{r.name} · {r.sector}</div>
           </div>
+
+          {r.event_risk_discount > 0 && (
+            <EventRiskBanner discount={r.event_risk_discount} reason={r.event_risk_reason} />
+          )}
 
           <DualLensCard r={r} />
 

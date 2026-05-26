@@ -169,16 +169,24 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
             "- tam_expanding: 'yes' / 'no' "
             "(is the TAM expanding rapidly due to a structural shift — AI, energy transition, demographics, etc?)\n"
             "- network_effects: 'yes' / 'no' "
-            "(does this company benefit from network effects or a proprietary data advantage that compounds with scale?)\n\n"
+            "(does this company benefit from network effects or a proprietary data advantage that compounds with scale?)\n"
+            "- event_risk_discount: float 0.0–0.60. Assess active binary risk events that discount ALL DCF scenarios:\n"
+            "  0.00 = None (normal business risks only)\n"
+            "  0.10 = Low (minor litigation or regulatory uncertainty)\n"
+            "  0.25 = Moderate (significant litigation, active investigation, major integration risk)\n"
+            "  0.40 = High (existential litigation, SEC charges, or forced equity issuance likely)\n"
+            "  0.60 = Severe (near-term solvency risk)\n"
+            "- event_risk_reason: one sentence explanation (empty string if discount is 0.0)\n\n"
             "Return JSON:\n"
             '{"bull":{"g1":0.35,"g2":0.18,"fcf":0.32,"tg":0.035},'
             '"base":{"g1":0.22,"g2":0.12,"fcf":0.26,"tg":0.030},'
             '"bear":{"g1":0.08,"g2":0.05,"fcf":0.18,"tg":0.020},'
             '"reasoning":"...","confidence":"medium",'
-            '"platform_lock_in":"moderate","tam_expanding":"yes","network_effects":"no"}'
+            '"platform_lock_in":"moderate","tam_expanding":"yes","network_effects":"no",'
+            '"event_risk_discount":0.0,"event_risk_reason":""}'
         )
 
-        raw = analyst._call(system, user, max_tokens=1000)
+        raw = analyst._call(system, user, max_tokens=1100)
         clean = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
         clean = re.sub(r'\n?```$', '', clean.strip()).strip()
         parsed = json.loads(clean)
@@ -316,6 +324,17 @@ def analyze(ticker: str) -> dict:
     if not used_claude:
         cp = _mechanial_scenarios(d)
 
+    # Event risk — discount FCF margins and optionally raise WACC
+    event_risk_discount = float(cp.get("event_risk_discount") or 0.0)
+    event_risk_reason = (cp.get("event_risk_reason") or "").strip() or None
+    full_discount = event_risk_discount >= 0.50
+
+    # High event risk raises the discount rate by 1.5pp
+    if event_risk_discount >= 0.40:
+        dr = min(dr + 0.015, 0.15)
+        wacc_pct = round(dr * 100, 1)
+        implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
+
     scenarios = {
         "bull": dict(g1=cp["bull"]["g1"], g2=cp["bull"]["g2"],
                      fm=cp["bull"]["fcf"], tg=cp["bull"].get("tg", 0.035)),
@@ -324,6 +343,16 @@ def analyze(ticker: str) -> dict:
         "bear": dict(g1=cp["bear"]["g1"], g2=cp["bear"]["g2"],
                      fm=cp["bear"]["fcf"], tg=cp["bear"].get("tg", 0.020)),
     }
+
+    # Apply event risk FCF discount: bear gets half unless discount >= 0.50
+    if event_risk_discount > 0:
+        for label in ("bull", "base", "bear"):
+            factor = 1.0 - (event_risk_discount if (label != "bear" or full_discount)
+                            else event_risk_discount * 0.5)
+            scenarios[label]["fm"] = max(0.01, scenarios[label]["fm"] * factor)
+        # Re-clamp ordering after asymmetric discounting
+        scenarios["bear"]["fm"] = min(scenarios["bear"]["fm"], scenarios["base"]["fm"])
+        scenarios["base"]["fm"] = min(scenarios["base"]["fm"], scenarios["bull"]["fm"])
 
     dcf = _run_dcf(revenue_0, fcf_0, dr, scenarios, market_cap)
 
@@ -393,6 +422,9 @@ def analyze(ticker: str) -> dict:
         "tam_expanding": cp.get("tam_expanding") if used_claude else None,
         "network_effects": cp.get("network_effects") if used_claude else None,
         "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
+        # Event risk discount
+        "event_risk_discount": round(event_risk_discount, 2) if event_risk_discount > 0 else None,
+        "event_risk_reason": event_risk_reason,
     }
 
 
@@ -499,4 +531,6 @@ def analyze_quant(ticker: str) -> dict:
         "tam_expanding": None,
         "network_effects": None,
         "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
+        "event_risk_discount": None,
+        "event_risk_reason": None,
     }

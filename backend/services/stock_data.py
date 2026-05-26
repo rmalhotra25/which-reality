@@ -669,6 +669,7 @@ class StockDataService:
                         mid = float(snap.fair_market_value)
                     if mid <= 0 and snap.day and snap.day.close:
                         mid = float(snap.day.close)
+                    mid = round(mid, 2)  # round before filter so tiny values (e.g. 0.001) don't pass as non-zero then store as 0.0
                     if mid <= 0:
                         skipped_mid += 1
                         continue

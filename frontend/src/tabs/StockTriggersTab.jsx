@@ -430,7 +430,7 @@ function PutSellingCard({ r }) {
         <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>INCOME</div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {[
-            { label: 'Bid / Ask', value: bid != null && ask != null ? `$${bid.toFixed(2)} / $${ask.toFixed(2)}` : '—' },
+            { label: 'Bid / Ask', value: bid > 0 && ask > 0 ? `$${bid.toFixed(2)} / $${ask.toFixed(2)}` : '—' },
             { label: 'Mid Premium', value: mid != null ? `$${mid.toFixed(2)}` : '—' },
             { label: 'Monthly Return', value: monthlyReturn != null ? `${monthlyReturn}%` : '—' },
             { label: 'Annualized', value: annualReturn != null ? `${annualReturn}%` : '—' },

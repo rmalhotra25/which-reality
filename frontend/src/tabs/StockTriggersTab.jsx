@@ -674,39 +674,73 @@ function EventRiskBanner({ discount, reason }) {
   )
 }
 
-function MonteCarloSection({ mc, currentPrice }) {
+function MonteCarloSection({ mc, currentPrice, waccSensitivity, currentWacc }) {
+  const [tooltipOpen, setTooltipOpen] = useState(false)
   if (!mc || mc.prob_undervalued_pct == null) return null
   const ps = mc.per_share
   const prob = mc.prob_undervalued_pct
   const capped = prob >= 97
   const displayProb = capped ? '97%+' : `${prob}%`
-  const probColor = prob >= 60 ? '#68d391' : prob >= 40 ? '#fbd38d' : '#fc8181'
-  const probBg    = prob >= 60 ? '#0a2218' : prob >= 40 ? '#2d2000' : '#2d1515'
+
+  const signalLabel = prob >= 90 ? 'Very High'
+    : prob >= 75 ? 'High'
+    : prob >= 55 ? 'Moderate'
+    : prob >= 40 ? 'Mixed'
+    : 'Weak'
+
+  const probColor  = prob >= 60 ? '#68d391' : prob >= 40 ? '#fbd38d' : '#fc8181'
+  const probBg     = prob >= 60 ? '#0a2218' : prob >= 40 ? '#2d2000' : '#2d1515'
   const probBorder = prob >= 60 ? '#276749' : prob >= 40 ? '#b7791f' : '#742a2a'
+
   const allVals = [ps.p10, ps.p25, ps.median, ps.p75, ps.p90, currentPrice].filter(Boolean)
   const barMin = Math.min(...allVals) * 0.92
   const barMax = Math.max(...allVals) * 1.08
   const pct = v => `${Math.max(0, Math.min(100, (v - barMin) / (barMax - barMin) * 100)).toFixed(1)}%`
   const hist = mc.histogram || []
   const maxCount = hist.length ? Math.max(...hist.map(h => h.count)) : 1
+
+  const fmtUp = up => up != null ? (up > 0 ? `+${up}%` : `${up}%`) : '—'
+  const upColor = up => up == null ? '#718096' : up >= 0 ? '#68d391' : '#fc8181'
+
   return (
     <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '10px', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <span style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em' }}>MONTE CARLO DCF</span>
           <span style={{ marginLeft: '8px', fontSize: '11px', color: '#4a5568' }}>{mc.n_simulations?.toLocaleString()} simulations</span>
         </div>
       </div>
+
+      {/* Signal box + value range */}
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div style={{ padding: '16px 20px', minWidth: '130px', textAlign: 'center', background: probBg, border: `1px solid ${probBorder}`, borderRadius: '10px', flexShrink: 0 }}>
-          <div style={{ fontSize: '36px', fontWeight: 900, color: probColor, lineHeight: 1 }}>{displayProb}</div>
-          <div style={{ fontSize: '11px', color: '#a0aec0', marginTop: '6px', lineHeight: 1.4 }}>chance stock is<br />undervalued today</div>
+        {/* Signal box */}
+        <div style={{ padding: '14px 18px', minWidth: '180px', background: probBg, border: `1px solid ${probBorder}`, borderRadius: '10px', flexShrink: 0 }}>
+          <div style={{ fontSize: '10px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '4px' }}>VALUATION SIGNAL</div>
+          <div style={{ fontSize: '26px', fontWeight: 900, color: probColor, lineHeight: 1.1, marginBottom: '8px' }}>{signalLabel}</div>
+          <div style={{ fontSize: '12px', color: '#a0aec0', lineHeight: 1.5, marginBottom: '8px' }}>
+            {displayProb} of modeled valuation scenarios exceed current price
+          </div>
+          <div style={{ fontSize: '10px', color: '#718096', lineHeight: 1.4, display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+            <span>Simulation-based estimate, not probability of positive returns</span>
+            <span
+              onClick={() => setTooltipOpen(v => !v)}
+              style={{ cursor: 'pointer', color: '#63b3ed', fontWeight: 700, flexShrink: 0 }}
+            >ⓘ</span>
+          </div>
+          {tooltipOpen && (
+            <div style={{ marginTop: '8px', padding: '8px 10px', background: '#1a202c', border: '1px solid #2d3748', borderRadius: '6px', fontSize: '11px', color: '#a0aec0', lineHeight: 1.5 }}>
+              Based on Monte Carlo simulation of valuation assumptions (growth, margins, discount rates, event adjustments). This is not a probability of positive investment returns.
+            </div>
+          )}
           {capped && (
             <div style={{ fontSize: '10px', color: '#f6e05e', marginTop: '8px', lineHeight: 1.4, background: '#2d2a00', border: '1px solid #975a16', borderRadius: '4px', padding: '4px 6px' }}>
               ⚠️ Model at maximum confidence — verify sector assumptions before acting
             </div>
           )}
         </div>
+
+        {/* Percentile value range */}
         <div style={{ flex: 1, minWidth: '220px' }}>
           <div style={{ fontSize: '11px', color: '#718096', marginBottom: '10px', fontWeight: 600 }}>INTRINSIC VALUE RANGE (PER SHARE)</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -730,6 +764,54 @@ function MonteCarloSection({ mc, currentPrice }) {
           </div>
         </div>
       </div>
+
+      {/* WACC sensitivity table */}
+      {waccSensitivity && waccSensitivity.length > 0 && (
+        <div>
+          <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '8px' }}>
+            ASSUMPTION SENSITIVITY — FAIR VALUE AT DIFFERENT DISCOUNT RATES
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: '340px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #2d3748' }}>
+                  <th style={{ textAlign: 'left', color: '#718096', fontWeight: 600, padding: '4px 10px 8px', fontSize: '10px', letterSpacing: '0.06em' }}>WACC</th>
+                  <th style={{ textAlign: 'center', color: '#fc8181', fontWeight: 600, padding: '4px 8px 8px', fontSize: '10px' }}>BEAR</th>
+                  <th style={{ textAlign: 'center', color: '#90cdf4', fontWeight: 600, padding: '4px 8px 8px', fontSize: '10px' }}>BASE</th>
+                  <th style={{ textAlign: 'center', color: '#68d391', fontWeight: 600, padding: '4px 8px 8px', fontSize: '10px' }}>BULL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {waccSensitivity.map(row => {
+                  const isCurrent = currentWacc != null && Math.abs(row.wacc_pct - currentWacc) < 0.6
+                  return (
+                    <tr key={row.wacc_pct} style={{ borderTop: '1px solid #1a2030', background: isCurrent ? '#0d1728' : 'transparent' }}>
+                      <td style={{ padding: '8px 10px', color: isCurrent ? '#90cdf4' : '#a0aec0', fontWeight: isCurrent ? 700 : 400, whiteSpace: 'nowrap' }}>
+                        {row.wacc_pct}%{isCurrent && <span style={{ fontSize: '10px', marginLeft: '5px', color: '#4a5568' }}>← current</span>}
+                      </td>
+                      {['bear', 'base', 'bull'].map(s => (
+                        <td key={s} style={{ padding: '8px', textAlign: 'center' }}>
+                          {row[s]?.price != null ? (
+                            <>
+                              <div style={{ fontWeight: 700, color: '#e2e8f0' }}>${row[s].price.toLocaleString()}</div>
+                              <div style={{ fontSize: '10px', color: upColor(row[s].upside) }}>{fmtUp(row[s].upside)}</div>
+                            </>
+                          ) : '—'}
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: '10px', color: '#4a5568', marginTop: '6px' }}>
+            Same scenario assumptions as above. Highlighted row = currently calculated WACC for this company.
+          </div>
+        </div>
+      )}
+
+      {/* Histogram */}
       {hist.length > 0 && (
         <div>
           <div style={{ fontSize: '10px', color: '#4a5568', marginBottom: '6px' }}>Distribution of {mc.n_simulations?.toLocaleString()} simulated intrinsic values (per share)</div>
@@ -1465,7 +1547,7 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <MonteCarloSection mc={r.monte_carlo} currentPrice={r.current_price} />
+              <MonteCarloSection mc={r.monte_carlo} currentPrice={r.current_price} waccSensitivity={r.wacc_sensitivity} currentWacc={r.wacc_pct} />
             </div>
 
             <div style={{ marginBottom: '16px' }}>

@@ -196,7 +196,35 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
         return {}
 
 
-def _mechanial_scenarios(d: dict) -> dict:
+_SENSITIVITY_RATES = [0.055, 0.070, 0.085]
+
+
+def _wacc_sensitivity(
+    revenue_0: float,
+    fcf_0: float,
+    scenarios: dict,
+    market_cap: float,
+    shares_m: float,
+    current_price: float | None,
+) -> list[dict]:
+    """Run DCF at 3 fixed WACC levels for sensitivity display. Same scenarios, different discount rates."""
+    rows = []
+    for test_dr in _SENSITIVITY_RATES:
+        sens = _run_dcf(revenue_0, fcf_0, test_dr, scenarios, market_cap)
+        row: dict = {"wacc_pct": round(test_dr * 100, 1)}
+        for s in ("bull", "base", "bear"):
+            up = sens.get(f"{s}_upside")
+            price = (
+                round(current_price * (1 + up / 100), 2)
+                if (current_price and up is not None and shares_m > 0)
+                else None
+            )
+            row[s] = {"price": price, "upside": up}
+        rows.append(row)
+    return rows
+
+
+
     """Fallback mechanical scenarios when Claude call fails."""
     rev_growth = (d.get("revenue_growth") or 5) / 100
     fcf_margin = (d.get("fcf_margin") or 0) / 100
@@ -425,6 +453,7 @@ def analyze(ticker: str) -> dict:
         # Event risk discount
         "event_risk_discount": round(event_risk_discount, 2) if event_risk_discount > 0 else None,
         "event_risk_reason": event_risk_reason,
+        "wacc_sensitivity": _wacc_sensitivity(revenue_0, fcf_0, scenarios, market_cap, shares_m, current_price),
     }
 
 
@@ -533,4 +562,5 @@ def analyze_quant(ticker: str) -> dict:
         "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
         "event_risk_discount": None,
         "event_risk_reason": None,
+        "wacc_sensitivity": _wacc_sensitivity(revenue_0, fcf_0, scenarios, market_cap, shares_m, current_price),
     }

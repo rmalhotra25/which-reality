@@ -196,6 +196,36 @@ def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_
         return {}
 
 
+def _mechanial_scenarios(d: dict) -> dict:
+    """
+    Mechanical (non-Claude) bull/base/bear scenario parameters derived from fundamentals.
+    Uses conservative 'sleeper' growth caps for mature/dividend stocks; switches to
+    higher growth ceiling when TTM revenue growth > 20% (compounder-style stocks).
+    Returns dict with bull/base/bear, each having g1/g2/fcf/tg keys.
+    """
+    rev_growth   = (d.get("revenue_growth") or 5) / 100
+    fcf_margin   = (d.get("fcf_margin")     or 0) / 100
+    gross_margin = (d.get("gross_margin")   or 40) / 100
+    net_margin   = (d.get("net_margin")     or 0) / 100
+    fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
+
+    if rev_growth > 0.20:  # high-growth: compounder-style ceilings
+        return {
+            "bull": {"g1": min(rev_growth,        0.80), "g2": 0.20, "fcf": min(fcf_0 * 1.30, 0.55), "tg": 0.035},
+            "base": {"g1": min(rev_growth * 0.70, 0.50), "g2": 0.12, "fcf": fcf_0,                    "tg": 0.030},
+            "bear": {"g1": max(rev_growth * 0.30, 0.03), "g2": 0.05, "fcf": max(fcf_0 * 0.75, 0.01), "tg": 0.020},
+        }
+    else:  # mature/dividend: conservative sleeper ceilings
+        _g_bull = min(rev_growth * 1.3, 0.30)
+        _g_base = min(rev_growth * 0.80, min(_g_bull, 0.20))
+        _g_bear = min(max(rev_growth * 0.30, 0.02), _g_base)
+        return {
+            "bull": {"g1": _g_bull, "g2": 0.10, "fcf": min(fcf_0 * 1.20, 0.50), "tg": 0.030},
+            "base": {"g1": _g_base, "g2": 0.07, "fcf": fcf_0,                    "tg": 0.025},
+            "bear": {"g1": _g_bear, "g2": 0.03, "fcf": max(fcf_0 * 0.80, 0.01), "tg": 0.020},
+        }
+
+
 _SENSITIVITY_RATES = [0.055, 0.070, 0.085]
 
 

@@ -324,15 +324,19 @@ def analyze(ticker: str) -> dict:
 
     market_cap = d["market_cap"]
     ps = d.get("ps") or 0
-    if ps <= 0:
+    net_margin = (d.get("net_margin") or 0) / 100
+    pe_ratio = d.get("pe") or 0
+    if ps > 0:
+        revenue_0 = market_cap / ps
+    elif pe_ratio > 0 and net_margin > 0:
+        # P/S not available (banks, utilities, REITs): derive from P/E ÷ net margin
+        revenue_0 = (market_cap / pe_ratio) / net_margin
+    else:
         raise ValueError(f"No P/S ratio available for {ticker} — cannot derive revenue")
-
-    revenue_0 = market_cap / ps
 
     # FCF floor
     fcf_margin = (d.get("fcf_margin") or 0) / 100
     gross_margin = (d.get("gross_margin") or 40) / 100
-    net_margin = (d.get("net_margin") or 0) / 100
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
     # Beta-derived WACC, debt-adjusted for non-financial companies with D/E > 0.5
@@ -470,14 +474,18 @@ def analyze_quant(ticker: str) -> dict:
 
     market_cap = d["market_cap"]
     ps = d.get("ps") or 0
-    if ps <= 0:
+    net_margin = (d.get("net_margin") or 0) / 100
+    pe_ratio = d.get("pe") or 0
+    if ps > 0:
+        revenue_0 = market_cap / ps
+    elif pe_ratio > 0 and net_margin > 0:
+        # P/S not available (banks, utilities, REITs): derive from P/E ÷ net margin
+        revenue_0 = (market_cap / pe_ratio) / net_margin
+    else:
         raise ValueError(f"No P/S ratio available for {ticker}")
-
-    revenue_0 = market_cap / ps
 
     fcf_margin = (d.get("fcf_margin") or 0) / 100
     gross_margin = (d.get("gross_margin") or 40) / 100
-    net_margin = (d.get("net_margin") or 0) / 100
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
     dr = _wacc_from_beta(

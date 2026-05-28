@@ -403,7 +403,8 @@ def run_top_rated_scan(force: bool = False) -> dict:
                 if not snap:
                     rej_pv["no_data"] += 1
                     continue
-                price = snap.get("price") or 0
+                # Use prev_close as fallback when market is closed (day.close = 0)
+                price = snap.get("price") or snap.get("prev_close") or 0
                 vol = snap.get("volume") or 0
                 if price < 15:
                     rej_pv["price"] += 1
@@ -431,7 +432,8 @@ def run_top_rated_scan(force: bool = False) -> dict:
             for i, ticker in enumerate(stage1b):
                 _set_progress(current=i + 1, current_ticker=ticker)
                 metrics = _get_fundamentals(ticker) or {}
-                snap_price = (snapshots.get(ticker) or {}).get("price")
+                snap = snapshots.get(ticker) or {}
+                snap_price = snap.get("price") or snap.get("prev_close")
                 result = _score_ticker(ticker, metrics, snapshot_price=snap_price)
                 if result is None:
                     continue

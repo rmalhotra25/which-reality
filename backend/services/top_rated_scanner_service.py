@@ -1,11 +1,11 @@
 """
-Top Rated Market Scanner — finds S&P 500 + Nasdaq 100 stocks scoring 7/8+ on the trigger system.
+Top Rated Market Scanner — finds S&P 500 + Nasdaq 100 stocks scoring 6/8+ on the trigger system.
 
 Architecture:
   Stage 1a: Polygon batch snapshot → price >= $15 + volume >= 1M filter
   Stage 1b: Sequential Finnhub fundamentals (24h disk cache) → mc/rev/margin/P-E filter
   Stage 2:  Full trigger scoring (MA, earnings, DCF, MC) on ~80 survivors
-  Skip-MC:  If non_MC_earned + 2 < 7 (non_MC < 5), skip Monte Carlo entirely
+  Skip-MC:  If non_MC_earned + 2 < 6 (non_MC < 4), skip Monte Carlo entirely
 
 Cache:
   /tmp/cache/fundamentals/{TICKER}.json  — Finnhub basic_financials, 24h TTL
@@ -184,7 +184,7 @@ def _score_ticker(ticker: str, metrics: dict, snapshot_price: float | None = Non
     """
     Score one ticker using pre-cached Finnhub metrics.
     snapshot_price: current price from Polygon batch snapshot (used for display only).
-    Applies skip-MC logic: skip Monte Carlo when non_MC_earned + 2 < 7.
+    Applies skip-MC logic: skip Monte Carlo when non_MC_earned + 2 < 6.
     """
     try:
         from services.trigger_service import _fetch_ma_data, _calculate_score
@@ -262,7 +262,7 @@ def _score_ticker(ticker: str, metrics: dict, snapshot_price: float | None = Non
 
         # ── Skip MC if can't reach 7 ───────────────────────────────────────────
         mc_result: dict = {}
-        if non_mc_earned + 2 >= 7:  # i.e., non_mc_earned >= 5
+        if non_mc_earned + 2 >= 6:  # i.e., non_mc_earned >= 4
             shares_m = metrics.get("shareOutstanding") or 0
             mc_result = _monte_carlo_dcf(revenue_0, mc_val, shares_m, dr, scenarios)
 
@@ -436,15 +436,15 @@ def run_top_rated_scan(force: bool = False) -> dict:
                 if result is None:
                     continue
                 nm = result.get("non_mc_earned", 0)
-                if nm + 2 < 7:
+                if nm + 2 < 6:
                     skipped_mc_count += 1
                     continue
                 scored.append(result)
 
             scored.sort(key=lambda x: x["score"], reverse=True)
 
-            top_rated = [s for s in scored if s["score"] >= 7]
-            near_trigger_raw = [s for s in scored if s["score"] == 6][:10]
+            top_rated = [s for s in scored if s["score"] >= 6]
+            near_trigger_raw = [s for s in scored if s["score"] == 5][:10]
 
             for s in near_trigger_raw:
                 s["near_trigger_message"] = _near_trigger_message(s)

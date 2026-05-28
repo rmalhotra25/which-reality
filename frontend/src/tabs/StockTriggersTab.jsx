@@ -1181,7 +1181,7 @@ function TopRatedTab({ onAnalyze }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
           <p style={{ fontSize: '13px', color: '#718096', margin: '0 0 4px' }}>
-            S&P 500 + Nasdaq 100 · Two-stage funnel · 7/8 trigger score required
+            S&P 500 + Nasdaq 100 · Two-stage funnel · 6/8 trigger score required
           </p>
           {data?.scanned_at && (
             <div style={{ fontSize: '11px', color: '#4a5568' }}>
@@ -1248,7 +1248,7 @@ function TopRatedTab({ onAnalyze }) {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
               <span style={{ fontSize: '13px', fontWeight: 700, color: '#48bb78', letterSpacing: '0.06em' }}>
-                ⭐ TOP RATED — 7/8 TRIGGER SCORE
+                ⭐ TOP RATED — 6/8 TRIGGER SCORE
               </span>
               <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.top_rated?.length || 0} stocks)</span>
             </div>
@@ -1260,7 +1260,7 @@ function TopRatedTab({ onAnalyze }) {
               </div>
             ) : (
               <div style={{ color: '#4a5568', padding: '20px 16px', background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', fontSize: '13px', textAlign: 'center' }}>
-                No stocks reached 7/8 this scan. Check Near Trigger for close candidates.
+                No stocks reached 6/8 this scan. Check Near Trigger for close candidates.
               </div>
             )}
           </div>
@@ -1270,7 +1270,7 @@ function TopRatedTab({ onAnalyze }) {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d', letterSpacing: '0.06em' }}>
-                  ⚡ NEAR TRIGGER — 6/8 (one criterion away)
+                  ⚡ NEAR TRIGGER — 5/8 (one criterion away)
                 </span>
                 <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.near_trigger.length})</span>
               </div>

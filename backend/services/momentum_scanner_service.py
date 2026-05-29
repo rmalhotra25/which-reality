@@ -90,6 +90,8 @@ def _score_options_flow(ticker: str, price: float) -> tuple:
     """Score unusual options flow (0-2 pts). Counts OTM call contracts where vol/OI >= 2.0."""
     detail = {"unusual_contracts": 0, "total_notional": 0, "dominant_type": None}
     try:
+        if price <= 0:
+            return 0, detail
         from services.polygon_client import get_options_chain_snapshot
         snaps = get_options_chain_snapshot(
             ticker, dte_max=21, near_price=price, strike_pct_range=0.15
@@ -201,19 +203,23 @@ def _score_pre_earnings_drift(ticker: str, spy_closes: list) -> tuple:
             to=end.strftime("%Y-%m-%d"),
             symbol=ticker,
         )
-        earnings_list = (cal or {}).get("earningsCalendar", [])
+        earnings_list = sorted(
+            (cal or {}).get("earningsCalendar", []),
+            key=lambda e: e.get("date", ""),
+        )
         days_to_earnings = None
         for e in earnings_list:
             try:
                 d = datetime.strptime(e["date"], "%Y-%m-%d").date()
                 diff = (d - today).days
-                if diff >= 14:
+                if diff >= 0:
                     days_to_earnings = diff
                     break
             except Exception:
                 pass
 
-        if days_to_earnings is None:
+        # Only active 14-42 days before earnings (enforced after taking nearest date)
+        if days_to_earnings is None or days_to_earnings < 14:
             return 0, detail
 
         detail["days_to_earnings"] = days_to_earnings

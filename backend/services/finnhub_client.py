@@ -69,16 +69,16 @@ def get_company_profile(symbol: str) -> dict:
         return {}
 
 
-def get_insider_sentiment(symbol: str) -> dict:
+def get_insider_sentiment(symbol: str, days: int = 90) -> dict:
     """
-    Net insider buying/selling over the last 90 days (direct transactions only).
+    Net insider buying/selling over the last `days` days (direct transactions only).
     Returns signal ('buy'|'sell'|'neutral'), net_change, insiders_buying/selling count.
     Filters out derivative (options) transactions to focus on real share purchases.
     """
     try:
         from datetime import date, timedelta
         today = date.today()
-        from_date = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+        from_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
         to_date = today.strftime("%Y-%m-%d")
         data = _get_client().stock_insider_transactions(symbol, from_date, to_date)
         txns = (data or {}).get("data", []) or []

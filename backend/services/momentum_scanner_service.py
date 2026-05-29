@@ -296,7 +296,9 @@ def run_momentum_scan(force: bool = False) -> dict:
             current_ticker="", started_at=datetime.now().isoformat(),
         )
         try:
+            import random
             universe = _load_universe()
+            random.shuffle(universe)  # shuffle so partial runs aren't alphabet-biased
             _set_progress(phase="stage1_price_volume", total=len(universe))
 
             from services.polygon_client import get_snapshots_batch
@@ -316,10 +318,12 @@ def run_momentum_scan(force: bool = False) -> dict:
                 len(universe), len(price_map),
             )
 
-            # If Polygon returned nothing (market closed), use full universe with placeholder price
+            # If Polygon returned nothing (market closed), use a random 150-ticker sample
+            # so the scan completes in ~5 min instead of timing out on the full universe
             if not price_map:
-                logger.info("Momentum: Polygon returned no snapshot data — using full universe")
-                price_map = {t: 0.0 for t in universe}
+                logger.info("Momentum: Polygon returned no snapshot data — sampling 150 tickers")
+                sample = universe[:150]  # already shuffled above
+                price_map = {t: 0.0 for t in sample}
 
             _set_progress(phase="scoring", total=len(price_map), current=0)
 

@@ -62,6 +62,7 @@ function SubTabs({ active, onChange, watchlistCount, upgradeCount }) {
     { id: 'analysis', label: '🔍 Analysis' },
     { id: 'top_rated', label: '⭐ Top Rated' },
     { id: 'watchlist', label: `👁 Watchlist${watchlistCount ? ` (${watchlistCount})` : ''}${upgradeCount ? ` 🔥${upgradeCount}` : ''}` },
+    { id: 'cef', label: '📊 CEF Scanner' },
   ]
   return (
     <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid #2d3748', paddingBottom: '0' }}>
@@ -1584,6 +1585,218 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
   )
 }
 
+// ─── CEF Scanner sub-tab ──────────────────────────────────────────────────────
+function CEFMetricPill({ label, value, color }) {
+  return (
+    <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '5px', padding: '4px 8px', textAlign: 'center' }}>
+      <div style={{ fontSize: '9px', color: '#4a5568', marginBottom: '1px' }}>{label}</div>
+      <div style={{ fontSize: '12px', fontWeight: 700, color: color || '#e2e8f0' }}>{value}</div>
+    </div>
+  )
+}
+
+function CEFCard({ cef }) {
+  const pd = cef.premium_discount_pct
+  const pdColor = pd == null ? '#718096' : pd <= -10 ? '#68d391' : pd < 0 ? '#fbd38d' : '#fc8181'
+  const pdBg = pd == null ? '#1a1f2e' : pd <= -10 ? '#0a2218' : pd < 0 ? '#2d2000' : '#2d1515'
+  const pdBorder = pd == null ? '#2d3748' : pd <= -10 ? '#276749' : pd < 0 ? '#b7791f' : '#742a2a'
+  const z = cef.z_score_1y
+  const zColor = z == null ? '#718096' : z <= -1 ? '#68d391' : z <= 0 ? '#fbd38d' : '#fc8181'
+  const scoreColor = cef.score >= 75 ? '#68d391' : cef.score >= 55 ? '#fbd38d' : '#a0aec0'
+  const scoreBg = cef.score >= 75 ? '#276749' : cef.score >= 55 ? '#b7791f' : '#2d3748'
+  const pdLabel = pd == null ? '—' : `${pd > 0 ? '+' : ''}${pd.toFixed(1)}%`
+
+  return (
+    <div style={{ background: pdBg, border: `1px solid ${pdBorder}`, borderRadius: '10px', padding: '14px 16px', display: 'flex', alignItems: 'flex-start', gap: '14px', flexWrap: 'wrap' }}>
+      <div style={{ width: '50px', height: '50px', borderRadius: '50%', flexShrink: 0, background: scoreBg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontSize: '16px', fontWeight: 900, color: scoreColor, lineHeight: 1 }}>{cef.score}</span>
+        <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.6)' }}>/100</span>
+      </div>
+      <div style={{ flex: 1, minWidth: '180px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '17px', fontWeight: 900, color: '#e2e8f0' }}>{cef.ticker}</span>
+          {cef.name && cef.name !== cef.ticker && (
+            <span style={{ fontSize: '11px', color: '#718096', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cef.name}</span>
+          )}
+          <div style={{ padding: '3px 9px', borderRadius: '5px', background: pd != null && pd < 0 ? '#276749' : pd != null && pd > 0 ? '#742a2a' : '#2d3748', fontSize: '11px', fontWeight: 700, color: pdColor }}>
+            {pd != null && pd < 0 ? '▼ Discount' : pd != null && pd > 0 ? '▲ Premium' : '—'} {pdLabel}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '6px', fontSize: '12px', color: '#a0aec0' }}>
+          {cef.nav != null && <span>NAV <strong style={{ color: '#e2e8f0' }}>${cef.nav.toFixed(2)}</strong></span>}
+          {cef.price != null && <span>Price <strong style={{ color: '#e2e8f0' }}>${cef.price.toFixed(2)}</strong></span>}
+        </div>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          <CEFMetricPill label="Distribution" value={cef.distribution_rate_pct != null ? `${cef.distribution_rate_pct.toFixed(1)}%` : '—'} color={cef.distribution_rate_pct >= 8 ? '#68d391' : cef.distribution_rate_pct >= 5 ? '#fbd38d' : '#a0aec0'} />
+          <CEFMetricPill label="Z-Score 1Y" value={z != null ? z.toFixed(2) : '—'} color={zColor} />
+          <CEFMetricPill label="Leverage" value={cef.leverage_pct != null ? `${cef.leverage_pct.toFixed(0)}%` : '—'} />
+          {cef.pd_52w_low != null && <CEFMetricPill label="52W Low PD" value={`${cef.pd_52w_low > 0 ? '+' : ''}${cef.pd_52w_low.toFixed(1)}%`} color="#4a5568" />}
+          {cef.pd_52w_high != null && <CEFMetricPill label="52W High PD" value={`${cef.pd_52w_high > 0 ? '+' : ''}${cef.pd_52w_high.toFixed(1)}%`} color="#4a5568" />}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CEFAnalyzePanel({ ticker, onClose }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    setLoading(true); setError(null); setData(null)
+    fetch(`${API}/api/cef/analyze/${encodeURIComponent(ticker)}`)
+      .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b.detail || r.status)))
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(String(e)); setLoading(false) })
+  }, [ticker])
+
+  return (
+    <div style={{ background: '#0a1628', border: '1px solid #2b6cb0', borderRadius: '10px', padding: '16px 18px', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <span style={{ fontSize: '15px', fontWeight: 800, color: '#90cdf4' }}>{ticker} — Live CEFConnect Data</span>
+        <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: '20px', lineHeight: 1, padding: '0 4px' }}>×</button>
+      </div>
+      {loading && <div style={{ color: '#718096', fontSize: '13px' }}>Fetching from CEFConnect…</div>}
+      {error && <div style={{ color: '#fc8181', fontSize: '13px' }}>Error: {error}</div>}
+      {data && !loading && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {[
+            { label: 'Score', value: `${data.score}/100`, color: data.score >= 75 ? '#68d391' : data.score >= 55 ? '#fbd38d' : '#a0aec0' },
+            { label: 'NAV', value: data.nav != null ? `$${data.nav}` : '—' },
+            { label: 'Price', value: data.price != null ? `$${data.price}` : '—' },
+            { label: 'Discount/Prem', value: data.premium_discount_pct != null ? `${data.premium_discount_pct > 0 ? '+' : ''}${data.premium_discount_pct}%` : '—', color: data.premium_discount_pct < 0 ? '#68d391' : '#fc8181' },
+            { label: 'Distribution', value: data.distribution_rate_pct != null ? `${data.distribution_rate_pct}%` : '—', color: data.distribution_rate_pct >= 8 ? '#68d391' : '#fbd38d' },
+            { label: 'Z-Score 1Y', value: data.z_score_1y != null ? `${data.z_score_1y}` : '—' },
+            { label: 'Leverage', value: data.leverage_pct != null ? `${data.leverage_pct}%` : '—' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '6px', padding: '8px 12px', textAlign: 'center', minWidth: '80px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', marginBottom: '2px' }}>{label}</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: color || '#e2e8f0' }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CEFScannerSubTab() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState(null)
+  const [analyzeTicker, setAnalyzeTicker] = useState(null)
+  const [customTicker, setCustomTicker] = useState('')
+
+  const fetchScan = async (force = false) => {
+    setLoading(true); setError(null)
+    try {
+      const resp = await fetch(force ? `${API}/api/cef/scan?force=true` : `${API}/api/cef/scan`)
+      const body = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(body.detail || `Error ${resp.status}`)
+      setData(body)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false); setRefreshing(false)
+    }
+  }
+
+  useEffect(() => { fetchScan() }, []) // eslint-disable-line
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    await fetch(`${API}/api/cef/refresh`, { method: 'POST' })
+    await fetchScan(true)
+  }
+
+  const cefs = data?.top || []
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ fontSize: '11px', color: '#4a5568' }}>
+          {data?.scanned_at
+            ? `Last scan: ${relativeTime(data.scanned_at)} · ${data.scored_count}/${data.universe_count} funds scored${data.errors?.length > 0 ? ` · ${data.errors.length} no data` : ''}`
+            : 'Closed-end funds ranked by discount · distribution · z-score · leverage'}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input
+              value={customTicker}
+              onChange={e => setCustomTicker(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key === 'Enter' && customTicker.trim() && setAnalyzeTicker(customTicker.trim())}
+              placeholder="e.g. PDI"
+              style={{ padding: '6px 10px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '6px', color: '#e2e8f0', fontSize: '13px', fontWeight: 600, width: '80px', textTransform: 'uppercase', outline: 'none' }}
+            />
+            <button
+              onClick={() => customTicker.trim() && setAnalyzeTicker(customTicker.trim())}
+              disabled={!customTicker.trim()}
+              style={{ padding: '6px 12px', background: !customTicker.trim() ? '#2d3748' : '#0a1628', color: !customTicker.trim() ? '#718096' : '#90cdf4', border: `1px solid ${!customTicker.trim() ? '#2d3748' : '#2b6cb0'}`, borderRadius: '6px', cursor: !customTicker.trim() ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 600 }}
+            >
+              Analyze
+            </button>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={loading || refreshing}
+            style={{ padding: '7px 16px', background: loading || refreshing ? '#2d3748' : '#0a2218', color: loading || refreshing ? '#718096' : '#68d391', border: `1px solid ${loading || refreshing ? '#2d3748' : '#2f855a'}`, borderRadius: '7px', cursor: loading || refreshing ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 600 }}
+          >
+            {loading || refreshing ? '⟳ Loading…' : '⟳ Refresh Scan'}
+          </button>
+        </div>
+      </div>
+
+      {/* Scoring legend */}
+      <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '11px', color: '#718096', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+        <span style={{ color: '#a0aec0', fontWeight: 600 }}>Score (0-100):</span>
+        <span>Discount to NAV <strong style={{ color: '#e2e8f0' }}>35 pts</strong></span>
+        <span>Distribution Rate <strong style={{ color: '#e2e8f0' }}>30 pts</strong></span>
+        <span>Z-Score 1Y <strong style={{ color: '#e2e8f0' }}>20 pts</strong></span>
+        <span>Leverage <strong style={{ color: '#e2e8f0' }}>15 pts</strong></span>
+      </div>
+
+      {analyzeTicker && (
+        <CEFAnalyzePanel ticker={analyzeTicker} onClose={() => { setAnalyzeTicker(null); setCustomTicker('') }} />
+      )}
+
+      {error && <div style={{ color: '#fc8181', padding: '12px 16px', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>{error}</div>}
+
+      {loading && !data && (
+        <div style={{ color: '#a0aec0', textAlign: 'center', padding: '60px 24px', fontSize: '13px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
+          Fetching CEF data from CEFConnect…
+        </div>
+      )}
+
+      {cefs.length > 0 && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#68d391', letterSpacing: '0.06em' }}>TOP CEFs — ranked by composite score</span>
+            <span style={{ fontSize: '12px', color: '#4a5568' }}>({cefs.length} shown)</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {cefs.map(cef => <CEFCard key={cef.ticker} cef={cef} />)}
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && cefs.length === 0 && (
+        <div style={{ color: '#4a5568', textAlign: 'center', padding: '60px 24px', fontSize: '13px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
+          No results yet. Click <strong style={{ color: '#68d391' }}>Refresh Scan</strong> to load CEF data.
+        </div>
+      )}
+
+      <div style={{ marginTop: '24px', fontSize: '11px', color: '#4a5568', lineHeight: 1.6, borderTop: '1px solid #2d3748', paddingTop: '12px' }}>
+        Data via CEFConnect public API. Discount/premium and z-score reflect end-of-day NAV. Not investment advice.
+      </div>
+    </div>
+  )
+}
+
 // ─── Main tab ─────────────────────────────────────────────────────────────────
 export default function StockTriggersTab() {
   const [activeSubTab, setActiveSubTab] = useState('analysis')
@@ -1745,6 +1958,8 @@ export default function StockTriggersTab() {
           />
         </div>
       )}
+
+      {activeSubTab === 'cef' && <CEFScannerSubTab />}
     </div>
   )
 }

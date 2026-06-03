@@ -1596,18 +1596,16 @@ function CEFMetricPill({ label, value, color }) {
 }
 
 function CEFCard({ cef }) {
-  const pd = cef.premium_discount_pct
-  const pdColor = pd == null ? '#718096' : pd <= -10 ? '#68d391' : pd < 0 ? '#fbd38d' : '#fc8181'
-  const pdBg = pd == null ? '#1a1f2e' : pd <= -10 ? '#0a2218' : pd < 0 ? '#2d2000' : '#2d1515'
-  const pdBorder = pd == null ? '#2d3748' : pd <= -10 ? '#276749' : pd < 0 ? '#b7791f' : '#742a2a'
-  const z = cef.z_score_1y
-  const zColor = z == null ? '#718096' : z <= -1 ? '#68d391' : z <= 0 ? '#fbd38d' : '#fc8181'
   const scoreColor = cef.score >= 75 ? '#68d391' : cef.score >= 55 ? '#fbd38d' : '#a0aec0'
   const scoreBg = cef.score >= 75 ? '#276749' : cef.score >= 55 ? '#b7791f' : '#2d3748'
-  const pdLabel = pd == null ? '—' : `${pd > 0 ? '+' : ''}${pd.toFixed(1)}%`
+  const yieldColor = cef.annual_yield_pct >= 10 ? '#68d391' : cef.annual_yield_pct >= 7 ? '#fbd38d' : '#a0aec0'
+  const bg = cef.score >= 75 ? '#0a2218' : cef.score >= 55 ? '#2d2000' : '#1a1f2e'
+  const border = cef.score >= 75 ? '#276749' : cef.score >= 55 ? '#b7791f' : '#2d3748'
+  const above = cef.pct_above_52w_low
+  const aboveColor = above != null && above <= 12 ? '#68d391' : above != null && above <= 25 ? '#fbd38d' : '#a0aec0'
 
   return (
-    <div style={{ background: pdBg, border: `1px solid ${pdBorder}`, borderRadius: '10px', padding: '14px 16px', display: 'flex', alignItems: 'flex-start', gap: '14px', flexWrap: 'wrap' }}>
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: '10px', padding: '14px 16px', display: 'flex', alignItems: 'flex-start', gap: '14px', flexWrap: 'wrap' }}>
       <div style={{ width: '50px', height: '50px', borderRadius: '50%', flexShrink: 0, background: scoreBg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
         <span style={{ fontSize: '16px', fontWeight: 900, color: scoreColor, lineHeight: 1 }}>{cef.score}</span>
         <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.6)' }}>/100</span>
@@ -1615,23 +1613,46 @@ function CEFCard({ cef }) {
       <div style={{ flex: 1, minWidth: '180px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '17px', fontWeight: 900, color: '#e2e8f0' }}>{cef.ticker}</span>
-          {cef.name && cef.name !== cef.ticker && (
-            <span style={{ fontSize: '11px', color: '#718096', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cef.name}</span>
+          {cef.price != null && <span style={{ fontSize: '12px', color: '#a0aec0' }}>@ <strong style={{ color: '#e2e8f0' }}>${cef.price.toFixed(2)}</strong></span>}
+          {cef.annual_yield_pct != null && (
+            <div style={{ padding: '3px 9px', borderRadius: '5px', background: scoreBg, fontSize: '11px', fontWeight: 700, color: yieldColor }}>
+              {cef.annual_yield_pct.toFixed(1)}% yield
+            </div>
           )}
-          <div style={{ padding: '3px 9px', borderRadius: '5px', background: pd != null && pd < 0 ? '#276749' : pd != null && pd > 0 ? '#742a2a' : '#2d3748', fontSize: '11px', fontWeight: 700, color: pdColor }}>
-            {pd != null && pd < 0 ? '▼ Discount' : pd != null && pd > 0 ? '▲ Premium' : '—'} {pdLabel}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '6px', fontSize: '12px', color: '#a0aec0' }}>
-          {cef.nav != null && <span>NAV <strong style={{ color: '#e2e8f0' }}>${cef.nav.toFixed(2)}</strong></span>}
-          {cef.price != null && <span>Price <strong style={{ color: '#e2e8f0' }}>${cef.price.toFixed(2)}</strong></span>}
         </div>
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          <CEFMetricPill label="Distribution" value={cef.distribution_rate_pct != null ? `${cef.distribution_rate_pct.toFixed(1)}%` : '—'} color={cef.distribution_rate_pct >= 8 ? '#68d391' : cef.distribution_rate_pct >= 5 ? '#fbd38d' : '#a0aec0'} />
-          <CEFMetricPill label="Z-Score 1Y" value={z != null ? z.toFixed(2) : '—'} color={zColor} />
-          <CEFMetricPill label="Leverage" value={cef.leverage_pct != null ? `${cef.leverage_pct.toFixed(0)}%` : '—'} />
-          {cef.pd_52w_low != null && <CEFMetricPill label="52W Low PD" value={`${cef.pd_52w_low > 0 ? '+' : ''}${cef.pd_52w_low.toFixed(1)}%`} color="#4a5568" />}
-          {cef.pd_52w_high != null && <CEFMetricPill label="52W High PD" value={`${cef.pd_52w_high > 0 ? '+' : ''}${cef.pd_52w_high.toFixed(1)}%`} color="#4a5568" />}
+          <CEFMetricPill
+            label="Annual Yield"
+            value={cef.annual_yield_pct != null ? `${cef.annual_yield_pct.toFixed(1)}%` : '—'}
+            color={yieldColor}
+          />
+          <CEFMetricPill
+            label="Monthly Div"
+            value={cef.monthly_div != null ? `$${cef.monthly_div.toFixed(3)}` : '—'}
+            color="#a0aec0"
+          />
+          <CEFMetricPill
+            label="Above 52W Low"
+            value={above != null ? `+${above.toFixed(1)}%` : '—'}
+            color={aboveColor}
+          />
+          <CEFMetricPill
+            label="Below 52W High"
+            value={cef.pct_below_52w_high != null ? `-${cef.pct_below_52w_high.toFixed(1)}%` : '—'}
+            color="#718096"
+          />
+          <CEFMetricPill
+            label="Div Streak"
+            value={`${cef.dividend_streak_months}mo`}
+            color={cef.dividend_streak_months >= 12 ? '#68d391' : cef.dividend_streak_months >= 6 ? '#fbd38d' : '#a0aec0'}
+          />
+          {cef.yield_6m_ago_pct != null && (
+            <CEFMetricPill
+              label="Yield 6M Ago"
+              value={`${cef.yield_6m_ago_pct.toFixed(1)}%`}
+              color="#4a5568"
+            />
+          )}
         </div>
       </div>
     </div>
@@ -1654,21 +1675,20 @@ function CEFAnalyzePanel({ ticker, onClose }) {
   return (
     <div style={{ background: '#0a1628', border: '1px solid #2b6cb0', borderRadius: '10px', padding: '16px 18px', marginBottom: '16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <span style={{ fontSize: '15px', fontWeight: 800, color: '#90cdf4' }}>{ticker} — Live CEFConnect Data</span>
+        <span style={{ fontSize: '15px', fontWeight: 800, color: '#90cdf4' }}>{ticker} — Live Data (Polygon)</span>
         <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: '20px', lineHeight: 1, padding: '0 4px' }}>×</button>
       </div>
-      {loading && <div style={{ color: '#718096', fontSize: '13px' }}>Fetching from CEFConnect…</div>}
+      {loading && <div style={{ color: '#718096', fontSize: '13px' }}>Fetching price & dividend data…</div>}
       {error && <div style={{ color: '#fc8181', fontSize: '13px' }}>Error: {error}</div>}
       {data && !loading && (
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {[
             { label: 'Score', value: `${data.score}/100`, color: data.score >= 75 ? '#68d391' : data.score >= 55 ? '#fbd38d' : '#a0aec0' },
-            { label: 'NAV', value: data.nav != null ? `$${data.nav}` : '—' },
             { label: 'Price', value: data.price != null ? `$${data.price}` : '—' },
-            { label: 'Discount/Prem', value: data.premium_discount_pct != null ? `${data.premium_discount_pct > 0 ? '+' : ''}${data.premium_discount_pct}%` : '—', color: data.premium_discount_pct < 0 ? '#68d391' : '#fc8181' },
-            { label: 'Distribution', value: data.distribution_rate_pct != null ? `${data.distribution_rate_pct}%` : '—', color: data.distribution_rate_pct >= 8 ? '#68d391' : '#fbd38d' },
-            { label: 'Z-Score 1Y', value: data.z_score_1y != null ? `${data.z_score_1y}` : '—' },
-            { label: 'Leverage', value: data.leverage_pct != null ? `${data.leverage_pct}%` : '—' },
+            { label: 'Annual Yield', value: data.annual_yield_pct != null ? `${data.annual_yield_pct}%` : '—', color: data.annual_yield_pct >= 8 ? '#68d391' : '#fbd38d' },
+            { label: 'Monthly Div', value: data.monthly_div != null ? `$${data.monthly_div}` : '—' },
+            { label: 'Above 52W Low', value: data.pct_above_52w_low != null ? `+${data.pct_above_52w_low}%` : '—' },
+            { label: 'Div Streak', value: `${data.dividend_streak_months}mo` },
           ].map(({ label, value, color }) => (
             <div key={label} style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '6px', padding: '8px 12px', textAlign: 'center', minWidth: '80px' }}>
               <div style={{ fontSize: '10px', color: '#718096', marginBottom: '2px' }}>{label}</div>
@@ -1752,10 +1772,10 @@ function CEFScannerSubTab() {
       {/* Scoring legend */}
       <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '11px', color: '#718096', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
         <span style={{ color: '#a0aec0', fontWeight: 600 }}>Score (0-100):</span>
-        <span>Discount to NAV <strong style={{ color: '#e2e8f0' }}>35 pts</strong></span>
-        <span>Distribution Rate <strong style={{ color: '#e2e8f0' }}>30 pts</strong></span>
-        <span>Z-Score 1Y <strong style={{ color: '#e2e8f0' }}>20 pts</strong></span>
-        <span>Leverage <strong style={{ color: '#e2e8f0' }}>15 pts</strong></span>
+        <span>Distribution Yield <strong style={{ color: '#e2e8f0' }}>40 pts</strong></span>
+        <span>Price vs 52W Low <strong style={{ color: '#e2e8f0' }}>30 pts</strong></span>
+        <span>Dividend Streak <strong style={{ color: '#e2e8f0' }}>20 pts</strong></span>
+        <span>Yield Momentum <strong style={{ color: '#e2e8f0' }}>10 pts</strong></span>
       </div>
 
       {analyzeTicker && (

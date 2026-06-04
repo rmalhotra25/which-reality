@@ -1787,7 +1787,7 @@ function CEFScannerSubTab() {
       {loading && !data && (
         <div style={{ color: '#a0aec0', textAlign: 'center', padding: '60px 24px', fontSize: '13px' }}>
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
-          Fetching CEF data from CEFConnect…
+          Fetching CEF data from Polygon…
         </div>
       )}
 
@@ -1811,7 +1811,7 @@ function CEFScannerSubTab() {
       )}
 
       <div style={{ marginTop: '24px', fontSize: '11px', color: '#4a5568', lineHeight: 1.6, borderTop: '1px solid #2d3748', paddingTop: '12px' }}>
-        Data via CEFConnect public API. Discount/premium and z-score reflect end-of-day NAV. Not investment advice.
+        Price and dividend data via Polygon. Yield = annualized dividend ÷ current price. Not investment advice.
       </div>
     </div>
   )

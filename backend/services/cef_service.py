@@ -70,32 +70,17 @@ def _get_dividends(ticker: str, days: int = 400) -> list[dict]:
 
 
 def _get_snapshot(ticker: str) -> dict:
-    """Price snapshot and 52w high/low from Polygon."""
+    """Price, 52w high/low, and 6M-ago price from Polygon daily bars."""
     try:
-        from services.polygon_client import _client
-        c = _client()
-        snap = c.get_snapshot_ticker("stocks", ticker)
-        if not snap:
+        from services.polygon_client import get_close_prices
+        closes = get_close_prices(ticker, days=380)
+        if not closes:
             return {}
-        day = snap.day
-        prev = snap.prev_day
-        price = float(day.close or 0) if day else 0
-        if price <= 0:
-            price = float(prev.close or 0) if prev else 0
-
-        # 52-week range from Polygon aggregates
-        to_dt = date.today().isoformat()
-        from_dt = (date.today() - timedelta(days=380)).isoformat()
-        aggs = list(c.get_aggs(ticker, 1, "day", from_dt, to_dt,
-                               adjusted=True, sort="asc", limit=400))
-        closes = [float(a.close) for a in aggs if a.close and float(a.close) > 0]
-
-        high_52w = max(closes[-252:]) if len(closes) >= 20 else None
-        low_52w = min(closes[-252:]) if len(closes) >= 20 else None
-
-        # 6-month-ago price for yield momentum
+        price = closes[-1]
+        window = closes[-252:] if len(closes) >= 252 else closes
+        high_52w = max(window) if window else None
+        low_52w = min(window) if window else None
         price_6m = closes[-126] if len(closes) >= 126 else None
-
         return {
             "price": price,
             "high_52w": high_52w,

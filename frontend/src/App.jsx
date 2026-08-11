@@ -11,12 +11,14 @@ import MarketPulseTab from './tabs/MarketPulseTab'
 import DiscoveryTab from './tabs/DiscoveryTab'
 import StockTriggersTab from './tabs/StockTriggersTab'
 import MomentumTab from './tabs/MomentumTab'
+import DividendPathTab from './tabs/DividendPathTab'
 
 const TABS = [
   { id: 'pulse',        label: '⚡ Market Pulse' },
   { id: 'discovery',   label: '🔭 Discovery' },
   { id: 'triggers',    label: '🎯 Stock Triggers' },
   { id: 'momentum',   label: '⚡ Momentum' },
+  { id: 'divpath',     label: '💵 Dividend Path' },
   { id: 'options',     label: '📈 Options Trading' },
   { id: 'wheel',       label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls',label: '💰 Covered Calls' },
@@ -127,6 +129,7 @@ export default function App() {
           {activeTab === 'discovery'    && <DiscoveryTab />}
           {activeTab === 'triggers'     && <StockTriggersTab />}
           {activeTab === 'momentum'     && <MomentumTab />}
+          {activeTab === 'divpath'      && <DividendPathTab />}
         </TabErrorBoundary>
       </main>
     </div>

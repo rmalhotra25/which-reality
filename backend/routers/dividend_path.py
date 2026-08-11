@@ -36,6 +36,31 @@ def refresh(starting_capital: float = 61000.0, weekly_dca: float = 500.0):
     return {"status": "started"}
 
 
+class CustomHolding(BaseModel):
+    ticker: str
+    dollar_amount: float
+    dca_pct: float
+
+
+class CustomPortfolioRequest(BaseModel):
+    holdings: list[CustomHolding]
+    starting_capital: float = 61000.0
+    weekly_dca: float = 500.0
+
+
+@router.post("/run-custom")
+def run_custom(req: CustomPortfolioRequest):
+    from services.dividend_path_service import run_custom_portfolio
+    try:
+        return run_custom_portfolio(
+            holdings=[h.model_dump() for h in req.holdings],
+            starting_capital=req.starting_capital,
+            weekly_dca=req.weekly_dca,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 class LumpSumRequest(BaseModel):
     lump_amount: float
     starting_capital: float = 61000.0

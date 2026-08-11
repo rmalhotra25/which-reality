@@ -316,50 +316,29 @@ def _select_portfolio(scored: list[dict]) -> list[dict]:
     return selected
 
 
-def _build_projection(
-    portfolio: list[dict],
+def _run_projection(
     starting_capital: float,
     weekly_dca: float,
+    blended_yield: float,
+    avg_div_growth_pct: float,
     months: int = 360,
-) -> list[dict]:
-    """
-    Month-by-month DRIP + DCA projection.
-    Returns list of monthly snapshots until $1,000/month goal or end of horizon.
-    """
-    # Blended portfolio yield and avg dividend growth
-    total_alloc = sum(s["allocation_pct"] for s in portfolio) or 100
-    blended_yield = sum(s["annual_yield_pct"] * s["allocation_pct"] / total_alloc for s in portfolio) / 100
-    avg_div_growth = sum(s["div_growth_pct"] * s["allocation_pct"] / total_alloc for s in portfolio) / 100
-
-    # Conservative assumptions
-    # Price appreciation: ETF-heavy portfolio ~5-6% annually, we use 5%
-    annual_price_appreciation = 0.05
-    # Dividend growth bounded conservatively
-    annual_div_growth = max(0.02, min(avg_div_growth / 100, 0.08))
-    # Total annual return = price appreciation + yield (for DRIP reinvestment)
-    annual_total_return = annual_price_appreciation + blended_yield
+) -> tuple[list[dict], dict | None]:
+    """Core DRIP + DCA compound projection. blended_yield is a decimal (e.g. 0.04)."""
+    annual_div_growth = max(0.02, min(avg_div_growth_pct / 100, 0.08))
+    annual_total_return = 0.05 + blended_yield  # 5% price appreciation + yield
     monthly_total_return = annual_total_return / 12
     monthly_div_growth = (1 + annual_div_growth) ** (1 / 12) - 1
-
-    monthly_contribution = weekly_dca * 52 / 12  # ~$2,166.67/month
+    monthly_contribution = weekly_dca * 52 / 12
 
     portfolio_value = starting_capital
-    current_yield = blended_yield  # tracks as dividends grow
+    current_yield = blended_yield
     goal_monthly_income = 1000.0
-
     snapshots = []
     reached_goal_at = None
 
     for month in range(1, months + 1):
-        # Monthly income from dividends
-        monthly_income = portfolio_value * current_yield / 12
-
-        # DRIP: reinvest dividends + add DCA contribution
         portfolio_value = portfolio_value * (1 + monthly_total_return) + monthly_contribution
-
-        # Dividend yield on invested capital grows as dividends grow
         current_yield = current_yield * (1 + monthly_div_growth)
-
         monthly_income_after = portfolio_value * current_yield / 12
 
         year = (month - 1) // 12 + 1
@@ -382,6 +361,105 @@ def _build_projection(
             reached_goal_at = {"month": month, "year": year, "month_label": f"Month {month}"}
 
     return snapshots, reached_goal_at
+
+
+def _build_projection(
+    portfolio: list[dict],
+    starting_capital: float,
+    weekly_dca: float,
+    months: int = 360,
+) -> tuple[list[dict], dict | None]:
+    """Build projection from a portfolio list weighted by allocation_pct."""
+    total_alloc = sum(s["allocation_pct"] for s in portfolio) or 100
+    blended_yield = sum(s["annual_yield_pct"] * s["allocation_pct"] / total_alloc for s in portfolio) / 100
+    avg_div_growth = sum(s.get("div_growth_pct", 0) * s["allocation_pct"] / total_alloc for s in portfolio)
+    return _run_projection(starting_capital, weekly_dca, blended_yield, avg_div_growth, months)
+
+
+def run_custom_portfolio(
+    holdings: list[dict],
+    starting_capital: float = 61000.0,
+    weekly_dca: float = 500.0,
+) -> dict:
+    """
+    Fetch live data for a user-defined set of tickers, score them, and run the
+    DRIP+DCA projection. Dollar amounts and DCA percentages are caller-supplied.
+    """
+    results = []
+    errors = []
+
+    for h in holdings:
+        ticker = h["ticker"].upper().strip()
+        dollar_amount = float(h.get("dollar_amount", 0))
+        dca_pct = float(h.get("dca_pct", round(100 / max(len(holdings), 1), 1)))
+        meta = _UNIVERSE.get(ticker, {"category": "custom", "name": ticker})
+
+        try:
+            snap = _get_price_data(ticker)
+            div = _get_dividend_data(ticker)
+            price = snap.get("price", 0)
+
+            if price <= 0:
+                results.append({
+                    "ticker": ticker, "name": meta["name"], "category": meta["category"],
+                    "dollar_amount": dollar_amount, "dca_pct": dca_pct,
+                    "allocation_pct": round(dollar_amount / starting_capital * 100, 1) if starting_capital else 0,
+                    "price": 0, "annual_yield_pct": 0, "annual_div": 0,
+                    "monthly_div_per_share": 0, "score": 0, "div_growth_pct": 0,
+                    "streak_payments": 0, "high_52w": 0, "low_52w": 0,
+                    "drawdown_from_high_pct": 0, "error": "No price data",
+                })
+                errors.append(ticker)
+                continue
+
+            scored = _score_ticker(ticker, meta, snap, div) or {}
+            scored["dollar_amount"] = dollar_amount
+            scored["dca_pct"] = dca_pct
+            scored["allocation_pct"] = round(dollar_amount / starting_capital * 100, 1) if starting_capital else 0
+            results.append(scored)
+
+        except Exception as e:
+            logger.debug("custom portfolio error for %s: %s", ticker, e)
+            errors.append(ticker)
+            results.append({
+                "ticker": ticker, "name": meta["name"], "category": meta["category"],
+                "dollar_amount": dollar_amount, "dca_pct": dca_pct,
+                "allocation_pct": round(dollar_amount / starting_capital * 100, 1) if starting_capital else 0,
+                "price": 0, "annual_yield_pct": 0, "annual_div": 0,
+                "monthly_div_per_share": 0, "score": 0, "div_growth_pct": 0,
+                "streak_payments": 0, "high_52w": 0, "low_52w": 0,
+                "drawdown_from_high_pct": 0, "error": str(e),
+            })
+
+        time.sleep(0.2)
+
+    total_dollars = sum(r.get("dollar_amount", 0) for r in results) or starting_capital
+    blended_yield = sum(
+        r.get("annual_yield_pct", 0) * r.get("dollar_amount", 0) / total_dollars
+        for r in results
+    ) / 100
+    avg_div_growth = sum(
+        r.get("div_growth_pct", 0) * r.get("dollar_amount", 0) / total_dollars
+        for r in results
+    )
+
+    snapshots, reached_goal_at = _run_projection(starting_capital, weekly_dca, blended_yield, avg_div_growth)
+
+    return {
+        "scanned_at": datetime.now(tz=timezone.utc).isoformat(),
+        "portfolio": results,
+        "errors": errors,
+        "params": {
+            "starting_capital": starting_capital,
+            "weekly_dca": weekly_dca,
+            "monthly_contribution": round(weekly_dca * 52 / 12, 2),
+        },
+        "blended_yield_pct": round(blended_yield * 100, 2),
+        "starting_monthly_income": round(starting_capital * blended_yield / 12, 2),
+        "goal_monthly_income": 1000.0,
+        "reached_goal_at": reached_goal_at,
+        "projection": snapshots,
+    }
 
 
 def _distribute_lump_sum(

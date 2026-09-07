@@ -281,6 +281,34 @@ def _score_ticker(ticker: str, price: float, spy_closes: list) -> dict | None:
         return None
 
 
+def _enrich_alerts_web_news(alerts: list[dict]) -> list[dict]:
+    """Add real-time web news context to top momentum alerts in parallel."""
+    import concurrent.futures as _cf
+    try:
+        from services.claude_analyst import ClaudeAnalyst
+        analyst = ClaudeAnalyst()
+
+        def fetch(alert):
+            ticker = alert.get("ticker", "")
+            try:
+                return ticker, analyst._fetch_stock_news(ticker)
+            except Exception:
+                return ticker, ""
+
+        with _cf.ThreadPoolExecutor(max_workers=3) as pool:
+            futs = [(a, pool.submit(fetch, a)) for a in alerts[:5]]
+            for alert, fut in futs:
+                try:
+                    ticker, news = fut.result(timeout=25)
+                    if news:
+                        alert["web_news"] = news
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("Momentum web news enrichment failed: %s", e)
+    return alerts
+
+
 # ── Main scan ─────────────────────────────────────────────────────────────────
 
 def run_momentum_scan(force: bool = False) -> dict:
@@ -341,7 +369,7 @@ def run_momentum_scan(force: bool = False) -> dict:
                     logger.debug("Score failed for %s: %s", ticker, e)
 
             results.sort(key=lambda x: x["total_score"], reverse=True)
-            top = results[:10]
+            top = _enrich_alerts_web_news(results[:10])
 
             output = {
                 "scanned_at": datetime.now().isoformat(),

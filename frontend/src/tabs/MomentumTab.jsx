@@ -98,6 +98,17 @@ function AlertCard({ alert, rank }) {
         <SignalPill label="Insider Cluster" score={insider.score || 0} maxScore={2} detail={insiderDetail} />
         <SignalPill label="Pre-Earnings Drift" score={drift.score || 0} maxScore={2} detail={driftDetail} />
       </div>
+      {alert.web_news && (
+        <div style={{
+          margin: '0 16px 14px', padding: '10px 12px',
+          background: '#0a1628', border: '1px solid #1e3a5f',
+          borderRadius: '8px', fontSize: '12px', color: '#90cdf4', lineHeight: '1.6',
+          whiteSpace: 'pre-line',
+        }}>
+          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: '#4299e1', textTransform: 'uppercase', display: 'block', marginBottom: '4px' }}>📡 Live Context</span>
+          {alert.web_news}
+        </div>
+      )}
     </div>
   )
 }

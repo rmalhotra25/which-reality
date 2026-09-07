@@ -32,11 +32,9 @@ def _auto_run_if_empty() -> None:
             logger.info("Auto-seed: database is empty — running initial analysis now")
             from services.options_engine import OptionsEngine
             from services.wheel_engine import WheelEngine
-            from services.longterm_engine import LongTermEngine
             from services.champions_engine import run as run_champions
             OptionsEngine(db).run()
             WheelEngine(db).run()
-            LongTermEngine(db).run()
             run_champions(db)
             logger.info("Auto-seed: initial analysis complete")
         except Exception as e:
@@ -76,12 +74,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import options, wheel, longterm  # noqa: E402
+from routers import options, wheel  # noqa: E402
 from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, triggers, advanced_scanner, top_rated_scanner, momentum, cef, dividend_path  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
-app.include_router(longterm.router, prefix="/api/longterm", tags=["Long-Term"])
 app.include_router(covered_calls.router)
 app.include_router(advanced_scanner.router)
 app.include_router(top_rated_scanner.router)

@@ -547,6 +547,19 @@ class ClaudeAnalyst:
         technicals: dict,
         news_bullets: str,
     ) -> dict:
+        # Enrich news with real-time web search before put-selling analysis
+        company_name = (fundamentals or {}).get("company_name", "")
+        try:
+            web_news = self._fetch_stock_news(ticker, company_name)
+            if web_news:
+                news_bullets = (
+                    f"[Live web search — real-time news]\n{web_news}\n\n"
+                    f"[Background news provided]\n{news_bullets}"
+                )
+                logger.info("Web search enrichment succeeded for wheel analysis: %s", ticker)
+        except Exception as exc:
+            logger.warning("Web search failed for wheel analysis %s: %s", ticker, exc)
+
         system = (
             "You are a friendly options income coach. Your job is to help everyday investors "
             "understand the Wheel Strategy in plain, simple English — no jargon, no confusing "
@@ -653,6 +666,16 @@ class ClaudeAnalyst:
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        # Fetch real-time web news to enrich scoring context
+        _web_news_str = ""
+        try:
+            _web_news = self._fetch_stock_news(ticker)
+            if _web_news:
+                _web_news_str = f"\nReal-time web search news:\n{_web_news}\n"
+                logger.info("Web search enrichment succeeded for watchlist: %s", ticker)
+        except Exception as exc:
+            logger.warning("Web search failed for watchlist %s: %s", ticker, exc)
+
         # Earnings proximity check
         earnings_date = info.get("earnings_date")
         earnings_warning = None
@@ -688,7 +711,8 @@ class ClaudeAnalyst:
             f"Stock: {ticker} | Price: ${price} | Sector: {sector}\n"
             f"PE: {pe} | Dividend Yield: {div} | IV Rank: {iv_rank}\n"
             f"RSI: {rsi} | MA50: {ma50} | MA200: {ma200}\n"
-            f"Earnings date: {earnings_date or 'unknown'}\n\n"
+            f"Earnings date: {earnings_date or 'unknown'}\n"
+            f"{_web_news_str}\n"
             "Score this stock for three strategies on a 0-100 scale with a letter grade (A/B/C/D/F):\n"
             "1. WHEEL STRATEGY: Is it a good stock to sell cash-secured puts on?\n"
             "   Score rubric: IV rank 25% + stock quality/stability 30% + premium yield 25% + technical support 20%\n"
@@ -908,6 +932,7 @@ class ClaudeAnalyst:
     # Day Trade Scanner — rank top movers into high-confidence plays
     # ------------------------------------------------------------------
     def scan_day_trades(self, candidates: list[dict], spy_change: float | None = None) -> list[dict]:
+        import concurrent.futures as _cf
         from datetime import datetime, timezone
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         spy_ctx = f"SPY is {'+' if (spy_change or 0) >= 0 else ''}{spy_change}% today." if spy_change is not None else ""
@@ -916,9 +941,29 @@ class ClaudeAnalyst:
         near_expiries = _valid_expiry_dates(3)
         expiry_list = ", ".join(near_expiries)
 
+        # Parallel web search for all candidates — surfaces the real catalyst behind each move
+        web_news_map: dict[str, str] = {}
+        if candidates:
+            with _cf.ThreadPoolExecutor(max_workers=min(len(candidates), 4)) as pool:
+                futs = [(c["ticker"], pool.submit(self._fetch_stock_news, c["ticker"])) for c in candidates]
+                for ticker, fut in futs:
+                    try:
+                        news = fut.result(timeout=20)
+                        if news:
+                            web_news_map[ticker] = news
+                    except Exception:
+                        pass
+
         lines = []
         for c in candidates:
-            news_str = " | ".join(c.get("news", [])[:2]) or "No recent news"
+            # Merge live web news with cached headlines; web news comes first
+            cached_news = " | ".join(c.get("news", [])[:2])
+            web_ctx = web_news_map.get(c["ticker"], "")
+            if web_ctx:
+                first_line = next((l.strip().lstrip("•– -") for l in web_ctx.split("\n") if l.strip()), "")
+                news_str = f"[LIVE] {first_line}" + (f" | {cached_news}" if cached_news else "") if first_line else (cached_news or "No recent news")
+            else:
+                news_str = cached_news or "No recent news"
             arrow = "▲" if c["change_pct"] >= 0 else "▼"
 
             ta_parts = []

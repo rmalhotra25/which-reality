@@ -17,7 +17,7 @@ const TABS = [
   { id: 'pulse',        label: '⚡ Market Pulse' },
   { id: 'discovery',   label: '🔭 Discovery' },
   { id: 'triggers',    label: '🎯 Stock Triggers' },
-  { id: 'momentum',   label: '⚡ Momentum' },
+  { id: 'momentum',   label: '🔀 Momentum' },
   { id: 'divpath',     label: '💵 Dividend Path' },
   { id: 'options',     label: '📈 Options Trading' },
   { id: 'wheel',       label: '🔄 Wheel Strategy' },

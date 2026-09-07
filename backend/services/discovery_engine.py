@@ -549,10 +549,27 @@ def _fmt_candidates(candidates: list[dict]) -> str:
 def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
     """Call Claude to select top 10 picks and write a thesis for each."""
     try:
+        import concurrent.futures as _cf
         from services.claude_analyst import ClaudeAnalyst
         analyst = ClaudeAnalyst()
 
+        # Fetch real-time web news for the top candidates in parallel before thesis writing
+        top_tickers = [d["ticker"] for d in candidates[:15]]
+        web_news: dict[str, str] = {}
+        with _cf.ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [(t, pool.submit(analyst._fetch_stock_news, t)) for t in top_tickers]
+            for ticker, fut in futs:
+                try:
+                    news = fut.result(timeout=25)
+                    if news:
+                        web_news[ticker] = news
+                except Exception:
+                    pass
+
         data_str = _fmt_candidates(candidates)
+        if web_news:
+            news_block = "\n\n".join(f"{t}:\n{n}" for t, n in web_news.items())
+            data_str += f"\n\nREAL-TIME WEB NEWS (use to enrich theses and catalysts):\n{news_block}"
 
         if category == "compounder":
             role = (

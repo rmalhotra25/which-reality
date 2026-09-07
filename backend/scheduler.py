@@ -104,7 +104,6 @@ def run_all_analyses() -> None:
     from database import SessionLocal
     from services.options_engine import OptionsEngine
     from services.wheel_engine import WheelEngine
-    from services.longterm_engine import LongTermEngine
 
     today_eastern = date.today()   # server runs in UTC; check via pytz below
     import datetime as _dt
@@ -122,7 +121,6 @@ def run_all_analyses() -> None:
     try:
         OptionsEngine(db).run()
         WheelEngine(db).run()
-        LongTermEngine(db).run()
     except Exception as e:
         logger.error("Scheduled run failed: %s", e, exc_info=True)
     finally:

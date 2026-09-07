@@ -440,6 +440,9 @@ def analyze(ticker: str) -> dict:
         "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
         "ps": round(d["ps"], 1) if d.get("ps") else None,
         "beta": round(d["beta"], 2) if d.get("beta") else None,
+        # ROIC / WACC spread
+        "roic_pct": round(d["roic"], 1) if d.get("roic") is not None else None,
+        "roic_wacc_spread_pct": round(d["roic"] - wacc_pct, 1) if d.get("roic") is not None else None,
         # DCF methodology
         "wacc_pct": wacc_pct,
         "implied_growth_pct": implied_growth_pct,
@@ -558,6 +561,8 @@ def analyze_quant(ticker: str) -> dict:
         "pe": round(d["pe"], 1) if (d.get("pe") or 0) > 0 else None,
         "ps": round(d["ps"], 1) if d.get("ps") else None,
         "beta": round(d["beta"], 2) if d.get("beta") else None,
+        "roic_pct": round(d["roic"], 1) if d.get("roic") is not None else None,
+        "roic_wacc_spread_pct": round(d["roic"] - wacc_pct, 1) if d.get("roic") is not None else None,
         "wacc_pct": wacc_pct,
         "implied_growth_pct": implied_growth_pct,
         "used_claude_params": False,

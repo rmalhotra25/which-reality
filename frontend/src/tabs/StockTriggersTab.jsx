@@ -1541,8 +1541,38 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
                 <MetricPill label="P/S" value={r.ps ?? '—'} />
                 <MetricPill label="Beta" value={r.beta ?? '—'} />
                 <MetricPill label="WACC" value={`${r.wacc_pct}%`} />
+                {r.roic_pct != null && <MetricPill label="ROIC" value={`${r.roic_pct}%`} />}
               </div>
             </div>
+
+            {r.roic_pct != null && r.roic_wacc_spread_pct != null && (() => {
+              const spread = r.roic_wacc_spread_pct
+              const creator = spread > 0
+              const strong = Math.abs(spread) >= 5
+              const color  = creator ? '#68d391' : '#fc8181'
+              const bg     = creator ? (strong ? '#071a0a' : '#0a1a10') : (strong ? '#2d1515' : '#1a1010')
+              const border = creator ? (strong ? '#276749' : '#2f855a') : (strong ? '#742a2a' : '#c53030')
+              const label  = creator
+                ? (strong ? 'Strong value creator' : 'Value creator')
+                : (strong ? 'Value destroyer' : 'Marginal — barely covering cost of capital')
+              return (
+                <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: '8px', padding: '12px 16px', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>ROIC / WACC SPREAD</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '22px', fontWeight: 800, color }}>
+                      {spread > 0 ? '+' : ''}{spread}%
+                    </span>
+                    <span style={{ fontSize: '13px', color, fontWeight: 600 }}>{label}</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#a0aec0', marginTop: '6px', lineHeight: 1.6 }}>
+                    ROIC {r.roic_pct}% vs WACC {r.wacc_pct}% — {creator
+                      ? `every dollar reinvested earns ${spread}% above the hurdle rate, compounding real value`
+                      : `the company earns ${Math.abs(spread)}% below its cost of capital — growth may be destroying value`
+                    }
+                  </div>
+                </div>
+              )
+            })()}
 
             <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px', marginBottom: '16px' }}>
               <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>REVERSE DCF — GROWTH RATE THE MARKET IS CURRENTLY PRICING IN</div>

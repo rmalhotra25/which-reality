@@ -63,7 +63,6 @@ function SubTabs({ active, onChange, watchlistCount, upgradeCount }) {
     { id: 'top_rated', label: '⭐ Top Rated' },
     { id: 'movers', label: '🚀 Big Movers' },
     { id: 'watchlist', label: `👁 Watchlist${watchlistCount ? ` (${watchlistCount})` : ''}${upgradeCount ? ` 🔥${upgradeCount}` : ''}` },
-    { id: 'cef', label: '📊 CEF Scanner' },
   ]
   return (
     <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid #2d3748', paddingBottom: '0' }}>
@@ -2165,7 +2164,6 @@ export default function StockTriggersTab() {
         </div>
       )}
 
-      {activeSubTab === 'cef' && <CEFScannerSubTab />}
     </div>
   )
 }

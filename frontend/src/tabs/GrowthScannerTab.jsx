@@ -298,6 +298,11 @@ export default function GrowthScannerTab() {
     const next = [...watchlist.filter(w => w.ticker !== r.ticker), item]
     setWatchlist(next)
     localStorage.setItem('trigger_watchlist', JSON.stringify(next))
+    fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker: r.ticker, notes: '' }),
+    }).catch(() => {})
   }
 
   const isInWatchlist = (ticker) => watchlist.some(w => w.ticker === ticker)

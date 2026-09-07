@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 const API = '/api/dividend-path'
 
@@ -663,6 +663,122 @@ export default function DividendPathTab() {
             Past performance does not guarantee future results. Scanned {activeData.scanned_at?new Date(activeData.scanned_at).toLocaleString():'—'}.
           </div>
         </>
+      )}
+
+      {/* ── DIVIDEND SCREENER ────────────────────────────────────────────── */}
+      <DividendScreener />
+    </div>
+  )
+}
+
+function DividendScreener() {
+  const [data, setData] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
+  const pollRef = useRef(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  const fetchResults = async () => {
+    try {
+      const res = await fetch('/api/advanced-scanner/dividend')
+      if (!res.ok) return
+      const body = await res.json().catch(() => ({}))
+      if (body.scanning) {
+        startPolling()
+      } else {
+        setData(body)
+        stopPolling()
+        setScanning(false)
+      }
+    } catch {}
+  }
+
+  const startPolling = () => {
+    if (pollRef.current) return
+    setScanning(true)
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch('/api/advanced-scanner/status/dividend')
+        if (!res.ok) return
+        const body = await res.json().catch(() => ({}))
+        if (!body.running) {
+          stopPolling()
+          setScanning(false)
+          fetchResults()
+        }
+      } catch {}
+    }, 2500)
+  }
+
+  useEffect(() => {
+    fetchResults()
+    return () => stopPolling()
+  }, []) // eslint-disable-line
+
+  const handleRefresh = async () => {
+    setData(null)
+    setCollapsed(false)
+    try {
+      await fetch('/api/advanced-scanner/refresh/dividend', { method: 'POST' })
+      startPolling()
+    } catch {}
+  }
+
+  const results = data?.results || []
+
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.bdr}`,borderRadius:'12px',overflow:'hidden',marginTop:'8px'}}>
+      <div style={{padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div>
+          <span style={{fontSize:'14px',fontWeight:600,color:C.text}}>💰 Dividend Income Screener</span>
+          <span style={{fontSize:'11px',color:C.muted,marginLeft:'10px'}}>High-yield growers · Nasdaq Dividend Achievers universe</span>
+          {data?.scanned_at && <span style={{fontSize:'11px',color:'#4a5568',marginLeft:'8px'}}>· {Math.floor((Date.now()-new Date(data.scanned_at))/3600000)}h ago</span>}
+        </div>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button
+            onClick={handleRefresh}
+            disabled={scanning}
+            style={{padding:'5px 12px',background:scanning?'#2d3748':'#1a2a1a',color:scanning?C.muted:C.accent,border:`1px solid ${scanning?'#2d3748':'#2f855a'}`,borderRadius:'6px',cursor:scanning?'not-allowed':'pointer',fontSize:'11px',fontWeight:600}}
+          >
+            {scanning ? '⟳ Scanning…' : '⟳ Refresh'}
+          </button>
+          <button onClick={() => setCollapsed(s => !s)} style={{padding:'5px 12px',background:'transparent',border:`1px solid ${C.bdr}`,borderRadius:'6px',color:C.sub,cursor:'pointer',fontSize:'13px'}}>
+            {collapsed ? 'Show' : 'Hide'}
+          </button>
+        </div>
+      </div>
+      {!collapsed && (
+        <div style={{borderTop:`1px solid ${C.bdr}`,padding:'16px 20px'}}>
+          {scanning && (
+            <div style={{marginBottom:'16px'}}>
+              <div style={{fontSize:'12px',color:C.accent,marginBottom:'8px'}}>Scanning dividend growers…</div>
+              <div style={{height:'6px',background:'#2d3748',borderRadius:'3px',overflow:'hidden'}}>
+                <div style={{width:'50%',height:'100%',background:`linear-gradient(90deg,#276749,#48bb78)`,borderRadius:'3px'}}/>
+              </div>
+            </div>
+          )}
+          {results.length > 0 ? (
+            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+              {results.slice(0,10).map((r, i) => (
+                <div key={r.ticker} style={{display:'flex',alignItems:'center',gap:'10px',padding:'10px 12px',background:'#0f1117',border:`1px solid ${C.bdr}`,borderRadius:'8px',flexWrap:'wrap'}}>
+                  <span style={{fontSize:'12px',color:C.muted,minWidth:'22px'}}>#{i+1}</span>
+                  <span style={{fontSize:'15px',fontWeight:800,color:C.text,minWidth:'52px'}}>{r.ticker}</span>
+                  <span style={{fontSize:'12px',color:C.muted,flex:1}}>{r.name||''}</span>
+                  {r.dividend_yield_pct != null && <span style={{padding:'2px 8px',borderRadius:'5px',fontSize:'11px',fontWeight:700,background:'#1a2a1a',color:C.accent}}>{Number(r.dividend_yield_pct).toFixed(1)}% yield</span>}
+                  {r.dcf_base_upside != null && <span style={{padding:'2px 8px',borderRadius:'5px',fontSize:'11px',background:'#1a2a3a',color:'#90cdf4'}}>Base {r.dcf_base_upside > 0 ? '+' : ''}{Number(r.dcf_base_upside).toFixed(0)}%</span>}
+                  <span style={{padding:'2px 8px',borderRadius:'5px',fontSize:'11px',fontWeight:700,background:'#1a3a2a',color:C.accent}}>{r.trigger_score ?? '—'}/8</span>
+                </div>
+              ))}
+            </div>
+          ) : !scanning && (
+            <div style={{textAlign:'center',color:C.muted,padding:'32px',fontSize:'13px'}}>
+              No results — click Refresh to run a fresh scan.
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

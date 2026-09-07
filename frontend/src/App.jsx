@@ -3,7 +3,6 @@ import TabNav from './components/TabNav'
 import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
-import GrowthScannerTab from './tabs/GrowthScannerTab'
 import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
@@ -22,7 +21,6 @@ const TABS = [
   { id: 'options',     label: '📈 Options Trading' },
   { id: 'wheel',       label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls',label: '💰 Covered Calls' },
-  { id: 'scanner',     label: '🌱 Growth Scanner' },
   { id: 'watchlist',   label: '👁 Watchlist' },
   { id: 'performance', label: '🏆 Performance' },
 ]
@@ -123,7 +121,6 @@ export default function App() {
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}
-          {activeTab === 'scanner'      && <GrowthScannerTab />}
           {activeTab === 'watchlist'    && <WatchlistTab />}
           {activeTab === 'performance'  && <PerformanceTab />}
           {activeTab === 'discovery'    && <DiscoveryTab />}

@@ -61,6 +61,7 @@ function SubTabs({ active, onChange, watchlistCount, upgradeCount }) {
   const tabs = [
     { id: 'analysis', label: '🔍 Analysis' },
     { id: 'top_rated', label: '⭐ Top Rated' },
+    { id: 'movers', label: '🚀 Big Movers' },
     { id: 'watchlist', label: `👁 Watchlist${watchlistCount ? ` (${watchlistCount})` : ''}${upgradeCount ? ` 🔥${upgradeCount}` : ''}` },
     { id: 'cef', label: '📊 CEF Scanner' },
   ]
@@ -1497,7 +1498,18 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
             </div>
           )}
 
-          <PutSellingCard r={r} />
+          {r.trigger_score >= 4 && !(r.earnings_days != null && r.earnings_days <= 14) && (
+            <div style={{ background: '#071420', border: '1px solid #2b4c7e', borderRadius: '10px', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '20px' }}>💰</span>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#63b3ed', marginBottom: '2px' }}>PUT SELLING OPPORTUNITY</div>
+                <div style={{ fontSize: '12px', color: '#718096' }}>
+                  This stock scores {r.trigger_score}/8 — a good candidate for cash-secured puts.
+                  Open the <strong style={{ color: '#90cdf4' }}>🔄 Wheel Strategy</strong> tab to see live put tiers, strike selection, and annualized returns.
+                </div>
+              </div>
+            </div>
+          )}
 
           <div style={{ borderTop: '1px solid #2d3748', paddingTop: '20px' }}>
             <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '16px' }}>
@@ -1817,6 +1829,170 @@ function CEFScannerSubTab() {
   )
 }
 
+// ─── Big Movers sub-tab ───────────────────────────────────────────────────────
+function MoversSubTab({ onAnalyze }) {
+  const [data, setData] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const pollRef = useRef(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  const fetchResults = async () => {
+    try {
+      const res = await fetch(`${API}/api/advanced-scanner/movers`)
+      if (!res.ok) return
+      const body = await res.json().catch(() => ({}))
+      if (body.scanning) {
+        startPolling()
+      } else {
+        setData(body)
+        stopPolling()
+        setScanning(false)
+      }
+    } catch {}
+  }
+
+  const fetchStatus = async () => {
+    try {
+      const res = await fetch(`${API}/api/advanced-scanner/status/movers`)
+      if (!res.ok) return
+      const body = await res.json().catch(() => ({}))
+      if (!body.running) {
+        stopPolling()
+        setScanning(false)
+        fetchResults()
+      }
+    } catch {}
+  }
+
+  const startPolling = () => {
+    if (pollRef.current) return
+    setScanning(true)
+    pollRef.current = setInterval(fetchStatus, 2500)
+  }
+
+  useEffect(() => {
+    fetchResults()
+    return () => stopPolling()
+  }, []) // eslint-disable-line
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setData(null)
+    try {
+      await fetch(`${API}/api/advanced-scanner/refresh/movers`, { method: 'POST' })
+      startPolling()
+    } catch {}
+    setRefreshing(false)
+  }
+
+  const results = data?.results || []
+  const isRunning = scanning || refreshing
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <p style={{ fontSize: '13px', color: '#718096', margin: '0 0 4px' }}>
+            High-growth companies trading well below 52-week highs — S&P 500 + Nasdaq 100
+          </p>
+          <p style={{ fontSize: '11px', color: '#fc8181', fontStyle: 'italic', margin: 0 }}>
+            ⚠ SPECULATIVE — size positions accordingly
+          </p>
+          {data?.scanned_at && (
+            <div style={{ fontSize: '11px', color: '#4a5568', marginTop: '4px' }}>
+              Last scan: {relativeTime(data.scanned_at)}
+              {data.universe_size != null && ` · ${data.universe_size} screened → ${data.survivors} passed`}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRunning}
+          style={{
+            padding: '7px 16px',
+            background: isRunning ? '#2d3748' : '#1a2a3a',
+            color: isRunning ? '#718096' : '#90cdf4',
+            border: `1px solid ${isRunning ? '#2d3748' : '#2b6cb0'}`,
+            borderRadius: '7px', cursor: isRunning ? 'not-allowed' : 'pointer',
+            fontSize: '12px', fontWeight: 600,
+          }}
+        >
+          {isRunning ? '⟳ Scanning…' : '⟳ Refresh Scan'}
+        </button>
+      </div>
+
+      {isRunning && (
+        <div style={{ marginBottom: '20px', background: '#1a202c', borderRadius: '8px', padding: '16px' }}>
+          <div style={{ fontSize: '12px', color: '#90cdf4', marginBottom: '8px' }}>Scanning for big movers…</div>
+          <div style={{ height: '6px', background: '#2d3748', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ width: '60%', height: '100%', background: 'linear-gradient(90deg, #2b6cb0, #63b3ed)', borderRadius: '3px', animation: 'pulse 1.5s ease-in-out infinite' }} />
+          </div>
+        </div>
+      )}
+
+      {results.length > 0 && (
+        <>
+          <div style={{ fontSize: '13px', color: '#a0aec0', marginBottom: '12px' }}>
+            Top {results.length} picks · Ranked by Monte Carlo × base upside
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {results.map((r, i) => {
+              const score = r.trigger_score ?? 0
+              const action = r.trigger_action
+              const cfgMap = { 'STRONG BUY': '#68d391', 'SMALL BUY': '#90cdf4', 'WATCH': '#f6e05e', 'BLOCKED': '#fc8181' }
+              const acColor = cfgMap[action] || '#718096'
+              return (
+                <div key={r.ticker} style={{ background: '#1a202c', border: '1px solid #2d3748', borderRadius: '10px', padding: '16px 18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '13px', color: '#4a5568', fontWeight: 700 }}>#{i + 1}</span>
+                    <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>{r.ticker}</span>
+                    <span style={{ fontSize: '12px', color: '#718096', flex: 1 }}>{r.name || ''}</span>
+                    <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '13px', fontWeight: 700, background: score >= 7 ? '#1a3a2a' : score >= 5 ? '#1a2a3a' : '#2d3748', color: score >= 7 ? '#68d391' : score >= 5 ? '#90cdf4' : '#a0aec0', border: `1px solid ${score >= 7 ? '#276749' : score >= 5 ? '#2b6cb0' : '#4a5568'}` }}>{score}/8</span>
+                    <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700, color: acColor, background: '#2d3748', border: `1px solid ${acColor}44` }}>{action}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                    {r.revenue_growth_display != null && <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, background: '#1a2035', color: '#90cdf4' }}>Rev growth {r.revenue_growth_display > 0 ? '+' : ''}{Number(r.revenue_growth_display).toFixed(1)}%</span>}
+                    {r.dcf_base_upside != null && <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, background: r.dcf_base_upside > 20 ? '#1a2a3a' : '#2d3748', color: r.dcf_base_upside > 20 ? '#90cdf4' : '#a0aec0' }}>Base {r.dcf_base_upside > 0 ? '+' : ''}{Number(r.dcf_base_upside).toFixed(0)}%</span>}
+                    {r.dcf_bear_upside != null && <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, background: r.dcf_bear_upside > -30 ? '#1a3a2a' : '#3a1a1a', color: r.dcf_bear_upside > -30 ? '#68d391' : '#fc8181' }}>Bear {r.dcf_bear_upside > 0 ? '+' : ''}{Number(r.dcf_bear_upside).toFixed(0)}%</span>}
+                    {r.earnings_days != null && <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '12px', background: r.earnings_days <= 14 ? '#3a1a1a' : '#2d3748', color: r.earnings_days <= 14 ? '#fc8181' : '#718096' }}>Earnings {r.earnings_days}d</span>}
+                    {r.monte_carlo?.prob_undervalued_pct != null && <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '12px', background: '#2d2040', color: '#c084fc' }}>MC {Number(r.monte_carlo.prob_undervalued_pct).toFixed(0)}%</span>}
+                  </div>
+                  <button
+                    onClick={() => onAnalyze(r.ticker)}
+                    style={{ padding: '6px 16px', background: '#2b6cb0', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                  >
+                    Full Analysis →
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {!isRunning && !data && (
+        <div style={{ background: '#1a202c', borderRadius: '8px', padding: '48px', textAlign: 'center', color: '#718096', fontSize: '14px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>🚀</div>
+          <div style={{ fontWeight: 600, marginBottom: '4px' }}>No cached results</div>
+          <div style={{ fontSize: '13px', marginBottom: '16px' }}>Click Refresh to scan for big movers (~5–8 min).</div>
+          <button onClick={handleRefresh} style={{ padding: '8px 20px', background: '#1a2a3a', color: '#90cdf4', border: '1px solid #2b6cb0', borderRadius: '7px', cursor: 'pointer', fontWeight: 600 }}>Run Scan Now</button>
+        </div>
+      )}
+
+      {!isRunning && data && results.length === 0 && (
+        <div style={{ background: '#1a202c', borderRadius: '8px', padding: '40px', textAlign: 'center', color: '#718096', fontSize: '14px' }}>
+          <div style={{ fontWeight: 600, marginBottom: '8px' }}>No movers found this scan</div>
+          <div style={{ fontSize: '12px', color: '#4a5568' }}>No stocks passed the filters. Try again later.</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main tab ─────────────────────────────────────────────────────────────────
 export default function StockTriggersTab() {
   const [activeSubTab, setActiveSubTab] = useState('analysis')
@@ -1905,6 +2081,11 @@ export default function StockTriggersTab() {
       saveWatchlist(next)
       return next
     })
+    fetch(`${API}/api/watchlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker: r.ticker, notes: '' }),
+    }).catch(() => {})
   }
 
   function removeFromWatchlist(sym) {
@@ -1915,6 +2096,7 @@ export default function StockTriggersTab() {
     })
     setRefreshProgress(prev => { const n = { ...prev }; delete n[sym]; return n })
     setUpgrades(prev => prev.filter(u => u.ticker !== sym))
+    fetch(`${API}/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' }).catch(() => {})
   }
 
   function dismissUpgrade(sym) {
@@ -1960,6 +2142,10 @@ export default function StockTriggersTab() {
 
       {activeSubTab === 'top_rated' && (
         <TopRatedTab onAnalyze={jumpToAnalysis} />
+      )}
+
+      {activeSubTab === 'movers' && (
+        <MoversSubTab onAnalyze={jumpToAnalysis} />
       )}
 
       {activeSubTab === 'watchlist' && (

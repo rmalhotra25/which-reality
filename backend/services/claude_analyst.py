@@ -11,6 +11,23 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 
+_FINANCIAL_DOMAINS = [
+    "reuters.com",
+    "finance.yahoo.com",
+    "sec.gov",
+    "marketwatch.com",
+    "wsj.com",
+    "seekingalpha.com",
+    "benzinga.com",
+    "fool.com",
+    "finviz.com",
+    "cnbc.com",
+    "bloomberg.com",
+    "investing.com",
+    "businesswire.com",
+    "prnewswire.com",
+]
+
 
 def _clean_json(text: str) -> str:
     """Extract the outermost JSON object or array, whichever comes first."""
@@ -62,6 +79,67 @@ class ClaudeAnalyst:
 
     def _parse(self, text: str) -> Any:
         return json.loads(_clean_json(text))
+
+    def _fetch_stock_news(self, ticker: str, company_name: str = "") -> str:
+        """Use Anthropic web search to fetch real-time news for a ticker. Returns bullet points or empty string."""
+        ctx = f" ({company_name})" if company_name else ""
+        tools = [{
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "allowed_domains": _FINANCIAL_DOMAINS,
+            "max_uses": 3,
+        }]
+        messages = [{
+            "role": "user",
+            "content": (
+                f"Search for the most recent financial news and analyst commentary about {ticker}{ctx} stock. "
+                f"Include: recent earnings, guidance, analyst upgrades/downgrades, product news, macro tailwinds/headwinds. "
+                f"Return ONLY a concise bulleted list (3-6 bullets) of the most market-moving items. No preamble."
+            ),
+        }]
+
+        for _ in range(6):
+            resp = self.client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system="You are a financial news researcher. Search for and summarize key recent developments concisely.",
+                tools=tools,
+                messages=messages,
+            )
+
+            if resp.stop_reason != "tool_use":
+                for block in resp.content:
+                    if block.type == "text":
+                        return block.text.strip()
+                return ""
+
+            # Serialize current assistant message
+            messages.append({
+                "role": "assistant",
+                "content": [b.model_dump() for b in resp.content],
+            })
+
+            # Map tool_use_id → search result content from web_search_tool_result blocks
+            result_map: dict[str, Any] = {}
+            for block in resp.content:
+                d = block.model_dump()
+                if d.get("type") == "web_search_tool_result":
+                    result_map[d.get("tool_use_id", "")] = d.get("content", [])
+
+            tool_results = []
+            for block in resp.content:
+                d = block.model_dump()
+                if d.get("type") == "tool_use":
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": d["id"],
+                        "content": result_map.get(d["id"], "No results found"),
+                    })
+
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+        return ""
 
     # ------------------------------------------------------------------
     # Options analysis
@@ -376,6 +454,19 @@ class ClaudeAnalyst:
             "and market sentiment to produce actionable stock ratings. "
             "Respond ONLY with a valid JSON object — no prose, no markdown fences."
         )
+
+        # Enrich news context with real-time web search
+        company_name = (fundamentals or {}).get("company_name", "")
+        try:
+            web_news = self._fetch_stock_news(ticker, company_name)
+            if web_news:
+                news_bullets = (
+                    f"[Live web search — real-time news]\n{web_news}\n\n"
+                    f"[Background news provided]\n{news_bullets}"
+                )
+                logger.info("Web search enrichment succeeded for %s", ticker)
+        except Exception as exc:
+            logger.warning("Web search failed for %s: %s", ticker, exc)
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 

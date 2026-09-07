@@ -262,10 +262,12 @@ def _wacc_sensitivity(
     net_margin = (d.get("net_margin") or 0) / 100
     fcf_0 = max(fcf_margin, net_margin * 0.85, gross_margin * 0.15)
 
+    # Apply strong mean-reversion: high recent growth (e.g. 100%) cannot sustain;
+    # phase-1 (5-yr) caps at 30/18/10% regardless of trailing growth rate.
     return {
-        "bull": {"g1": min(rev_growth, 0.80),        "g2": 0.20, "fcf": min(fcf_0 * 1.30, 0.55), "tg": 0.035},
-        "base": {"g1": min(rev_growth * 0.70, 0.50), "g2": 0.12, "fcf": fcf_0,                    "tg": 0.030},
-        "bear": {"g1": max(rev_growth * 0.30, 0.03), "g2": 0.05, "fcf": fcf_0 * 0.75,             "tg": 0.020},
+        "bull": {"g1": min(rev_growth * 0.70, 0.30), "g2": 0.12, "fcf": min(fcf_0 * 1.20, 0.45), "tg": 0.035},
+        "base": {"g1": min(rev_growth * 0.45, 0.18), "g2": 0.08, "fcf": fcf_0,                    "tg": 0.030},
+        "bear": {"g1": min(max(rev_growth * 0.15, 0.02), 0.10), "g2": 0.04, "fcf": fcf_0 * 0.70,  "tg": 0.020},
     }
 
 
@@ -298,7 +300,7 @@ def _monte_carlo_dcf(
         tg_mean = base.get("tg", 0.025)
 
         rng = np.random.default_rng(42)
-        g1_s = np.clip(rng.normal(g1_mean, g1_std, n), -0.30, 1.50)
+        g1_s = np.clip(rng.normal(g1_mean, g1_std, n), -0.30, 0.50)
         g2_s = np.clip(rng.normal(g2_mean, g2_std, n), -0.30, 0.60)
         fm_s = np.clip(rng.normal(fm_mean, fm_std, n), 0.01, 0.85)
         dr_s = np.clip(rng.normal(dr, 0.015, n), 0.05, 0.30)

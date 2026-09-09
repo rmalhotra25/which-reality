@@ -1,13 +1,9 @@
 import logging
-import threading
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/leveraged-ma", tags=["Leveraged MA"])
-
-_daily_thread: threading.Thread | None = None
-_thread_lock = threading.Lock()
 
 
 @router.get("/signals")
@@ -49,11 +45,14 @@ def trigger_daily():
     global _daily_thread
     with _thread_lock:
         if _daily_thread and _daily_thread.is_alive():
-            return {"status": "already_running"}
+            return {"status": "already_running", "error": None}
         from services.leveraged_ma_service import run_daily_signal_engine
-        _daily_thread = threading.Thread(target=run_daily_signal_engine, daemon=True)
-        _daily_thread.start()
-    return {"status": "started"}
+        try:
+            run_daily_signal_engine()
+            return {"status": "ok", "error": None}
+        except Exception as e:
+            logger.error("run-daily endpoint: engine error: %s", e, exc_info=True)
+            return {"status": "error", "error": str(e)}
 
 
 @router.get("/configs")

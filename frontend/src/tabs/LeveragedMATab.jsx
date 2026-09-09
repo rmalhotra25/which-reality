@@ -125,12 +125,19 @@ export default function LeveragedMATab() {
     try {
       const res = await fetch(`${API}/api/leveraged-ma/run-daily`, { method: 'POST' })
       const data = await res.json()
-      if (data.status === 'started') {
-        setTimeout(() => { fetchSignals(); setTriggering(false) }, 9000)
+      if (data.status === 'error') {
+        setError(`Signal engine error: ${data.error}`)
+      } else if (data.status === 'already_running') {
+        setError('Engine is already running — try refreshing in a few seconds.')
       } else {
-        setTriggering(false)
+        setError(null)
+        await fetchSignals()
       }
-    } catch { setTriggering(false) }
+    } catch (e) {
+      setError(`Failed to run engine: ${e.message}`)
+    } finally {
+      setTriggering(false)
+    }
   }
 
   const signalsToday = signals?.filter(r => r.signal_today) ?? []

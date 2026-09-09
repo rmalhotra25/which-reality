@@ -125,12 +125,19 @@ export default function LeveragedMATab() {
     try {
       const res = await fetch(`${API}/api/leveraged-ma/run-daily`, { method: 'POST' })
       const data = await res.json()
-      if (data.status === 'started') {
-        setTimeout(() => { fetchSignals(); setTriggering(false) }, 9000)
+      if (data.status === 'error') {
+        setError(`Signal engine error: ${data.error}`)
+      } else if (data.status === 'already_running') {
+        setError('Engine is already running — try refreshing in a few seconds.')
       } else {
-        setTriggering(false)
+        setError(null)
+        await fetchSignals()
       }
-    } catch { setTriggering(false) }
+    } catch (e) {
+      setError(`Failed to run engine: ${e.message}`)
+    } finally {
+      setTriggering(false)
+    }
   }
 
   const signalsToday = signals?.filter(r => r.signal_today) ?? []
@@ -297,314 +304,240 @@ function Dashboard({ signals, loading, signalsToday, neverRun, onRunDaily, trigg
 
 const BACKTEST_PAIRS = [
   { asset_key: 'TQQQ_QQQ',   label: 'TQQQ / QQQ'  },
-  { asset_key: 'SPXL_SPY',   label: 'SPXL / SPY'   },
-  { asset_key: 'SOXL_SOXX',  label: 'SOXL / SOXX'  },
-  { asset_key: 'TNA_IWM',    label: 'TNA / IWM'    },
-  { asset_key: 'UPRO_SPY',   label: 'UPRO / SPY'   },
+  { asset_key: 'SPXL_SPY',   label: 'SPXL / SPY'  },
+  { asset_key: 'SOXL_SOXX',  label: 'SOXL / SOXX' },
+  { asset_key: 'TNA_IWM',    label: 'TNA / IWM'   },
+  { asset_key: 'UPRO_SPY',   label: 'UPRO / SPY'  },
 ]
 
 function BacktestPanel() {
-  const [assetKey, setAssetKey] = useState('TQQQ_QQQ')
+  const [pair, setPair]         = useState('TQQQ_QQQ')
   const [maPeriod, setMaPeriod] = useState(161)
-  const [entryBuffer, setEntryBuffer] = useState(1.0)
-  const [exitBuffer, setExitBuffer] = useState(-2.5)
-  const [cashApy, setCashApy] = useState(4.5)
-  const [apyMeta, setApyMeta] = useState(null)
-  const [result, setResult] = useState(null)
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState(null)
+  const [entryBuf, setEntryBuf] = useState(1.0)
+  const [exitBuf, setExitBuf]   = useState(-2.5)
+  const [cashApy, setCashApy]   = useState(null)   // null = loading from /cash-apy
+  const [cashApyLive, setCashApyLive] = useState(false)
+  const [cashApyLabel, setCashApyLabel] = useState('')
+  const [result, setResult]     = useState(null)
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState(null)
 
-  // Fetch recommended APY on mount
+  // Pre-populate cash APY from live endpoint
   useEffect(() => {
     fetch(`${API}/api/leveraged-ma/cash-apy`)
       .then(r => r.json())
-      .then(data => {
-        setCashApy(data.apy_pct)
-        setApyMeta(data)
+      .then(d => {
+        setCashApy(d.apy_pct ?? 4.5)
+        setCashApyLive(d.is_live ?? false)
+        setCashApyLabel(d.source ?? '')
       })
-      .catch(() => {})
+      .catch(() => setCashApy(4.5))
   }, [])
 
-  const runBacktest = async () => {
-    setRunning(true); setError(null); setResult(null)
+  const run = async () => {
+    setLoading(true); setError(null); setResult(null)
     try {
-      const p = new URLSearchParams({ asset_key: assetKey, ma_period: maPeriod, entry_buffer_pct: entryBuffer, exit_buffer_pct: exitBuffer, cash_apy_pct: cashApy })
-      const res = await fetch(`${API}/api/leveraged-ma/backtest?${p}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
-      setResult(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setRunning(false)
-    }
+      const params = new URLSearchParams({
+        asset_key: pair,
+        ma_period: maPeriod,
+        entry_buffer_pct: entryBuf,
+        exit_buffer_pct: exitBuf,
+        cash_apy_pct: cashApy ?? 4.5,
+      })
+      const res = await fetch(`${API}/api/leveraged-ma/backtest?${params}`)
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || `HTTP ${res.status}`) }
+      setResult(await res.json())
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
   }
 
-  const inputStyle = { background: '#0f1117', border: '1px solid #2d3748', color: '#e2e8f0', padding: '6px 10px', borderRadius: 6, fontSize: 13, width: '100%' }
-  const labelStyle = { fontSize: 11, color: '#718096', fontWeight: 600, marginBottom: 4, display: 'block', letterSpacing: '0.06em', textTransform: 'uppercase' }
+  const inputStyle = { background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: 4, color: '#e2e8f0', padding: '5px 8px', fontSize: 13, width: 80 }
+  const labelStyle = { fontSize: 11, color: '#718096', marginBottom: 3 }
 
   return (
     <div>
-      <div style={s.infoBox}>
-        <strong style={{ color: '#e2e8f0' }}>How it works:</strong> The underlying ETF (QQQ, SPY, etc.) must stay {'>'} entry buffer above its
-        SMA for {' '}<strong>3 consecutive closes</strong> to trigger a buy into the leveraged ETF. It must stay {'<'} exit buffer below the SMA
-        for 3 consecutive closes to exit. When out, capital earns the cash APY below.
-        Returns use <em>actual</em> leveraged ETF closing prices — no simulated leverage.
-      </div>
-
-      <div style={{ ...s.card, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16, marginBottom: 16 }}>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 20 }}>
         <div>
-          <label style={labelStyle}>Pair</label>
-          <select style={inputStyle} value={assetKey} onChange={e => setAssetKey(e.target.value)}>
+          <div style={labelStyle}>Pair</div>
+          <select value={pair} onChange={e => setPair(e.target.value)}
+            style={{ ...inputStyle, width: 'auto' }}>
             {BACKTEST_PAIRS.map(p => <option key={p.asset_key} value={p.asset_key}>{p.label}</option>)}
           </select>
         </div>
         <div>
-          <label style={labelStyle}>MA Period (days)</label>
-          <input style={inputStyle} type="number" min={20} max={300} value={maPeriod} onChange={e => setMaPeriod(Number(e.target.value))} />
+          <div style={labelStyle}>SMA Period</div>
+          <input type="number" value={maPeriod} onChange={e => setMaPeriod(+e.target.value)} style={inputStyle} min={20} max={300} />
         </div>
         <div>
-          <label style={labelStyle}>Entry Buffer %</label>
-          <input style={inputStyle} type="number" min={0} max={10} step={0.5} value={entryBuffer} onChange={e => setEntryBuffer(Number(e.target.value))} />
+          <div style={labelStyle}>Entry Buffer %</div>
+          <input type="number" value={entryBuf} onChange={e => setEntryBuf(+e.target.value)} style={inputStyle} step={0.1} />
         </div>
         <div>
-          <label style={labelStyle}>Exit Buffer %</label>
-          <input style={inputStyle} type="number" min={-15} max={0} step={0.5} value={exitBuffer} onChange={e => setExitBuffer(Number(e.target.value))} />
+          <div style={labelStyle}>Exit Buffer %</div>
+          <input type="number" value={exitBuf} onChange={e => setExitBuf(+e.target.value)} style={inputStyle} step={0.1} />
         </div>
         <div>
-          <label style={labelStyle}>
-            Cash APY %
-            {apyMeta?.is_live && <span style={{ color: '#68d391', marginLeft: 6 }}>● live</span>}
-          </label>
-          <input style={inputStyle} type="number" min={0} max={20} step={0.1} value={cashApy} onChange={e => setCashApy(Number(e.target.value))} />
-          {apyMeta && (
-            <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>{apyMeta.source}</div>
-          )}
+          <div style={labelStyle}>
+            Cash APY %{' '}
+            {cashApyLive
+              ? <span style={{ color: '#68d391', fontSize: 10 }}>● live ({cashApyLabel})</span>
+              : <span style={{ color: '#718096', fontSize: 10 }}>○ fallback</span>
+            }
+          </div>
+          <input type="number" value={cashApy ?? ''} onChange={e => setCashApy(+e.target.value)} style={inputStyle} step={0.1} min={0} max={20} />
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-          <button onClick={runBacktest} disabled={running} style={{ ...s.runBtn, width: '100%', padding: '8px 14px' }}>
-            {running ? 'Running…' : 'Run Backtest'}
-          </button>
-        </div>
+        <button onClick={run} disabled={loading || cashApy === null}
+          style={{ padding: '6px 18px', background: '#2b6cb0', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+          {loading ? 'Running…' : '▶ Run Backtest'}
+        </button>
       </div>
 
       {error && <div style={s.errorBox}>{error}</div>}
-      {running && <div style={s.infoBox}><span style={s.spinner} /> Fetching ~12 years of history and simulating…</div>}
-      {result && <BacktestResults result={result} />}
+      {loading && <div style={s.infoBox}><span style={s.spinner} /> Running backtest…</div>}
+
+      {result && <BacktestResult r={result} />}
     </div>
   )
 }
 
-// ─── Backtest Results ─────────────────────────────────────────────────────────
-
-function BacktestResults({ result }) {
-  const [showSignals, setShowSignals] = useState(false)
-
-  const tile = (label, value, color) => (
-    <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: 8, padding: '12px 16px', minWidth: 130 }}>
-      <div style={{ fontSize: 10, color: '#718096', fontWeight: 600, letterSpacing: '0.06em', marginBottom: 5, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color: color || '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{value ?? '—'}</div>
+function StatBox({ label, value, sub, highlight }) {
+  return (
+    <div style={{ background: '#1a1f2e', border: `1px solid ${highlight ? '#276749' : '#2d3748'}`, borderRadius: 8, padding: '12px 16px', minWidth: 120 }}>
+      <div style={{ fontSize: 11, color: '#718096', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: highlight ? '#68d391' : '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: '#4a5568', marginTop: 2 }}>{sub}</div>}
     </div>
   )
+}
 
-  const f = result.full_period
-  const bnh = result.buy_hold
-  const retColor = n => n == null ? '#e2e8f0' : n >= 0 ? '#68d391' : '#fc8181'
+function BacktestResult({ r }) {
+  const fp = r.full_period || {}
+  const bh = r.buy_hold || {}
+  const chart = r.chart || {}
+
+  // Build inline SVG equity curve
+  const dates   = chart.dates   || []
+  const strat   = chart.strategy || []
+  const bnh     = chart.buy_hold || []
+  const inPos   = chart.in_position || []
+
+  const W = 700, H = 180, PAD = { t: 10, r: 10, b: 24, l: 44 }
+  const IW = W - PAD.l - PAD.r
+  const IH = H - PAD.t - PAD.b
+
+  const allVals = [...strat, ...bnh].filter(Boolean)
+  const minV = Math.min(...allVals) * 0.98
+  const maxV = Math.max(...allVals) * 1.02
+  const n = strat.length
+
+  const px = i => PAD.l + (i / (n - 1)) * IW
+  const py = v => PAD.t + IH - ((v - minV) / (maxV - minV)) * IH
+
+  // Green bands for IN position
+  const bands = []
+  let bandStart = null
+  for (let i = 0; i < inPos.length; i++) {
+    if (inPos[i] && bandStart === null) bandStart = i
+    if (!inPos[i] && bandStart !== null) {
+      bands.push([bandStart, i - 1]); bandStart = null
+    }
+  }
+  if (bandStart !== null) bands.push([bandStart, inPos.length - 1])
+
+  const polyline = pts => pts.map(([x, y]) => `${x},${y}`).join(' ')
+  const stratPts = strat.map((v, i) => [px(i), py(v)])
+  const bnhPts   = bnh.map((v, i) => [px(i), py(v)])
+
+  // X-axis year labels
+  const yearLabels = []
+  let lastYear = null
+  dates.forEach((d, i) => {
+    const yr = d?.slice(0, 4)
+    if (yr && yr !== lastYear) { yearLabels.push({ i, yr }); lastYear = yr }
+  })
+
+  const yTicks = [minV, (minV + maxV) / 2, maxV].map(v => ({ v, y: py(v), label: `${((v - 1) * 100).toFixed(0)}%` }))
 
   return (
     <div>
-      <div style={{ fontSize: 11, color: '#4a5568', marginBottom: 12 }}>
-        {result.leveraged} / {result.underlying} · {result.ma_period}d SMA ·
-        entry {result.entry_buffer_pct >= 0 ? '+' : ''}{result.entry_buffer_pct}% ·
-        exit {result.exit_buffer_pct}% · cash {result.cash_apy_pct}% APY ·
-        {result.data_start} → {result.data_end} ·
-        {result.n_signals} signals ·
-        {result.days_in_pct}% in / {result.days_out_pct}% cash
+      {/* Summary stats */}
+      <div style={{ ...s.sectionTitle, marginBottom: 12 }}>Full Period ({fp.data_start} → {fp.data_end})</div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+        <StatBox label="Strategy Return" value={fp.total_return_pct != null ? `${fp.total_return_pct > 0 ? '+' : ''}${fp.total_return_pct}%` : '—'} highlight />
+        <StatBox label="Buy & Hold Return" value={bh.total_return_pct != null ? `${bh.total_return_pct > 0 ? '+' : ''}${bh.total_return_pct}%` : '—'} />
+        <StatBox label="Strategy CAGR" value={fp.cagr_pct != null ? `${fp.cagr_pct}%` : '—'} />
+        <StatBox label="B&H CAGR" value={bh.cagr_pct != null ? `${bh.cagr_pct}%` : '—'} />
+        <StatBox label="Max Drawdown" value={fp.max_drawdown_pct != null ? `-${fp.max_drawdown_pct}%` : '—'} />
+        <StatBox label="Calmar Ratio" value={fp.calmar_ratio ?? '—'} />
+        <StatBox label="Days IN" value={r.days_in_pct != null ? `${r.days_in_pct}%` : '—'} sub={`${r.n_signals} signals`} />
+        <StatBox label="Cash APY" value={`${r.cash_apy_pct}%`} sub="when OUT" />
       </div>
 
-      {/* Strategy vs Buy-and-Hold tiles */}
-      <div style={{ display: 'flex', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
-        <div>
-          <div style={s.sectionTitle}>Strategy (with confirmation + cash yield)</div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {tile('Total Return', f?.total_return_pct != null ? fmtPct(f.total_return_pct) : '—', retColor(f?.total_return_pct))}
-            {tile('CAGR', f?.cagr_pct != null ? `${f.cagr_pct}%` : '—', retColor(f?.cagr_pct))}
-            {tile('Max Drawdown', f?.max_drawdown_pct != null ? `-${f.max_drawdown_pct}%` : '—', '#fc8181')}
-            {tile('Calmar', f?.calmar_ratio != null ? fmt(f.calmar_ratio) : '—')}
-          </div>
-        </div>
-        <div>
-          <div style={s.sectionTitle}>Buy &amp; Hold {result.leveraged}</div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {tile('Total Return', bnh?.total_return_pct != null ? fmtPct(bnh.total_return_pct) : '—', retColor(bnh?.total_return_pct))}
-            {tile('CAGR', bnh?.cagr_pct != null ? `${bnh.cagr_pct}%` : '—', retColor(bnh?.cagr_pct))}
-            {tile('Max Drawdown', bnh?.max_drawdown_pct != null ? `-${bnh.max_drawdown_pct}%` : '—', '#fc8181')}
-            {tile('Calmar', bnh?.calmar_ratio != null ? fmt(bnh.calmar_ratio) : '—')}
-          </div>
-        </div>
-      </div>
-
-      {/* Equity Curve Chart */}
-      {result.chart && <EquityCurveChart chart={result.chart} leveraged={result.leveraged} />}
-
-      {/* Sub-period breakdown */}
-      <div style={{ ...s.sectionTitle, marginTop: 24 }}>Sub-period Breakdown</div>
-      <div style={{ overflowX: 'auto', marginBottom: 20 }}>
-        <table style={s.table}>
-          <thead>
-            <tr>
-              <th style={s.th}>Period</th>
-              <th style={s.th}>Total Return</th>
-              <th style={s.th}>Max Drawdown</th>
-              <th style={s.th}>Calmar</th>
-              <th style={s.th}>Days</th>
-              <th style={s.th}>Note</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result.sub_periods.map(p => (
-              <tr key={p.period}>
-                <td style={{ ...s.td, fontWeight: 600, color: '#e2e8f0' }}>{p.period}</td>
-                <td style={{ ...s.td, color: retColor(p.total_return_pct), fontVariantNumeric: 'tabular-nums' }}>
-                  {p.total_return_pct != null ? fmtPct(p.total_return_pct) : '—'}
-                </td>
-                <td style={{ ...s.td, color: p.max_drawdown_pct ? '#fc8181' : '#4a5568', fontVariantNumeric: 'tabular-nums' }}>
-                  {p.max_drawdown_pct != null ? `-${p.max_drawdown_pct}%` : '—'}
-                </td>
-                <td style={s.td}>{p.calmar_ratio != null ? fmt(p.calmar_ratio) : '—'}</td>
-                <td style={s.td}>{p.n_trading_days ?? '—'}</td>
-                <td style={{ ...s.td, fontSize: 11, color: '#718096' }}>{p.note || ''}</td>
-              </tr>
+      {/* Equity curve SVG */}
+      {n > 1 && (
+        <div style={{ marginBottom: 20, overflowX: 'auto' }}>
+          <svg width={W} height={H} style={{ display: 'block', background: '#111620', borderRadius: 6 }}>
+            {/* IN bands */}
+            {bands.map(([a, b], idx) => (
+              <rect key={idx}
+                x={px(a)} y={PAD.t} width={px(b) - px(a)} height={IH}
+                fill="#071a0a" opacity={0.6} />
             ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Signal dates */}
-      {result.signal_dates?.length > 0 && (
-        <div>
-          <button onClick={() => setShowSignals(v => !v)} style={s.refreshBtn}>
-            {showSignals ? 'Hide' : 'Show'} Signal History ({result.signal_dates.length})
-          </button>
-          {showSignals && (
-            <div style={{ maxHeight: 260, overflowY: 'auto', marginTop: 10 }}>
-              <table style={s.table}>
-                <thead><tr><th style={s.th}>Date</th><th style={s.th}>Position Change</th></tr></thead>
-                <tbody>
-                  {result.signal_dates.map((sd, i) => (
-                    <tr key={i}>
-                      <td style={s.td}>{sd.date}</td>
-                      <td style={s.td}><PositionBadge position={sd.position} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+            {/* Grid */}
+            {yTicks.map(({ y, label }, i) => (
+              <g key={i}>
+                <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="#1e2435" strokeWidth={1} />
+                <text x={PAD.l - 4} y={y + 4} textAnchor="end" fontSize={9} fill="#4a5568">{label}</text>
+              </g>
+            ))}
+            {/* B&H line (gray dashed) */}
+            <polyline points={polyline(bnhPts)} fill="none" stroke="#4a5568" strokeWidth={1.5} strokeDasharray="4,3" />
+            {/* Strategy line (blue) */}
+            <polyline points={polyline(stratPts)} fill="none" stroke="#63b3ed" strokeWidth={2} />
+            {/* X-axis year labels */}
+            {yearLabels.slice(0, 10).map(({ i, yr }) => (
+              <text key={yr} x={px(i)} y={H - 4} textAnchor="middle" fontSize={9} fill="#4a5568">{yr}</text>
+            ))}
+            {/* Legend */}
+            <line x1={W - 120} y1={16} x2={W - 105} y2={16} stroke="#63b3ed" strokeWidth={2} />
+            <text x={W - 102} y={20} fontSize={9} fill="#a0aec0">Strategy</text>
+            <line x1={W - 60} y1={16} x2={W - 45} y2={16} stroke="#4a5568" strokeWidth={1.5} strokeDasharray="4,3" />
+            <text x={W - 42} y={20} fontSize={9} fill="#a0aec0">B&H</text>
+          </svg>
+          <div style={{ fontSize: 10, color: '#4a5568', marginTop: 4 }}>Green bands = IN leveraged ETF. Dashed = Buy & Hold underlying.</div>
         </div>
       )}
-    </div>
-  )
-}
 
-// ─── Equity Curve Chart (inline SVG) ─────────────────────────────────────────
-
-function EquityCurveChart({ chart, leveraged }) {
-  const W = 700, H = 220, PAD = { top: 12, right: 12, bottom: 28, left: 52 }
-  const iW = W - PAD.left - PAD.right
-  const iH = H - PAD.top - PAD.bottom
-
-  const strategy = chart.strategy
-  const bnh      = chart.buy_hold
-  const dates    = chart.dates
-  const inPos    = chart.in_position
-  const n        = strategy.length
-
-  if (n < 2) return null
-
-  const allVals = [...strategy, ...bnh]
-  const minV = Math.min(...allVals)
-  const maxV = Math.max(...allVals)
-  const vRange = maxV - minV || 1
-
-  const xScale = i => PAD.left + (i / (n - 1)) * iW
-  const yScale = v => PAD.top + iH - ((v - minV) / vRange) * iH
-
-  const toPath = arr => arr.map((v, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(v).toFixed(1)}`).join(' ')
-
-  // Background bands: green when in position
-  const bands = []
-  let bandStart = null
-  for (let i = 0; i < n; i++) {
-    if (inPos[i] && bandStart === null) bandStart = i
-    if (!inPos[i] && bandStart !== null) {
-      bands.push([bandStart, i - 1])
-      bandStart = null
-    }
-  }
-  if (bandStart !== null) bands.push([bandStart, n - 1])
-
-  // Y-axis ticks
-  const tickCount = 4
-  const yTicks = Array.from({ length: tickCount + 1 }, (_, i) => minV + (vRange / tickCount) * i)
-
-  // X-axis labels (first/last/mid)
-  const xLabels = [0, Math.floor(n / 2), n - 1].map(i => ({ i, label: dates[i]?.slice(0, 7) }))
-
-  return (
-    <div style={{ overflowX: 'auto', marginBottom: 16 }}>
-      <div style={{ ...s.sectionTitle }}>Equity Curve (Strategy vs {leveraged} Buy &amp; Hold)</div>
-      <svg width={W} height={H} style={{ display: 'block', maxWidth: '100%' }}>
-        {/* IN-position background bands */}
-        {bands.map(([s_, e_], idx) => (
-          <rect
-            key={idx}
-            x={xScale(s_)} y={PAD.top}
-            width={xScale(e_) - xScale(s_)} height={iH}
-            fill="#68d391" fillOpacity={0.07}
-          />
+      {/* Sub-periods */}
+      <div style={s.sectionTitle}>Stress-Test Periods</div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {(r.sub_periods || []).map((sp, i) => (
+          <div key={i} style={{ background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: 8, padding: '12px 16px', minWidth: 180 }}>
+            <div style={{ fontSize: 11, color: '#a0aec0', fontWeight: 700, marginBottom: 8 }}>{sp.period}</div>
+            {sp.note
+              ? <div style={{ fontSize: 11, color: '#4a5568', fontStyle: 'italic' }}>{sp.note}</div>
+              : <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ color: '#718096' }}>Strategy</span>
+                    <span style={{ fontWeight: 700, color: sp.total_return_pct >= 0 ? '#68d391' : '#fc8181' }}>
+                      {sp.total_return_pct > 0 ? '+' : ''}{sp.total_return_pct}%
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                    <span style={{ color: '#718096' }}>Buy & Hold</span>
+                    <span style={{ fontWeight: 700, color: '#a0aec0' }}>
+                      {bh.total_return_pct > 0 ? '+' : ''}{sp.total_return_pct}%
+                    </span>
+                  </div>
+                  {sp.max_drawdown_pct != null && (
+                    <div style={{ fontSize: 10, color: '#4a5568', marginTop: 6 }}>Max DD: -{sp.max_drawdown_pct}%</div>
+                  )}
+                </>
+            }
+          </div>
         ))}
-
-        {/* Grid lines */}
-        {yTicks.map((v, i) => (
-          <line key={i} x1={PAD.left} x2={PAD.left + iW} y1={yScale(v)} y2={yScale(v)}
-            stroke="#2d3748" strokeWidth={0.5} />
-        ))}
-
-        {/* BnH line (gray dashed) */}
-        <path d={toPath(bnh)} fill="none" stroke="#718096" strokeWidth={1.2} strokeDasharray="4,3" />
-
-        {/* Strategy line (blue) */}
-        <path d={toPath(strategy)} fill="none" stroke="#63b3ed" strokeWidth={1.8} />
-
-        {/* Y-axis labels */}
-        {yTicks.map((v, i) => (
-          <text key={i} x={PAD.left - 6} y={yScale(v) + 4} textAnchor="end"
-            fontSize={9} fill="#718096" fontFamily="monospace">
-            {v.toFixed(1)}x
-          </text>
-        ))}
-
-        {/* X-axis labels */}
-        {xLabels.map(({ i, label }) => (
-          <text key={i} x={xScale(i)} y={H - 4} textAnchor="middle"
-            fontSize={9} fill="#718096" fontFamily="monospace">
-            {label}
-          </text>
-        ))}
-
-        {/* Axes */}
-        <line x1={PAD.left} x2={PAD.left} y1={PAD.top} y2={PAD.top + iH} stroke="#4a5568" />
-        <line x1={PAD.left} x2={PAD.left + iW} y1={PAD.top + iH} y2={PAD.top + iH} stroke="#4a5568" />
-
-        {/* Legend */}
-        <line x1={PAD.left + 4} x2={PAD.left + 18} y1={PAD.top + 10} y2={PAD.top + 10} stroke="#63b3ed" strokeWidth={2} />
-        <text x={PAD.left + 22} y={PAD.top + 14} fontSize={9} fill="#a0aec0" fontFamily="sans-serif">Strategy</text>
-        <line x1={PAD.left + 75} x2={PAD.left + 89} y1={PAD.top + 10} y2={PAD.top + 10} stroke="#718096" strokeWidth={1.5} strokeDasharray="4,3" />
-        <text x={PAD.left + 93} y={PAD.top + 14} fontSize={9} fill="#a0aec0" fontFamily="sans-serif">Buy &amp; Hold</text>
-        <rect x={PAD.left + 170} y={PAD.top + 4} width={10} height={10} fill="#68d391" fillOpacity={0.25} />
-        <text x={PAD.left + 184} y={PAD.top + 14} fontSize={9} fill="#a0aec0" fontFamily="sans-serif">In ETF</text>
-      </svg>
+      </div>
     </div>
   )
 }

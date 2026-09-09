@@ -223,9 +223,11 @@ def get_close_prices(ticker: str, days: int = 250) -> list[float]:
     from datetime import date, timedelta
     c = _client()
     to_date = date.today().isoformat()
-    from_date = (date.today() - timedelta(days=days + 60)).isoformat()
+    # +120 buffer (was +60) to reliably cover trading days after weekends/holidays
+    buf = days + 120
+    from_date = (date.today() - timedelta(days=buf)).isoformat()
     try:
-        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=days + 60)
+        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=buf)
         closes = [float(a.close) for a in (aggs or []) if a.close]
         return closes[-days:] if len(closes) > days else closes
     except Exception as e:

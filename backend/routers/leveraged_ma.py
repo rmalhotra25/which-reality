@@ -42,17 +42,13 @@ def backtest(
 @router.post("/run-daily")
 def trigger_daily():
     """Force-trigger the daily signal engine (normally runs Mon–Fri at 17:00 ET)."""
-    global _daily_thread
-    with _thread_lock:
-        if _daily_thread and _daily_thread.is_alive():
-            return {"status": "already_running", "error": None}
-        from services.leveraged_ma_service import run_daily_signal_engine
-        try:
-            run_daily_signal_engine()
-            return {"status": "ok", "error": None}
-        except Exception as e:
-            logger.error("run-daily endpoint: engine error: %s", e, exc_info=True)
-            return {"status": "error", "error": str(e)}
+    from services.leveraged_ma_service import run_daily_signal_engine
+    try:
+        run_daily_signal_engine()
+        return {"status": "ok", "error": None}
+    except Exception as e:
+        logger.error("run-daily endpoint: engine error: %s", e, exc_info=True)
+        return {"status": "error", "error": str(e)}
 
 
 @router.get("/configs")

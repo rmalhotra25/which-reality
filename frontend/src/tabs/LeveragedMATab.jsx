@@ -122,26 +122,37 @@ export default function LeveragedMATab() {
 
   const handleRunDaily = async () => {
     setTriggering(true)
+    setError(null)
     try {
       const res = await fetch(`${API}/api/leveraged-ma/run-daily`, { method: 'POST' })
       const data = await res.json()
-      if (data.status === 'error') {
-        setError(`Signal engine error: ${data.error}`)
-      } else if (data.status === 'already_running') {
-        setError('Engine is already running — try refreshing in a few seconds.')
-      } else {
-        setError(null)
-        await fetchSignals()
+      if (data.status === 'already_running') {
+        setError('Engine is already running — refreshing in 15 seconds.')
+        setTimeout(() => { fetchSignals(); setTriggering(false) }, 15000)
+        return
       }
+      // Poll /run-daily/status until the thread finishes
+      const poll = async (attempts = 0) => {
+        if (attempts > 20) { setError('Engine timed out — check Render logs.'); setTriggering(false); return }
+        try {
+          const s = await fetch(`${API}/api/leveraged-ma/run-daily/status`)
+          const st = await s.json()
+          if (st.running) { setTimeout(() => poll(attempts + 1), 2000); return }
+          if (st.error) setError(`Signal engine error: ${st.error}`)
+          await fetchSignals()
+        } catch { await fetchSignals() }
+        setTriggering(false)
+      }
+      setTimeout(() => poll(), 2000)
     } catch (e) {
-      setError(`Failed to run engine: ${e.message}`)
-    } finally {
+      setError(`Failed to start engine: ${e.message}`)
       setTriggering(false)
     }
   }
 
   const signalsToday = signals?.filter(r => r.signal_today) ?? []
-  const neverRun = signals?.some(r => r.never_run) ?? false
+  // Only block the whole table if ALL pairs have never run
+  const neverRun = signals?.length > 0 && signals.every(r => r.never_run)
 
   return (
     <div style={s.page}>

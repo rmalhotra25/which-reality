@@ -199,6 +199,25 @@ def get_vix() -> float | None:
     return None
 
 
+def get_dated_closes(ticker: str, days: int = 250) -> list[tuple]:
+    """Daily (date, close) tuples ascending. Used where backtest needs actual calendar dates."""
+    from datetime import date, timedelta, datetime, timezone as _tz
+    c = _client()
+    to_date = date.today().isoformat()
+    from_date = (date.today() - timedelta(days=days + 60)).isoformat()
+    try:
+        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=days + 60)
+        result = []
+        for a in (aggs or []):
+            if a.close and a.timestamp:
+                d = datetime.fromtimestamp(a.timestamp / 1000, tz=_tz.utc).date()
+                result.append((d, float(a.close)))
+        return result[-days:] if len(result) > days else result
+    except Exception as e:
+        logger.warning("get_dated_closes failed for %s: %s", ticker, e)
+        return []
+
+
 def get_close_prices(ticker: str, days: int = 250) -> list[float]:
     """Daily close prices ascending for the last N calendar days. Used for MA/HV computation."""
     from datetime import date, timedelta

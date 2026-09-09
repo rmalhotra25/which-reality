@@ -87,8 +87,12 @@ def _migrate_add_columns():
     """Safely add new columns to existing tables without dropping data."""
     from sqlalchemy import text
     additions = [
-        ("wheel_recommendations", "assignment_chance_pct", "FLOAT"),
-        ("wheel_recommendations", "assignment_risk",       "VARCHAR(10)"),
+        ("wheel_recommendations", "assignment_chance_pct",    "FLOAT"),
+        ("wheel_recommendations", "assignment_risk",          "VARCHAR(10)"),
+        # Leveraged MA confirmation state machine (added after initial deploy)
+        ("leveraged_ma_signal_state", "confirmed_position",  "VARCHAR(5)"),
+        ("leveraged_ma_signal_state", "pending_signal",      "VARCHAR(5)"),
+        ("leveraged_ma_signal_state", "pending_days",        "INTEGER"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in additions:

@@ -1,24 +1,36 @@
 """
 Leveraged ETF MA Signal Service
 ================================
-Tracks 200-day SMA crossings on underlying ETFs (QQQ, SPY, etc.) and
-surfaces them as trend-follow or mean-reversion signals for leveraged ETFs
-(TQQQ, SPXL, SOXL, TNA, UPRO).
+161-day SMA crossover strategy for leveraged ETFs based on their underlying index ETFs.
+Entry requires price >= +1% above SMA for 3 consecutive days.
+Exit requires price <= -2.5% below SMA for 3 consecutive days.
+When out of the leveraged ETF, capital earns the current short-term T-bill yield (SGOV proxy).
 
-Daily signal engine: run via scheduler after market close.
-Dashboard endpoint: adds live intraday prices from Polygon snapshot.
-Backtest module: shares crossing-detection logic with the daily engine.
+Daily signal engine: run via scheduler at 17:00 ET after final close prices settle.
+Dashboard endpoint: DB state + live intraday prices from Polygon batch snapshot.
+Backtest: day-by-day equity simulation using the same state machine as the live engine.
 """
 
 import logging
 import time
 from datetime import datetime, timezone, date, timedelta
-from statistics import mean
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Asset configuration (hardcoded like CEF universe)
+# Strategy parameters (tune here, everything else derives from these)
+# ---------------------------------------------------------------------------
+
+CONFIRMATION_DAYS = 3       # consecutive days required to confirm a signal
+ENTRY_BUFFER_PCT = 1.0      # price must be >= +1% above SMA to count toward a buy
+EXIT_BUFFER_PCT = -2.5      # price must be <= -2.5% below SMA to count toward a sell
+_DIRECTION = "ma_crossover"  # single unified signal per pair (replaces old split)
+
+# ---------------------------------------------------------------------------
+# Asset configuration
 # ---------------------------------------------------------------------------
 
 ASSET_CONFIGS = [
@@ -26,9 +38,9 @@ ASSET_CONFIGS = [
         "asset_key": "TQQQ_QQQ",
         "leveraged": "TQQQ",
         "underlying": "QQQ",
-        "ma_period": 200,
-        "direction": "both",
-        "threshold_pct": 0.0,
+        "ma_period": 161,
+        "entry_buffer_pct": ENTRY_BUFFER_PCT,
+        "exit_buffer_pct": EXIT_BUFFER_PCT,
         "active": True,
         "leverage_multiple": 3,
     },
@@ -36,9 +48,9 @@ ASSET_CONFIGS = [
         "asset_key": "SPXL_SPY",
         "leveraged": "SPXL",
         "underlying": "SPY",
-        "ma_period": 200,
-        "direction": "both",
-        "threshold_pct": 0.0,
+        "ma_period": 161,
+        "entry_buffer_pct": ENTRY_BUFFER_PCT,
+        "exit_buffer_pct": EXIT_BUFFER_PCT,
         "active": True,
         "leverage_multiple": 3,
     },
@@ -46,9 +58,9 @@ ASSET_CONFIGS = [
         "asset_key": "SOXL_SOXX",
         "leveraged": "SOXL",
         "underlying": "SOXX",
-        "ma_period": 200,
-        "direction": "both",
-        "threshold_pct": 0.0,
+        "ma_period": 161,
+        "entry_buffer_pct": ENTRY_BUFFER_PCT,
+        "exit_buffer_pct": EXIT_BUFFER_PCT,
         "active": True,
         "leverage_multiple": 3,
     },
@@ -56,9 +68,9 @@ ASSET_CONFIGS = [
         "asset_key": "TNA_IWM",
         "leveraged": "TNA",
         "underlying": "IWM",
-        "ma_period": 200,
-        "direction": "both",
-        "threshold_pct": 0.0,
+        "ma_period": 161,
+        "entry_buffer_pct": ENTRY_BUFFER_PCT,
+        "exit_buffer_pct": EXIT_BUFFER_PCT,
         "active": True,
         "leverage_multiple": 3,
     },
@@ -66,65 +78,137 @@ ASSET_CONFIGS = [
         "asset_key": "UPRO_SPY",
         "leveraged": "UPRO",
         "underlying": "SPY",
-        "ma_period": 200,
-        "direction": "both",
-        "threshold_pct": 0.0,
+        "ma_period": 161,
+        "entry_buffer_pct": ENTRY_BUFFER_PCT,
+        "exit_buffer_pct": EXIT_BUFFER_PCT,
         "active": True,
         "leverage_multiple": 3,
     },
 ]
-
-_DIRECTIONS = ["trend_follow", "mean_reversion"]
 
 
 # ---------------------------------------------------------------------------
 # Pure signal math (shared by daily engine and backtest)
 # ---------------------------------------------------------------------------
 
-def compute_sma(prices: list[float], period: int) -> float | None:
-    """Simple moving average of the last `period` prices. Returns None if insufficient data."""
-    if len(prices) < period:
-        return None
-    return mean(prices[-period:])
-
-
-def get_side(price: float, sma: float, threshold_pct: float) -> str:
+def get_raw_trigger(price: float, sma: float, entry_buffer_pct: float, exit_buffer_pct: float) -> str:
     """
-    Return "above" or "below" based on price vs SMA ± threshold band.
+    Classify today's price relative to the asymmetric entry/exit bands.
 
-    threshold_pct > 0: price must be threshold_pct% ABOVE sma to count as "above"
-    threshold_pct < 0 (e.g. -3): price must be 3% BELOW sma to count as "below"
-    threshold_pct == 0: simple above/below
+    Returns:
+        "buy_zone"  — price >= SMA * (1 + entry_buffer_pct/100)
+        "sell_zone" — price <= SMA * (1 + exit_buffer_pct/100)
+        "neutral"   — price is inside the band (no action)
     """
-    if threshold_pct == 0:
-        return "above" if price >= sma else "below"
-    band = sma * (1 + threshold_pct / 100)
-    return "above" if price >= band else "below"
+    entry_level = sma * (1 + entry_buffer_pct / 100)
+    exit_level = sma * (1 + exit_buffer_pct / 100)
+    if price >= entry_level:
+        return "buy_zone"
+    if price <= exit_level:
+        return "sell_zone"
+    return "neutral"
 
 
-def detect_crossing(old_side: str | None, new_side: str) -> bool:
-    """True when the side changed (a crossing event occurred)."""
-    if old_side is None:
-        return False  # no prior state — first check, not a crossing
-    return old_side != new_side
+def apply_confirmation_machine(
+    trigger: str,
+    confirmed_position: str | None,
+    pending_signal: str | None,
+    pending_days: int,
+) -> tuple[str | None, str | None, int, bool]:
+    """
+    One step of the confirmation state machine.
 
+    Returns: (new_confirmed_position, new_pending_signal, new_pending_days, position_changed)
 
-def signal_label(direction: str, new_side: str) -> str:
-    """Human-readable signal label for a crossing event."""
-    if direction == "trend_follow":
-        return "RISK-ON" if new_side == "above" else "RISK-OFF"
-    else:  # mean_reversion
-        return "BUY SETUP" if new_side == "below" else "EXIT SETUP"
+    Rules:
+    - A BUY fires only after CONFIRMATION_DAYS consecutive "buy_zone" days while OUT.
+    - A SELL fires only after CONFIRMATION_DAYS consecutive "sell_zone" days while IN.
+    - Any day in "neutral" or the opposite zone resets the pending counter.
+    - Already-confirmed side is a no-op (no double-fire).
+    """
+    position_changed = False
+
+    if trigger == "buy_zone" and confirmed_position != "in":
+        if pending_signal == "buy":
+            pending_days += 1
+        else:
+            pending_signal = "buy"
+            pending_days = 1
+        if pending_days >= CONFIRMATION_DAYS:
+            confirmed_position = "in"
+            pending_signal = None
+            pending_days = 0
+            position_changed = True
+
+    elif trigger == "sell_zone" and confirmed_position != "out":
+        if pending_signal == "sell":
+            pending_days += 1
+        else:
+            pending_signal = "sell"
+            pending_days = 1
+        if pending_days >= CONFIRMATION_DAYS:
+            confirmed_position = "out"
+            pending_signal = None
+            pending_days = 0
+            position_changed = True
+
+    else:
+        # Neutral zone, already confirmed, or opposing zone — reset pending
+        pending_signal = None
+        pending_days = 0
+
+    return confirmed_position, pending_signal, pending_days, position_changed
 
 
 # ---------------------------------------------------------------------------
-# Daily signal engine (called by scheduler)
+# Cash APY helper (SGOV as T-bill proxy, Finnhub dividend yield)
+# ---------------------------------------------------------------------------
+
+def get_current_cash_apy() -> dict:
+    """
+    Fetch the current short-term T-bill yield using SGOV's TTM dividend yield
+    from Finnhub as a proxy. Returns a dict with the apy_pct and source label.
+    Falls back to a hardcoded 4.5% if Finnhub is unavailable.
+    """
+    from services import finnhub_client
+    FALLBACK = 4.5
+
+    for proxy in ("SGOV", "BIL"):  # try both short T-bill ETFs
+        try:
+            metrics = finnhub_client.get_basic_financials(proxy)
+            raw = metrics.get("dividendYieldTTM")
+            if raw and float(raw) > 0:
+                val = float(raw)
+                # Finnhub returns decimal (0.05) not percent (5.0) for yield fields
+                apy = round(val * 100, 2) if val < 1.0 else round(val, 2)
+                if 0.5 <= apy <= 15.0:  # sanity range for a short T-bill yield
+                    return {
+                        "apy_pct": apy,
+                        "source": f"{proxy} TTM dividend yield (Finnhub)",
+                        "is_live": True,
+                    }
+        except Exception as e:
+            logger.debug("Cash APY fetch failed for %s: %s", proxy, e)
+        time.sleep(0.3)
+
+    return {
+        "apy_pct": FALLBACK,
+        "source": "Fallback — Finnhub unavailable",
+        "is_live": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Daily signal engine (called by scheduler at 17:00 ET)
 # ---------------------------------------------------------------------------
 
 def run_daily_signal_engine() -> None:
     """
-    Compute SMA crossings for all active configs and persist state to DB.
-    Creates its own DB session (safe to call from background thread or scheduler).
+    Compute 161-day SMA, classify trigger zone, apply confirmation state machine,
+    and persist updated state to DB for all active asset configs.
+
+    Creates its own DB session so it's safe to call from a background thread.
+    Deduplicates underlying tickers (SPY is shared by SPXL and UPRO).
     """
     from database import SessionLocal
     from models.leveraged_ma import LeveragedMASignalState
@@ -132,84 +216,91 @@ def run_daily_signal_engine() -> None:
 
     db = SessionLocal()
     try:
-        # Deduplicate underlying tickers — SPXL and UPRO both track SPY
-        underlying_to_closes: dict[str, list[float]] = {}
+        # Fetch underlying closes — deduplicate (SPXL + UPRO both use SPY)
+        underlying_closes: dict[str, list[float]] = {}
         for cfg in ASSET_CONFIGS:
-            if not cfg["active"]:
+            if not cfg["active"] or cfg["underlying"] in underlying_closes:
                 continue
-            underlying = cfg["underlying"]
-            if underlying not in underlying_to_closes:
-                logger.info("Leveraged MA: fetching %d-day closes for %s", cfg["ma_period"] + 10, underlying)
-                closes = polygon_client.get_close_prices(underlying, days=cfg["ma_period"] + 10)
-                underlying_to_closes[underlying] = closes
-                time.sleep(0.3)  # respect Polygon rate limits
+            warmup = cfg["ma_period"] + 10
+            logger.info("Leveraged MA engine: fetching %d-day closes for %s", warmup, cfg["underlying"])
+            underlying_closes[cfg["underlying"]] = polygon_client.get_close_prices(
+                cfg["underlying"], days=warmup
+            )
+            time.sleep(0.3)
 
         now = datetime.now(timezone.utc)
-        today = date.today()
 
         for cfg in ASSET_CONFIGS:
             if not cfg["active"]:
                 continue
 
-            closes = underlying_to_closes.get(cfg["underlying"], [])
-            sma = compute_sma(closes, cfg["ma_period"])
-            if sma is None or not closes:
-                logger.warning("Leveraged MA: insufficient close data for %s", cfg["underlying"])
+            closes = underlying_closes.get(cfg["underlying"], [])
+            if len(closes) < cfg["ma_period"]:
+                logger.warning("Leveraged MA: insufficient data for %s (%d closes)", cfg["underlying"], len(closes))
                 continue
 
+            sma = float(np.mean(closes[-cfg["ma_period"]:]))
             current_price = closes[-1]
-            directions = _DIRECTIONS if cfg["direction"] == "both" else [cfg["direction"]]
+            trigger = get_raw_trigger(current_price, sma, cfg["entry_buffer_pct"], cfg["exit_buffer_pct"])
+            dist_pct = round((current_price - sma) / sma * 100, 2)
 
-            for direction in directions:
-                new_side = get_side(current_price, sma, cfg["threshold_pct"])
-
-                # Load or create state row
-                state = (
-                    db.query(LeveragedMASignalState)
-                    .filter_by(asset_key=cfg["asset_key"], direction=direction)
-                    .first()
+            state = (
+                db.query(LeveragedMASignalState)
+                .filter_by(asset_key=cfg["asset_key"], direction=_DIRECTION)
+                .first()
+            )
+            if state is None:
+                # First run — start OUT (conservative default)
+                state = LeveragedMASignalState(
+                    asset_key=cfg["asset_key"],
+                    direction=_DIRECTION,
+                    confirmed_position="out",
+                    pending_signal=None,
+                    pending_days=0,
                 )
-                if state is None:
-                    state = LeveragedMASignalState(
-                        asset_key=cfg["asset_key"],
-                        direction=direction,
-                    )
-                    db.add(state)
+                db.add(state)
 
-                old_side = state.last_side
-                crossed = detect_crossing(old_side, new_side)
+            old_position = state.confirmed_position
+            new_pos, new_pending, new_days, changed = apply_confirmation_machine(
+                trigger,
+                state.confirmed_position,
+                state.pending_signal,
+                state.pending_days or 0,
+            )
 
-                if crossed:
-                    label = signal_label(direction, new_side)
-                    logger.info(
-                        "Leveraged MA CROSSING: %s / %s → %s (%s) [was %s]",
-                        cfg["asset_key"], direction, new_side, label, old_side,
-                    )
-                    state.last_cross_at = now
-                    state.last_cross_side = new_side
+            if changed:
+                label = "IN (LONG)" if new_pos == "in" else "OUT (CASH)"
+                logger.info(
+                    "Leveraged MA SIGNAL: %s → %s [was %s, trigger=%s, dist=%.1f%%]",
+                    cfg["asset_key"], label, old_position, trigger, dist_pct,
+                )
+                state.last_cross_at = now
+                state.last_cross_side = new_pos
 
-                state.last_side = new_side
-                state.last_checked_at = now
-                state.sma_at_check = str(round(sma, 4))
+            state.last_side = trigger
+            state.confirmed_position = new_pos
+            state.pending_signal = new_pending
+            state.pending_days = new_days
+            state.last_checked_at = now
+            state.sma_at_check = str(round(sma, 4))
 
         db.commit()
-        logger.info("Leveraged MA: daily signal engine complete for %s", today)
+        logger.info("Leveraged MA: daily signal engine complete for %s", date.today())
     except Exception as e:
         db.rollback()
-        logger.error("Leveraged MA: daily signal engine failed: %s", e, exc_info=True)
+        logger.error("Leveraged MA: daily engine failed: %s", e, exc_info=True)
     finally:
         db.close()
 
 
 # ---------------------------------------------------------------------------
-# Dashboard endpoint data (daily state + live intraday prices)
+# Dashboard data (DB state + live intraday prices)
 # ---------------------------------------------------------------------------
 
 def get_signals_dashboard() -> list[dict]:
     """
-    Returns one row per (asset_config × direction) with:
-    - Daily signal state from DB
-    - Live intraday price from Polygon snapshot (for current % distance from SMA)
+    One row per active asset config with confirmed position, pending signal
+    progress, and live intraday prices from Polygon batch snapshot.
     """
     from database import SessionLocal
     from models.leveraged_ma import LeveragedMASignalState
@@ -217,315 +308,284 @@ def get_signals_dashboard() -> list[dict]:
 
     db = SessionLocal()
     try:
-        # Batch-fetch live prices for all tickers (leveraged + underlying)
         all_tickers = list({t for cfg in ASSET_CONFIGS for t in (cfg["leveraged"], cfg["underlying"])})
         snapshots = polygon_client.get_snapshots_batch(all_tickers)
-
-        today = datetime.now(timezone.utc).date()
+        today_utc = datetime.now(timezone.utc).date()
         rows: list[dict] = []
 
         for cfg in ASSET_CONFIGS:
             if not cfg["active"]:
                 continue
 
-            underlying_snap = snapshots.get(cfg["underlying"], {})
-            leveraged_snap = snapshots.get(cfg["leveraged"], {})
+            u_snap = snapshots.get(cfg["underlying"], {})
+            l_snap = snapshots.get(cfg["leveraged"], {})
+            live_u_price = u_snap.get("price") or None
+            live_l_price = l_snap.get("price") or None
 
-            live_underlying_price = underlying_snap.get("price") or None
-            live_leveraged_price = leveraged_snap.get("price") or None
+            state = (
+                db.query(LeveragedMASignalState)
+                .filter_by(asset_key=cfg["asset_key"], direction=_DIRECTION)
+                .first()
+            )
 
-            directions = _DIRECTIONS if cfg["direction"] == "both" else [cfg["direction"]]
-            for direction in directions:
-                state = (
-                    db.query(LeveragedMASignalState)
-                    .filter_by(asset_key=cfg["asset_key"], direction=direction)
-                    .first()
-                )
+            sma = float(state.sma_at_check) if (state and state.sma_at_check) else None
+            confirmed_position = state.confirmed_position if state else None
+            pending_signal = state.pending_signal if state else None
+            pending_days = state.pending_days or 0 if state else 0
+            last_checked_at = state.last_checked_at if state else None
+            last_cross_at = state.last_cross_at if state else None
+            last_cross_side = state.last_cross_side if state else None
 
-                sma = float(state.sma_at_check) if (state and state.sma_at_check) else None
-                last_side = state.last_side if state else None
-                last_checked_at = state.last_checked_at if state else None
-                last_cross_at = state.last_cross_at if state else None
-                last_cross_side = state.last_cross_side if state else None
+            # Live intraday trigger zone
+            live_trigger = None
+            live_dist_pct = None
+            if live_u_price and sma:
+                live_trigger = get_raw_trigger(live_u_price, sma, cfg["entry_buffer_pct"], cfg["exit_buffer_pct"])
+                live_dist_pct = round((live_u_price - sma) / sma * 100, 2)
 
-                # Is the crossing from today?
-                crossed_today = False
-                if last_cross_at:
-                    cross_date = last_cross_at.date() if isinstance(last_cross_at, datetime) else last_cross_at
-                    crossed_today = (cross_date == today)
+            # Signal changed today?
+            signal_today = False
+            if last_cross_at:
+                cross_date = last_cross_at.date() if isinstance(last_cross_at, datetime) else last_cross_at
+                signal_today = (cross_date == today_utc)
 
-                # Live % distance from SMA using intraday price
-                live_dist_pct = None
-                if live_underlying_price and sma:
-                    live_dist_pct = round((live_underlying_price - sma) / sma * 100, 2)
+            rows.append({
+                "asset_key": cfg["asset_key"],
+                "leveraged": cfg["leveraged"],
+                "underlying": cfg["underlying"],
+                "ma_period": cfg["ma_period"],
+                "entry_buffer_pct": cfg["entry_buffer_pct"],
+                "exit_buffer_pct": cfg["exit_buffer_pct"],
+                "leverage_multiple": cfg["leverage_multiple"],
+                # Confirmed position state
+                "confirmed_position": confirmed_position,
+                "pending_signal": pending_signal,
+                "pending_days": pending_days,
+                "confirmation_days_required": CONFIRMATION_DAYS,
+                "last_signal_date": last_cross_at.isoformat() if last_cross_at else None,
+                "last_signal_side": last_cross_side,
+                "signal_today": signal_today,
+                "last_checked_at": last_checked_at.isoformat() if last_checked_at else None,
+                # SMA + live intraday
+                "sma": sma,
+                "live_trigger": live_trigger,
+                "live_dist_pct": live_dist_pct,
+                "live_underlying_price": live_u_price,
+                "live_leveraged_price": live_l_price,
+                "underlying_change_pct": u_snap.get("change_pct"),
+                "leveraged_change_pct": l_snap.get("change_pct"),
+                "never_run": state is None,
+            })
 
-                # Determine live side (may differ from last daily side if price moved a lot intraday)
-                live_side = None
-                if live_underlying_price and sma:
-                    live_side = get_side(live_underlying_price, sma, cfg["threshold_pct"])
-
-                rows.append({
-                    "asset_key": cfg["asset_key"],
-                    "leveraged": cfg["leveraged"],
-                    "underlying": cfg["underlying"],
-                    "ma_period": cfg["ma_period"],
-                    "direction": direction,
-                    "threshold_pct": cfg["threshold_pct"],
-                    "leverage_multiple": cfg["leverage_multiple"],
-                    # Daily state
-                    "sma": sma,
-                    "last_side": last_side,
-                    "last_checked_at": last_checked_at.isoformat() if last_checked_at else None,
-                    "last_cross_at": last_cross_at.isoformat() if last_cross_at else None,
-                    "last_cross_side": last_cross_side,
-                    "signal_label": signal_label(direction, last_cross_side) if last_cross_side else None,
-                    "crossed_today": crossed_today,
-                    # Live intraday
-                    "live_underlying_price": live_underlying_price,
-                    "live_leveraged_price": live_leveraged_price,
-                    "live_dist_pct": live_dist_pct,
-                    "live_side": live_side,
-                    "underlying_change_pct": underlying_snap.get("change_pct"),
-                    "leveraged_change_pct": leveraged_snap.get("change_pct"),
-                    # State availability
-                    "has_state": state is not None,
-                    "never_run": state is None,
-                })
-
-        # Sort: crossed_today rows first, then by asset_key
-        rows.sort(key=lambda r: (0 if r["crossed_today"] else 1, r["asset_key"], r["direction"]))
+        # Sort: signal_today rows first, then by confirmed_position (in before out), then asset_key
+        rows.sort(key=lambda r: (0 if r["signal_today"] else 1, 0 if r["confirmed_position"] == "in" else 1, r["asset_key"]))
         return rows
     finally:
         db.close()
 
 
 # ---------------------------------------------------------------------------
-# Backtest module (uses same crossing-detection logic as daily engine)
+# Backtest engine (same state machine as live engine, day-by-day simulation)
 # ---------------------------------------------------------------------------
 
 def run_backtest(
     asset_key: str,
-    direction: str = "trend_follow",
-    ma_period: int = 200,
-    threshold_pct: float = 0.0,
+    ma_period: int = 161,
+    entry_buffer_pct: float = ENTRY_BUFFER_PCT,
+    exit_buffer_pct: float = EXIT_BUFFER_PCT,
+    cash_apy_pct: float = 4.5,
 ) -> dict:
     """
-    Backtest a leveraged MA signal strategy using historical daily closes.
+    Day-by-day backtest using the confirmed-crossover state machine.
 
-    Signal is generated from the UNDERLYING's price vs its SMA.
-    Returns are computed from the LEVERAGED ETF's actual closing prices.
-    Sub-period breakdowns: 2018-Q4, 2020, 2022, and full history.
+    Signal: underlying SMA crossing with entry/exit buffers + CONFIRMATION_DAYS window.
+    Returns: TQQQ (or leveraged ETF) actual closing prices when IN, cash APY when OUT.
+    Chart data: strategy equity, buy-and-hold equity, SMA, underlying price, IN/OUT bands.
     """
-    from services import polygon_client
+    from services.polygon_client import get_dated_closes
 
     cfg = next((c for c in ASSET_CONFIGS if c["asset_key"] == asset_key), None)
     if cfg is None:
         raise ValueError(f"Unknown asset_key: {asset_key}")
 
-    # Fetch ~12 years of history (4500 calendar days ≈ 3000 trading days)
-    HISTORY_DAYS = 4500
+    HISTORY_DAYS = 4500  # ~12 years back
 
-    logger.info("Backtest: fetching %d days of closes for %s and %s", HISTORY_DAYS, cfg["underlying"], cfg["leveraged"])
-    underlying_closes = polygon_client.get_close_prices(cfg["underlying"], days=HISTORY_DAYS)
+    logger.info("Backtest: fetching history for %s / %s", cfg["underlying"], cfg["leveraged"])
+    u_raw = get_dated_closes(cfg["underlying"], days=HISTORY_DAYS)
     time.sleep(0.3)
-    leveraged_closes = polygon_client.get_close_prices(cfg["leveraged"], days=HISTORY_DAYS)
+    l_raw = get_dated_closes(cfg["leveraged"], days=HISTORY_DAYS)
 
-    if len(underlying_closes) < ma_period + 10:
-        return {"error": f"Insufficient historical data for {cfg['underlying']}"}
-    if len(leveraged_closes) < 50:
-        return {"error": f"Insufficient historical data for {cfg['leveraged']} (ETF may not have enough history)"}
+    if len(u_raw) < ma_period + 20:
+        return {"error": f"Insufficient data for {cfg['underlying']} ({len(u_raw)} bars)"}
+    if len(l_raw) < 50:
+        return {"error": f"Insufficient data for {cfg['leveraged']} — ETF may not have enough history"}
 
-    # Align series: build a simple day-indexed timeline.
-    # We have no dates from get_close_prices — use a synthetic date range working backwards.
-    # Both tickers should have approximately the same number of trading days.
-    # Use the SHORTER of the two series for alignment.
-    n_underlying = len(underlying_closes)
-    n_leveraged = len(leveraged_closes)
+    # Build DataFrames indexed by date
+    u_df = pd.DataFrame(u_raw, columns=["date", "close"]).set_index("date")
+    u_df.index = pd.to_datetime(u_df.index)
+    l_df = pd.DataFrame(l_raw, columns=["date", "close"]).set_index("date")
+    l_df.index = pd.to_datetime(l_df.index)
 
-    # Build synthetic dates (trading days, approximate) from today backwards
-    today = date.today()
-    all_trade_days = []
-    d = today
-    count = 0
-    while count < max(n_underlying, n_leveraged) + 10:
-        if d.weekday() < 5:
-            all_trade_days.append(d)
-            count += 1
-        d -= timedelta(days=1)
-    all_trade_days.reverse()  # ascending
+    # Align on common trading days
+    common_idx = u_df.index.intersection(l_df.index)
+    if len(common_idx) < 50:
+        return {"error": "Insufficient overlapping trading days between the two tickers"}
 
-    # Align: use the last n_underlying days for underlying, last n_leveraged for leveraged
-    underlying_dates = all_trade_days[-n_underlying:]
-    leveraged_dates = all_trade_days[-n_leveraged:]
+    df = pd.DataFrame({
+        "underlying": u_df.loc[common_idx, "close"],
+        "leveraged": l_df.loc[common_idx, "close"],
+    })
 
-    # Find common date range
-    u_start = underlying_dates[0]
-    l_start = leveraged_dates[0]
-    common_start = max(u_start, l_start)
-    common_end = min(underlying_dates[-1], leveraged_dates[-1])
+    # Vectorized SMA and deviation (pandas rolling)
+    df["sma"] = df["underlying"].rolling(window=ma_period, min_periods=ma_period).mean()
+    df["deviation_pct"] = (df["underlying"] - df["sma"]) / df["sma"] * 100
 
-    # Build date→close maps
-    u_map = {underlying_dates[i]: underlying_closes[i] for i in range(n_underlying)}
-    l_map = {leveraged_dates[i]: leveraged_closes[i] for i in range(n_leveraged)}
+    # Drop warmup rows where SMA is NaN
+    df = df.dropna(subset=["sma"]).copy()
+    if len(df) < 20:
+        return {"error": "Not enough data after SMA warmup period"}
 
-    # Compute SMA signals over common date range (need ma_period warmup)
-    # Collect underlying prices in common range + warmup
-    warmup_start = common_start - timedelta(days=ma_period * 2)
-    all_underlying_in_range = [(d, p) for d, p in u_map.items() if d >= warmup_start]
-    all_underlying_in_range.sort()
+    # ---------------------------------------------------------------------------
+    # State machine simulation (loop required — state depends on prior state)
+    # ---------------------------------------------------------------------------
+    cash_daily_rate = (1 + cash_apy_pct / 100) ** (1 / 252) - 1
 
-    # Build (date, price, sma, side) series
-    series: list[tuple] = []
-    price_window: list[float] = []
-    for d, price in all_underlying_in_range:
-        price_window.append(price)
-        if len(price_window) < ma_period:
-            continue
-        sma = mean(price_window[-ma_period:])
-        side = get_side(price, sma, threshold_pct)
-        if d >= common_start:
-            series.append((d, price, sma, side))
+    confirmed_pos = "out"   # start conservative — in cash
+    pending_sig = None
+    pending_cnt = 0
 
-    if len(series) < 20:
-        return {"error": "Insufficient overlapping data for backtest"}
+    strategy_equity = 1.0
+    bnh_equity = 1.0  # buy-and-hold leveraged ETF from day 1
 
-    # Generate crossing signals
-    crossings: list[dict] = []
-    for i in range(1, len(series)):
-        prev_side = series[i - 1][3]
-        cur_date, cur_price, cur_sma, cur_side = series[i]
-        if cur_side != prev_side:
-            label = signal_label(direction, cur_side)
-            crossings.append({"date": cur_date, "side": cur_side, "label": label, "underlying_price": cur_price})
+    equity_curve = []
+    bnh_curve = []
+    position_flags = []   # True = IN leveraged ETF
+    confirmed_positions = []
+    pending_signals = []
+    pending_counts = []
+    signal_dates = []
 
-    # Simulate trades: enter leveraged on signal, exit on next opposing signal
-    def _sim_trades(crossings, direction, l_map, common_end):
-        trades = []
-        in_position = False
-        entry_date = None
-        entry_price = None
+    prev_leveraged = df["leveraged"].iloc[0]
 
-        for cross in crossings:
-            d = cross["date"]
-            side = cross["side"]
+    for i, (idx, row) in enumerate(df.iterrows()):
+        u_price = row["underlying"]
+        sma_val = row["sma"]
+        l_price = row["leveraged"]
 
-            # Determine if this crossing is an entry or exit for this direction
-            is_entry = (
-                (direction == "trend_follow" and side == "above") or
-                (direction == "mean_reversion" and side == "below")
-            )
-            is_exit = (
-                (direction == "trend_follow" and side == "below") or
-                (direction == "mean_reversion" and side == "above")
-            )
+        trigger = get_raw_trigger(u_price, sma_val, entry_buffer_pct, exit_buffer_pct)
 
-            if is_entry and not in_position:
-                lev_price = l_map.get(d)
-                if lev_price:
-                    in_position = True
-                    entry_date = d
-                    entry_price = lev_price
-            elif is_exit and in_position:
-                lev_price = l_map.get(d)
-                if lev_price and entry_price:
-                    ret = (lev_price - entry_price) / entry_price
-                    days_held = (d - entry_date).days
-                    trades.append({
-                        "entry_date": entry_date.isoformat(),
-                        "exit_date": d.isoformat(),
-                        "entry_price": round(entry_price, 2),
-                        "exit_price": round(lev_price, 2),
-                        "return_pct": round(ret * 100, 2),
-                        "days_held": days_held,
-                    })
-                    in_position = False
-                    entry_date = None
-                    entry_price = None
+        confirmed_pos, pending_sig, pending_cnt, changed = apply_confirmation_machine(
+            trigger, confirmed_pos, pending_sig, pending_cnt
+        )
 
-        # Close any open position at end of data
-        if in_position and entry_price:
-            last_date = common_end
-            lev_price = l_map.get(last_date)
-            if lev_price:
-                ret = (lev_price - entry_price) / entry_price
-                trades.append({
-                    "entry_date": entry_date.isoformat(),
-                    "exit_date": last_date.isoformat(),
-                    "entry_price": round(entry_price, 2),
-                    "exit_price": round(lev_price, 2),
-                    "return_pct": round(ret * 100, 2),
-                    "days_held": (last_date - entry_date).days,
-                    "open_position": True,
-                })
-        return trades
+        if changed:
+            signal_dates.append({"date": str(idx.date()), "position": confirmed_pos})
 
-    trades = _sim_trades(crossings, direction, l_map, common_end)
+        # Daily return for strategy
+        if i > 0:
+            lev_ret = (l_price - prev_leveraged) / prev_leveraged
+            if confirmed_pos == "in":
+                strategy_equity *= (1 + lev_ret)
+            else:
+                strategy_equity *= (1 + cash_daily_rate)
+            bnh_equity *= (1 + lev_ret)
 
-    def _compute_stats(trades_subset: list[dict]) -> dict:
-        if not trades_subset:
-            return {"total_return_pct": None, "max_drawdown_pct": None, "num_trades": 0, "calmar_ratio": None, "win_rate_pct": None}
-        compounded = 1.0
-        peak = 1.0
-        max_dd = 0.0
-        wins = 0
-        for t in trades_subset:
-            compounded *= (1 + t["return_pct"] / 100)
-            if compounded > peak:
-                peak = compounded
-            dd = (peak - compounded) / peak
-            if dd > max_dd:
-                max_dd = dd
-            if t["return_pct"] > 0:
-                wins += 1
-        total_ret = (compounded - 1) * 100
-        calmar = round(total_ret / (max_dd * 100), 2) if max_dd > 0 else None
+        equity_curve.append(round(strategy_equity, 6))
+        bnh_curve.append(round(bnh_equity, 6))
+        position_flags.append(confirmed_pos == "in")
+        confirmed_positions.append(confirmed_pos)
+        pending_signals.append(pending_sig)
+        pending_counts.append(pending_cnt)
+
+        prev_leveraged = l_price
+
+    dates_str = [str(d.date()) for d in df.index]
+
+    # ---------------------------------------------------------------------------
+    # Summary statistics (full period)
+    # ---------------------------------------------------------------------------
+    eq = np.array(equity_curve)
+    bnh = np.array(bnh_curve)
+
+    def _stats(equity_arr: np.ndarray, dates_arr: list[str]) -> dict:
+        if len(equity_arr) == 0:
+            return {}
+        peak = np.maximum.accumulate(equity_arr)
+        drawdowns = (peak - equity_arr) / peak
+        max_dd = float(np.max(drawdowns))
+        total_ret = float((equity_arr[-1] - 1) * 100)
+        n_years = len(equity_arr) / 252
+        cagr = float(((equity_arr[-1]) ** (1 / n_years) - 1) * 100) if n_years > 0 else None
+        calmar = round(cagr / (max_dd * 100), 2) if (max_dd > 0 and cagr is not None) else None
         return {
             "total_return_pct": round(total_ret, 1),
+            "cagr_pct": round(cagr, 1) if cagr is not None else None,
             "max_drawdown_pct": round(max_dd * 100, 1),
-            "num_trades": len(trades_subset),
             "calmar_ratio": calmar,
-            "win_rate_pct": round(wins / len(trades_subset) * 100, 1) if trades_subset else None,
+            "data_start": dates_arr[0] if dates_arr else None,
+            "data_end": dates_arr[-1] if dates_arr else None,
+            "n_trading_days": len(equity_arr),
         }
 
-    def _trades_in_period(trades, start_str, end_str):
-        s = date.fromisoformat(start_str)
-        e = date.fromisoformat(end_str)
-        return [t for t in trades if date.fromisoformat(t["entry_date"]) >= s and date.fromisoformat(t["entry_date"]) <= e]
+    def _slice_stats(label: str, start_str: str, end_str: str) -> dict:
+        mask = [(start_str <= d <= end_str) for d in dates_str]
+        sliced = eq[mask]
+        sliced_dates = [d for d, m in zip(dates_str, mask) if m]
+        s = _stats(sliced, sliced_dates)
+        s["period"] = label
+        if len(sliced) == 0:
+            s["note"] = (
+                f"{cfg['leveraged']} data starts {dates_str[0]} — period predates ETF launch"
+                if dates_str and dates_str[0] > start_str
+                else "No data in this period"
+            )
+        return s
 
-    full_stats = _compute_stats(trades)
+    in_days = sum(position_flags)
+    out_days = len(position_flags) - in_days
 
-    sub_periods = []
-    period_defs = [
-        ("2007–2009 (Financial Crisis)", "2007-01-01", "2009-12-31"),
-        ("2018 Q4 (Rate Shock)", "2018-10-01", "2018-12-31"),
-        ("2020 (COVID Crash + Recovery)", "2020-01-01", "2020-12-31"),
-        ("2022 (Rate Hike Bear)", "2022-01-01", "2022-12-31"),
+    sub_periods = [
+        _slice_stats("2007–2009 (Financial Crisis)", "2007-01-01", "2009-12-31"),
+        _slice_stats("2018 Q4 (Rate Shock)",         "2018-10-01", "2018-12-31"),
+        _slice_stats("2020 (COVID Crash + Recovery)", "2020-01-01", "2020-12-31"),
+        _slice_stats("2022 (Rate Hike Bear)",         "2022-01-01", "2022-12-31"),
     ]
-    for label, start_str, end_str in period_defs:
-        sub = _trades_in_period(trades, start_str, end_str)
-        note = None
-        if not sub:
-            start_d = date.fromisoformat(start_str)
-            if common_start > start_d:
-                note = f"{cfg['leveraged']} data starts {common_start.isoformat()} — period predates ETF launch"
-            else:
-                note = "No trades generated in this period"
-        period_stats = _compute_stats(sub)
-        period_stats["period"] = label
-        period_stats["note"] = note
-        sub_periods.append(period_stats)
+
+    # Thin the chart series to ~500 points for a manageable JSON payload
+    n = len(dates_str)
+    stride = max(1, n // 500)
+    chart_dates    = dates_str[::stride]
+    chart_strategy = [round(v, 4) for v in equity_curve[::stride]]
+    chart_bnh      = [round(v, 4) for v in bnh_curve[::stride]]
+    chart_sma      = [round(float(v), 2) for v in df["sma"].values[::stride]]
+    chart_underlying = [round(float(v), 2) for v in df["underlying"].values[::stride]]
+    chart_in_pos   = position_flags[::stride]
 
     return {
         "asset_key": asset_key,
         "leveraged": cfg["leveraged"],
         "underlying": cfg["underlying"],
-        "direction": direction,
         "ma_period": ma_period,
-        "threshold_pct": threshold_pct,
-        "data_start": series[0][0].isoformat() if series else None,
-        "data_end": series[-1][0].isoformat() if series else None,
-        "total_crossings": len(crossings),
-        "full_period": full_stats,
+        "entry_buffer_pct": entry_buffer_pct,
+        "exit_buffer_pct": exit_buffer_pct,
+        "cash_apy_pct": cash_apy_pct,
+        "confirmation_days": CONFIRMATION_DAYS,
+        "data_start": dates_str[0] if dates_str else None,
+        "data_end": dates_str[-1] if dates_str else None,
+        "n_signals": len(signal_dates),
+        "signal_dates": signal_dates,
+        "days_in_pct": round(in_days / len(position_flags) * 100, 1) if position_flags else None,
+        "days_out_pct": round(out_days / len(position_flags) * 100, 1) if position_flags else None,
+        "full_period": _stats(eq, dates_str),
+        "buy_hold": _stats(bnh, dates_str),
         "sub_periods": sub_periods,
-        "trades": trades,
+        # Chart data (thinned for payload size)
+        "chart": {
+            "dates": chart_dates,
+            "strategy": chart_strategy,
+            "buy_hold": chart_bnh,
+            "sma": chart_sma,
+            "underlying": chart_underlying,
+            "in_position": chart_in_pos,
+        },
     }

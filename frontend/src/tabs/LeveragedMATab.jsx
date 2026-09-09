@@ -33,7 +33,7 @@ const fmt  = (n, d = 2) => n == null ? '—' : Number(n).toFixed(d)
 const fmtPct = n => n == null ? '—' : `${n > 0 ? '+' : ''}${Number(n).toFixed(2)}%`
 const fmtPrice = n => n == null ? '—' : `$${Number(n).toFixed(2)}`
 
-function PositionBadge({ position }) {
+function PositionBadge({ position, ticker }) {
   if (!position) return <span style={s.noData}>—</span>
   const isIn = position === 'in'
   return (
@@ -44,7 +44,7 @@ function PositionBadge({ position }) {
       color: isIn ? '#68d391' : '#fc8181',
       border: `1px solid ${isIn ? '#276749' : '#742a2a'}`,
     }}>
-      {isIn ? '▲ IN TQQQ' : '● IN CASH'}
+      {isIn ? `▲ IN ${ticker || 'ETF'}` : '● IN CASH'}
     </span>
   )
 }
@@ -235,7 +235,7 @@ function Dashboard({ signals, loading, signalsToday, neverRun, onRunDaily, trigg
             <div key={r.asset_key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 700, color: '#e2e8f0' }}>{r.leveraged}</span>
               <span style={{ color: '#718096', fontSize: 12 }}>via {r.underlying}</span>
-              <PositionBadge position={r.confirmed_position} />
+              <PositionBadge position={r.confirmed_position} ticker={r.leveraged} />
               {r.live_dist_pct != null && (
                 <span style={{ fontSize: 12, color: '#a0aec0' }}>
                   {r.underlying} {fmtPct(r.live_dist_pct)} from SMA
@@ -267,7 +267,7 @@ function Dashboard({ signals, loading, signalsToday, neverRun, onRunDaily, trigg
                   <div style={{ fontWeight: 700, color: '#e2e8f0' }}>{r.leveraged}</div>
                   <div style={{ fontSize: 11, color: '#718096' }}>{r.underlying} · {r.ma_period}d SMA · {r.leverage_multiple}x</div>
                 </td>
-                <td style={s.td}><PositionBadge position={r.confirmed_position} /></td>
+                <td style={s.td}><PositionBadge position={r.confirmed_position} ticker={r.leveraged} /></td>
                 <td style={s.td}><TriggerPill trigger={r.live_trigger} /></td>
                 <td style={s.td}><DistPill pct={r.live_dist_pct} /></td>
                 <td style={{ ...s.td, fontVariantNumeric: 'tabular-nums' }}>
@@ -292,7 +292,7 @@ function Dashboard({ signals, loading, signalsToday, neverRun, onRunDaily, trigg
                   {r.last_signal_date
                     ? <div>
                         <div style={{ fontSize: 11, color: '#718096' }}>{r.last_signal_date.slice(0, 10)}</div>
-                        <PositionBadge position={r.last_signal_side} />
+                        <PositionBadge position={r.last_signal_side} ticker={r.leveraged} />
                       </div>
                     : <span style={s.noData}>—</span>
                   }

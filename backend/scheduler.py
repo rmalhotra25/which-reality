@@ -188,6 +188,24 @@ def run_top_rated_scan_job() -> None:
         logger.error("Top-rated scan failed: %s", e, exc_info=True)
 
 
+def run_leveraged_ma_signals() -> None:
+    """Run daily MA crossing engine after market close (17:00 ET)."""
+    import datetime as _dt
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping leveraged MA signals — not a trading day")
+        return
+
+    logger.info("Scheduler: running leveraged MA signal engine")
+    from services.leveraged_ma_service import run_daily_signal_engine
+    try:
+        run_daily_signal_engine()
+        logger.info("Scheduler: leveraged MA signal engine complete")
+    except Exception as e:
+        logger.error("Leveraged MA signal engine failed: %s", e, exc_info=True)
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -244,6 +262,15 @@ def start_scheduler() -> BackgroundScheduler:
         run_top_rated_scan_job,
         CronTrigger(day_of_week="mon-fri", hour=10, minute=0, timezone=EASTERN),
         id="top_rated_scan_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 17:00 ET — leveraged MA crossing engine (after market close, uses final close prices)
+    scheduler.add_job(
+        run_leveraged_ma_signals,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=EASTERN),
+        id="leveraged_ma_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )

@@ -75,6 +75,42 @@ def daily_status():
     return {"running": running, "error": _daily_error}
 
 
+@router.get("/health")
+def health():
+    """Diagnostic: check API keys, DB rows, and a live Polygon price fetch."""
+    import os
+    from config import settings
+
+    result = {
+        "polygon_key_set": bool(os.environ.get("POLYGON_API_KEY") or settings.polygon_api_key),
+        "finnhub_key_set": bool(os.environ.get("FINNHUB_API_KEY") or getattr(settings, "finnhub_api_key", None)),
+        "database_url_set": bool(os.environ.get("DATABASE_URL")),
+        "db_rows": None,
+        "polygon_test": None,
+        "last_engine_error": _daily_error,
+    }
+
+    # Count DB rows
+    try:
+        from database import SessionLocal
+        from models.leveraged_ma import LeveragedMASignalState
+        db = SessionLocal()
+        result["db_rows"] = db.query(LeveragedMASignalState).count()
+        db.close()
+    except Exception as e:
+        result["db_rows"] = f"ERROR: {e}"
+
+    # Try a live Polygon price fetch (QQQ, 5 days)
+    try:
+        from services.polygon_client import get_close_prices
+        closes = get_close_prices("QQQ", days=5)
+        result["polygon_test"] = f"OK — {len(closes)} closes returned, last={round(closes[-1],2) if closes else None}"
+    except Exception as e:
+        result["polygon_test"] = f"ERROR: {e}"
+
+    return result
+
+
 @router.get("/configs")
 def get_configs():
     """Return the list of active asset configs with strategy parameters."""

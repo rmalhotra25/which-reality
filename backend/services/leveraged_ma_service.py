@@ -289,6 +289,7 @@ def run_daily_signal_engine() -> None:
     except Exception as e:
         db.rollback()
         logger.error("Leveraged MA: daily engine failed: %s", e, exc_info=True)
+        raise  # re-raise so the caller (thread wrapper / health) can capture the error
     finally:
         db.close()
 

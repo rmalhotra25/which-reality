@@ -100,11 +100,19 @@ def health():
     except Exception as e:
         result["db_rows"] = f"ERROR: {e}"
 
-    # Try a live Polygon price fetch (QQQ, 5 days)
+    # Test Polygon with full 171-day fetch for each underlying (same as engine)
     try:
         from services.polygon_client import get_close_prices
-        closes = get_close_prices("QQQ", days=5)
-        result["polygon_test"] = f"OK — {len(closes)} closes returned, last={round(closes[-1],2) if closes else None}"
+        from services.leveraged_ma_service import ASSET_CONFIGS
+        underlyings = list({cfg["underlying"] for cfg in ASSET_CONFIGS if cfg["active"]})
+        poly_results = {}
+        for ticker in underlyings:
+            try:
+                closes = get_close_prices(ticker, days=171)
+                poly_results[ticker] = f"{len(closes)} closes (need 161+)"
+            except Exception as e:
+                poly_results[ticker] = f"ERROR: {e}"
+        result["polygon_test"] = poly_results
     except Exception as e:
         result["polygon_test"] = f"ERROR: {e}"
 

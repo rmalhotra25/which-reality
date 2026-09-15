@@ -879,6 +879,104 @@ class ClaudeAnalyst:
         raw = self._call(system, user, max_tokens=2500)
         return self._parse(raw)
 
+    def suggest_weekly_covered_call(
+        self,
+        ticker: str,
+        current_price: float,
+        call_tiers: dict,
+        iv_rank: float | None = None,
+        cost_basis: float | None = None,
+    ) -> dict:
+        """Weekly-specific covered call recommendation with news-enriched context.
+        Returns a focused play for the current week rather than generic 3-tier guidance.
+        """
+        system = (
+            "You are a friendly options income coach. Your job is to help an everyday investor "
+            "decide the single best covered call to sell THIS WEEK on 100 shares they already own. "
+            "Be direct and specific: tell them exactly what to do, why, and what to expect by Friday. "
+            "Explain everything in plain English — no jargon. "
+            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
+        )
+
+        # Fetch live news to inform the weekly recommendation
+        news_bullets = ""
+        try:
+            news_bullets = self._fetch_stock_news(ticker)
+        except Exception:
+            pass
+
+        def _fmt_tier(t: dict | None, label: str) -> str:
+            if not t:
+                return f"  {label}: No suitable option found\n"
+            below = " [LOW PREMIUM — thin market]" if t.get("below_threshold") else ""
+            return (
+                f"  {label}:{below}\n"
+                f"    Strike=${t['strike']} | Expiry={t['expiry']} ({t['dte']} days) | "
+                f"Bid=${t['bid']} / Ask=${t['ask']} | Mid=${t['mid_premium']} "
+                f"(${t['premium_per_contract']}/contract)\n"
+                f"    Call-away chance ~{t['call_away_chance_pct']}% | "
+                f"Weekly yield: {t['pct_of_stock_weekly']}% of stock price\n"
+                f"    Volume={t['volume']} | Open Interest={t['open_interest']}\n"
+            )
+
+        data_src = call_tiers.get("data_source", "last_trade")
+        src_note = "live bid/ask" if data_src in ("live", "polygon_live") else "last-trade prices (markets closed)"
+        cost_str = f"${cost_basis:.2f}/share" if cost_basis else "not provided"
+        iv_str = f"{iv_rank:.0f}/100" if iv_rank is not None else "unknown"
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        expiry = call_tiers.get("expiry", "this Friday")
+        dte = call_tiers.get("dte", 7)
+
+        tiers_str = (
+            f"THIS WEEK'S CALL OPTIONS ({src_note}):\n"
+            f"Expiry: {expiry} ({dte} days) | Current price: ${current_price} | "
+            f"ATM IV: {call_tiers.get('atm_iv_pct', '?')}% | IV Rank: {iv_str}\n"
+            f"Cost basis: {cost_str}\n\n"
+            + _fmt_tier(call_tiers.get("aggressive"),   "AGGRESSIVE (~70% call-away, highest premium)")
+            + _fmt_tier(call_tiers.get("balanced"),     "BALANCED (~45% call-away, good premium)")
+            + _fmt_tier(call_tiers.get("conservative"), "CONSERVATIVE (~20% call-away, keep shares)")
+        )
+
+        valid_expiries = _valid_expiry_dates(2)
+        expiry_list = ", ".join(valid_expiries)
+
+        user = (
+            f"Today: {today_str}\n"
+            f"Valid expiry dates (use one of these exactly): {expiry_list}\n\n"
+            f"I own 100 shares of {ticker} at ${current_price}. "
+            f"Help me decide the single best covered call to sell THIS WEEK.\n\n"
+            f"{tiers_str}\n"
+            f"Recent news about {ticker}:\n{news_bullets or 'No recent news available.'}\n\n"
+            "Based on the news, IV environment, and available strikes, pick the BEST single call to sell "
+            "this week and explain it in simple terms. Consider:\n"
+            "- Is there any news that might move the stock before expiry?\n"
+            "- Is premium high enough to be worth the risk of losing shares?\n"
+            "- Which strike gives the best risk/reward for this specific week?\n\n"
+            "Return JSON with exactly this structure:\n"
+            "{\n"
+            '  "recommended_tier": "balanced",\n'
+            '  "strike": 195.0,\n'
+            '  "expiry": "2026-09-19",\n'
+            '  "dte": 5,\n'
+            '  "premium_per_contract": 185.0,\n'
+            '  "call_away_chance_pct": 45,\n'
+            '  "weekly_yield_pct": 0.95,\n'
+            '  "recommendation": "Sell the $195 call expiring Friday. Here is what I recommend and why — 2-3 plain-English sentences",\n'
+            '  "news_impact": "Brief note on whether this week\'s news makes you more or less aggressive",\n'
+            '  "if_called": "Plain English: what happens if the stock closes above your strike Friday",\n'
+            '  "if_not_called": "Plain English: what happens if the stock stays below your strike",\n'
+            '  "risk_flag": null\n'
+            "}\n"
+            'Set "risk_flag" to a 1-sentence warning ONLY if there is a specific near-term risk '
+            "(earnings, Fed meeting, major product announcement this week). Otherwise null."
+        )
+        raw = self._call(system, user, max_tokens=1500)
+        result = self._parse(raw)
+        # Attach the full tiers in case the frontend needs them
+        result["tiers"] = {k: call_tiers.get(k) for k in ("aggressive", "balanced", "conservative")}
+        result["iv_environment"] = f"ATM IV: {call_tiers.get('atm_iv_pct', '?')}% | IV Rank: {iv_str}"
+        return result
+
     # ------------------------------------------------------------------
     # Champions — one batched call to pick best stock per strategy
     # ------------------------------------------------------------------

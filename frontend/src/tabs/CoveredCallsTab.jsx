@@ -196,22 +196,44 @@ function WeeklyScanner() {
             </div>
           </div>
 
-          {/* Condensed tiers reference */}
-          {(tiers.aggressive || tiers.balanced || tiers.conservative) && (
-            <div style={{ background: '#161b27', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px', marginBottom: '12px' }}>
-              <div style={{ fontSize: '11px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '10px' }}>All This Week's Strikes</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {['aggressive', 'balanced', 'conservative'].map((tierKey) => {
+          {/* Tier cards for balanced + conservative */}
+          {(tiers.balanced || tiers.conservative) && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '10px' }}>Other Options This Week</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {['balanced', 'conservative'].map((tierKey) => {
                   const t = tiers[tierKey]
                   if (!t) return null
                   const b = TIER_BADGE[tierKey]
                   const isRec = rec.recommended_tier === tierKey
+                  const bgColor = tierKey === 'balanced' ? '#1a1400' : '#071410'
+                  const borderColor = isRec ? b.color : (tierKey === 'balanced' ? '#b7791f44' : '#27674944')
                   return (
-                    <div key={tierKey} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 10px', background: isRec ? 'rgba(39,103,73,0.2)' : 'transparent', borderRadius: '6px', border: isRec ? `1px solid ${b.color}` : '1px solid transparent' }}>
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: b.color, width: '90px', flexShrink: 0 }}>{b.label}</span>
-                      <span style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, width: '70px' }}>{fmt(t.strike)}</span>
-                      <span style={{ fontSize: '12px', color: '#a0aec0' }}>{fmt(t.mid_premium)} mid · {t.call_away_chance_pct}% chance · {t.pct_of_stock_weekly}%/wk</span>
-                      {isRec && <span style={{ marginLeft: 'auto', fontSize: '10px', color: b.color, fontWeight: 700 }}>← AI Pick</span>}
+                    <div key={tierKey} style={{ background: bgColor, border: `1px solid ${borderColor}`, borderRadius: '10px', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '16px', fontWeight: 800, color: b.color }}>{fmt(t.strike)} Call</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: b.color, background: 'rgba(0,0,0,0.4)', border: `1px solid ${b.color}`, borderRadius: '12px', padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.label}</span>
+                        {isRec && <span style={{ fontSize: '10px', color: b.color, fontWeight: 700, marginLeft: 'auto' }}>← AI Pick</span>}
+                        <span style={{ fontSize: '16px', fontWeight: 800, color: '#68d391', marginLeft: isRec ? '0' : 'auto' }}>{fmt(t.premium_per_contract)}</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Strike</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{fmt(t.strike)}</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Premium</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{fmt(t.mid_premium)} mid</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Call-Away</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{t.call_away_chance_pct}%</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Weekly Yield</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{t.pct_of_stock_weekly}%</div>
+                        </div>
+                      </div>
                     </div>
                   )
                 })}

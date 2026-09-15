@@ -1377,6 +1377,200 @@ class StockDataService:
             logger.warning("get_call_tiers synthetic BS failed for %s: %s", ticker, e)
             return None
 
+    def get_weekly_call_tiers(self, ticker: str) -> dict | None:
+        """
+        Fetch call options targeting the NEAREST expiry (this week or next, ≤9 DTE).
+        Used for the weekly covered call scanner. Falls back to the standard 14-DTE
+        expiry if no near-term options exist.
+        """
+        # Pre-fetch live price: Finnhub → yfinance (same as get_call_tiers)
+        _live_price: float | None = None
+        try:
+            from services.finnhub_client import get_quote
+            q = get_quote(ticker)
+            _live_price = float(q.get("c") or q.get("pc") or 0) or None
+        except Exception:
+            pass
+        if not _live_price:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                raw_last = float(fi.last_price or 0) or None
+                prev_close = float(fi.previous_close or 0) or None
+                if raw_last and prev_close and not (0.5 <= raw_last / prev_close <= 2.0):
+                    _live_price = prev_close
+                else:
+                    _live_price = raw_last or prev_close
+            except Exception:
+                pass
+
+        def _build_tiers(calls, price, target_expiry):
+            today = date.today()
+            dte = (date.fromisoformat(target_expiry) - today).days
+            atm = min(calls, key=lambda c: abs(c["strike"] - price))
+            atm_iv_pct = atm["iv_pct"]
+            weeks = max(dte / 7.0, 0.2)
+            min_premium = round(price * 0.003 * weeks, 2)
+
+            def _tier(target_delta):
+                sane = [c for c in calls if 0.8 * price <= c["strike"] <= 3.0 * price]
+                pool = sane if sane else calls
+                best = min(pool, key=lambda c: abs(c["delta"] - target_delta))
+                if abs(best["delta"] - target_delta) > 0.20:
+                    return None
+                mid = best["mid"]
+                strike = best["strike"]
+                pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
+                return {
+                    "strike": strike,
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "bid": best["bid"],
+                    "ask": best["ask"],
+                    "mid_premium": mid,
+                    "premium_per_contract": round(mid * 100, 2),
+                    "iv_pct": best["iv_pct"],
+                    "delta": round(best["delta"], 2),
+                    "call_away_chance_pct": round(best["delta"] * 100),
+                    "daily_income_per_contract": round((best["theta_seller"] or 0) * 100, 2),
+                    "upside_to_strike_pct": round((strike - price) / price * 100, 1),
+                    "pct_of_stock_weekly": pct_of_stock,
+                    "below_threshold": mid < min_premium,
+                    "volume": best["volume"],
+                    "open_interest": best["open_interest"],
+                }
+
+            return {
+                "current_price": round(price, 2),
+                "expiry": target_expiry,
+                "dte": dte,
+                "options_type": "weekly",
+                "atm_iv_pct": atm_iv_pct,
+                "data_source": "polygon_live",
+                "min_premium_threshold": min_premium,
+                "aggressive": _tier(0.70),
+                "balanced": _tier(0.45),
+                "conservative": _tier(0.20),
+            }
+
+        # --- Polygon path: try nearest expiry (0-9 DTE first, then 0-16) ---
+        for max_dte in (9, 16):
+            try:
+                calls, price = self._polygon_options_chain(ticker, "call", 0, max_dte, near_price=_live_price)
+                if not price:
+                    price = _live_price
+                if calls and price:
+                    today = date.today()
+                    expiries = sorted(set(c["expiry"] for c in calls))
+                    # Pick the NEAREST expiry (not closest to 14 — we want this week)
+                    target_expiry = min(expiries, key=lambda e: (date.fromisoformat(e) - today).days)
+                    week_calls = [c for c in calls if c["expiry"] == target_expiry]
+                    if week_calls:
+                        return _build_tiers(week_calls, price, target_expiry)
+            except Exception as e:
+                logger.debug("get_weekly_call_tiers Polygon path (max_dte=%d) failed for %s: %s", max_dte, ticker, e)
+
+        # --- yfinance fallback: nearest expiry within 0-16 DTE ---
+        if not _YF_AVAILABLE:
+            return None
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return None
+
+            today = date.today()
+            target_expiry = None
+            for exp in expiries:
+                days = (date.fromisoformat(exp) - today).days
+                if 0 <= days <= 16:
+                    target_expiry = exp
+                    break
+            if not target_expiry:
+                # No weekly options — fall through to standard covered call analyzer
+                return None
+
+            _live_price_yf: float | None = _live_price
+            if not _live_price_yf:
+                try:
+                    fi = t.fast_info
+                    _live_price_yf = float(fi.last_price or fi.previous_close or 0) or None
+                except Exception:
+                    pass
+
+            chain_df = t.option_chain(target_expiry).calls
+            if chain_df.empty:
+                return None
+
+            dte = (date.fromisoformat(target_expiry) - today).days
+            price = _live_price_yf or float(chain_df.iloc[len(chain_df) // 2].get("strike", 100))
+
+            T = max(dte / 365.0, 1 / 365.0)
+            iv_col = chain_df.get("impliedVolatility", None)
+            mean_iv = float(iv_col.mean()) if iv_col is not None and len(iv_col) > 0 else 0
+            if mean_iv < 0.01:
+                mean_iv = _historical_volatility(ticker) or 0.30
+
+            chain_df = chain_df.copy()
+            chain_df["_mid"] = chain_df.apply(
+                lambda r: (r["bid"] + r["ask"]) / 2 if r.get("bid", 0) > 0 else r.get("lastPrice", 0),
+                axis=1,
+            )
+            chain_df["_iv"] = chain_df.get("impliedVolatility", mean_iv).fillna(mean_iv).clip(lower=0.01)
+            chain_df["_delta"] = chain_df.apply(
+                lambda r: _bs_call_delta(price, r["strike"], r["_iv"], T), axis=1
+            )
+            chain_df["_theta"] = chain_df.apply(
+                lambda r: _bs_call_theta_daily(price, r["strike"], r["_iv"], T), axis=1
+            )
+
+            data_source = "live" if mean_iv > 0.01 else "last_trade"
+            weeks = max(dte / 7.0, 0.2)
+            min_premium = round(price * 0.003 * weeks, 2)
+
+            def _yf_tier(target_delta):
+                sane = chain_df[(chain_df["strike"] >= 0.8 * price) & (chain_df["strike"] <= 3.0 * price)]
+                pool = sane if not sane.empty else chain_df
+                row = pool.iloc[(pool["_delta"] - target_delta).abs().argmin()]
+                if abs(row["_delta"] - target_delta) > 0.20:
+                    return None
+                mid = round(float(row["_mid"]), 2)
+                strike = float(row["strike"])
+                pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
+                return {
+                    "strike": strike,
+                    "expiry": target_expiry,
+                    "dte": dte,
+                    "bid": round(float(row.get("bid", 0)), 2),
+                    "ask": round(float(row.get("ask", 0)), 2),
+                    "mid_premium": mid,
+                    "premium_per_contract": round(mid * 100, 2),
+                    "iv_pct": round(float(row["_iv"]) * 100, 1),
+                    "delta": round(float(row["_delta"]), 2),
+                    "call_away_chance_pct": round(float(row["_delta"]) * 100),
+                    "daily_income_per_contract": round(float(row["_theta"]) * 100, 2),
+                    "upside_to_strike_pct": round((strike - price) / price * 100, 1),
+                    "pct_of_stock_weekly": pct_of_stock,
+                    "below_threshold": mid < min_premium,
+                    "volume": int(row.get("volume", 0) or 0),
+                    "open_interest": int(row.get("openInterest", 0) or 0),
+                }
+
+            return {
+                "current_price": round(price, 2),
+                "expiry": target_expiry,
+                "dte": dte,
+                "options_type": "weekly",
+                "atm_iv_pct": round(mean_iv * 100, 1),
+                "data_source": data_source,
+                "min_premium_threshold": min_premium,
+                "aggressive": _yf_tier(0.70),
+                "balanced": _yf_tier(0.45),
+                "conservative": _yf_tier(0.20),
+            }
+        except Exception as e:
+            logger.warning("get_weekly_call_tiers yfinance failed for %s: %s", ticker, e)
+            return None
+
     def get_chain_context(self, tickers: list[str]) -> dict:
         """
         For each ticker return a compact real-market options chain string.

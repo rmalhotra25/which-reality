@@ -1,6 +1,233 @@
 import { useState } from 'react'
 import { api } from '../api'
 
+const WEEKLY_TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'COIN', 'PLTR', 'AMD', 'META']
+
+const TIER_BADGE = {
+  aggressive: { color: '#fc8181', label: 'Aggressive' },
+  balanced:   { color: '#f6e05e', label: 'Balanced' },
+  conservative: { color: '#68d391', label: 'Conservative' },
+}
+
+function WeeklyScanner() {
+  const [ticker, setTicker] = useState('')
+  const [costBasis, setCostBasis] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const analyze = async (sym) => {
+    const symbol = (sym || ticker).trim().toUpperCase()
+    if (!symbol) return
+    setTicker(symbol)
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const cb = costBasis ? parseFloat(costBasis) : null
+      const data = await api.coveredCalls.weeklyAnalyze(symbol, cb)
+      setResult(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const fmt = (v) => v == null ? '—' : `$${Number(v).toFixed(2)}`
+  const rec = result
+  const badge = rec ? TIER_BADGE[rec.recommended_tier] : null
+  const tiers = rec?.tiers ?? {}
+
+  return (
+    <div style={{ marginTop: '40px', paddingTop: '32px', borderTop: '1px solid #2d3748' }}>
+      <div style={{ marginBottom: '20px' }}>
+        <div style={{ fontSize: '18px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' }}>
+          📆 This Week's Options Scanner
+        </div>
+        <div style={{ fontSize: '13px', color: '#718096' }}>
+          AI analyzes live news + this week's option chain and tells you exactly what to sell by Friday
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Ticker</div>
+          <input
+            style={{ width: '120px', padding: '10px 14px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', color: '#e2e8f0', fontSize: '16px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', outline: 'none' }}
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && analyze()}
+            placeholder="AAPL"
+            maxLength={6}
+          />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Cost Basis / share (optional)</div>
+          <input
+            style={{ width: '130px', padding: '10px 14px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', color: '#e2e8f0', fontSize: '14px', outline: 'none' }}
+            type="number" step="0.01" min="0"
+            value={costBasis}
+            onChange={(e) => setCostBasis(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && analyze()}
+            placeholder="e.g. 185.00"
+          />
+        </div>
+        <button
+          style={{ padding: '10px 22px', background: loading ? '#2d3748' : '#276749', color: loading ? '#718096' : '#fff', border: 'none', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 600, alignSelf: 'flex-end', whiteSpace: 'nowrap' }}
+          onClick={() => analyze()}
+          disabled={loading || !ticker.trim()}
+        >
+          {loading ? '⏳ Analyzing...' : '📆 Analyze This Week'}
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
+        {WEEKLY_TICKERS.map((sym) => (
+          <button key={sym} style={{ padding: '4px 11px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '20px', color: '#a0aec0', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }} onClick={() => analyze(sym)}>{sym}</button>
+        ))}
+      </div>
+      <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '20px' }}>
+        Best for stocks with weekly options — SPY, QQQ, large-cap tech, etc.
+      </div>
+
+      {error && (
+        <div style={{ color: '#fc8181', padding: '14px 16px', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', fontSize: '14px', marginBottom: '20px' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      {rec && (
+        <div>
+          {/* Header bar */}
+          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px', color: '#a0aec0' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Ticker</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.ticker}</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Price</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{fmt(rec.current_price)}</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Expiry</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.expiry} ({rec.dte}d)</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>ATM IV</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.atm_iv_pct ?? '—'}%</div>
+            </div>
+            {rec.iv_rank?.iv_rank != null && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>IV Rank</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: rec.iv_rank.iv_rank >= 50 ? '#68d391' : rec.iv_rank.iv_rank < 25 ? '#fc8181' : '#fbd38d' }}>
+                  {rec.iv_rank.iv_rank}<span style={{ fontSize: '10px', color: '#718096', marginLeft: '3px' }}>/ 100</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {rec.data_source === 'last_trade' && (
+            <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '12px' }}>
+              ℹ Markets closed — using last-trade prices. Live bid/ask available during market hours.
+            </div>
+          )}
+
+          {/* Risk flag */}
+          {rec.risk_flag && (
+            <div style={{ fontSize: '13px', color: '#f6e05e', background: '#2d2200', border: '1px solid #b7791f', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px' }}>
+              ⚠ {rec.risk_flag}
+            </div>
+          )}
+
+          {/* Main recommendation card */}
+          <div style={{ background: '#0d2218', border: `2px solid ${badge?.color ?? '#68d391'}`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+              <span style={{ fontSize: '22px', fontWeight: 800, color: badge?.color ?? '#68d391' }}>{fmt(rec.strike)} Call</span>
+              {badge && (
+                <span style={{ fontSize: '11px', fontWeight: 700, color: badge.color, background: 'rgba(0,0,0,0.4)', border: `1px solid ${badge.color}`, borderRadius: '12px', padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {badge.label}
+                </span>
+              )}
+              <span style={{ marginLeft: 'auto', fontSize: '22px', fontWeight: 800, color: '#68d391' }}>{fmt(rec.premium_per_contract)}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '16px' }}>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Strike</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{fmt(rec.strike)}</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Call-Away Chance</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{rec.call_away_chance_pct ?? '—'}%</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Weekly Yield</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{rec.weekly_yield_pct ?? '—'}%</div>
+              </div>
+            </div>
+
+            {rec.recommendation && (
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '5px' }}>AI Recommendation</div>
+                <div style={{ fontSize: '14px', color: '#cbd5e0', lineHeight: 1.6 }}>{rec.recommendation}</div>
+              </div>
+            )}
+
+            {rec.news_impact && (
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '5px' }}>This Week's News</div>
+                <div style={{ fontSize: '13px', color: '#90cdf4', lineHeight: 1.5, fontStyle: 'italic' }}>{rec.news_impact}</div>
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {rec.if_called && (
+                <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, marginBottom: '4px' }}>If shares get called away</div>
+                  <div style={{ fontSize: '12px', color: '#cbd5e0', lineHeight: 1.5 }}>{rec.if_called}</div>
+                </div>
+              )}
+              {rec.if_not_called && (
+                <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, marginBottom: '4px' }}>If shares stay below strike</div>
+                  <div style={{ fontSize: '12px', color: '#cbd5e0', lineHeight: 1.5 }}>{rec.if_not_called}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Condensed tiers reference */}
+          {(tiers.aggressive || tiers.balanced || tiers.conservative) && (
+            <div style={{ background: '#161b27', border: '1px solid #2d3748', borderRadius: '8px', padding: '14px 16px', marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '10px' }}>All This Week's Strikes</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {['aggressive', 'balanced', 'conservative'].map((tierKey) => {
+                  const t = tiers[tierKey]
+                  if (!t) return null
+                  const b = TIER_BADGE[tierKey]
+                  const isRec = rec.recommended_tier === tierKey
+                  return (
+                    <div key={tierKey} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 10px', background: isRec ? 'rgba(39,103,73,0.2)' : 'transparent', borderRadius: '6px', border: isRec ? `1px solid ${b.color}` : '1px solid transparent' }}>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: b.color, width: '90px', flexShrink: 0 }}>{b.label}</span>
+                      <span style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, width: '70px' }}>{fmt(t.strike)}</span>
+                      <span style={{ fontSize: '12px', color: '#a0aec0' }}>{fmt(t.mid_premium)} mid · {t.call_away_chance_pct}% chance · {t.pct_of_stock_weekly}%/wk</span>
+                      {isRec && <span style={{ marginLeft: 'auto', fontSize: '10px', color: b.color, fontWeight: 700 }}>← AI Pick</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: '11px', color: '#4a5568' }}>
+            AI analysis using live news + options data — not financial advice. Verify quotes with your broker before trading.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const TIER_CONFIG = {
   aggressive: {
     label: 'Aggressive',
@@ -464,6 +691,8 @@ export default function CoveredCallsTab() {
           </div>
         </>
       )}
+
+      <WeeklyScanner />
     </div>
   )
 }

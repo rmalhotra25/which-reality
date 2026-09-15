@@ -73,6 +73,11 @@ export const api = {
         method: 'POST',
         body: { ticker, cost_basis: costBasis },
       }),
+    weeklyAnalyze: (ticker, costBasis = null) =>
+      request('/api/covered-calls/weekly-analyze', {
+        method: 'POST',
+        body: { ticker, cost_basis: costBasis },
+      }),
   },
   scanner: {
     scan: () => request('/api/scanner/scan'),

@@ -922,7 +922,8 @@ class ClaudeAnalyst:
         data_src = call_tiers.get("data_source", "last_trade")
         src_note = "live bid/ask" if data_src in ("live", "polygon_live") else "last-trade prices (markets closed)"
         cost_str = f"${cost_basis:.2f}/share" if cost_basis else "not provided"
-        iv_str = f"{iv_rank:.0f}/100" if iv_rank is not None else "unknown"
+        iv_rank_val = iv_rank.get("iv_rank") if isinstance(iv_rank, dict) else iv_rank
+        iv_str = f"{iv_rank_val:.0f}/100" if iv_rank_val is not None else "unknown"
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         expiry = call_tiers.get("expiry", "this Friday")
         dte = call_tiers.get("dte", 7)

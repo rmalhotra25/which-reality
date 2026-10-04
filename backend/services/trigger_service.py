@@ -1,44 +1,82 @@
 """
-Stock Trigger Service — combines DCF/Monte Carlo, 50-day MA crossover,
-earnings calendar, and bear-case protection into a 0–8 point trigger score.
+Stock Trigger Service — combines DCF/Monte Carlo, 50-day MA crossover (with volume
+confirmation), earnings calendar, bear-case protection, and relative strength vs
+S&P 500 into a 0–9 point trigger score.
 
 Scoring:
-  Monte Carlo ≥85% undervalued → +2
-  Monte Carlo 70–84% undervalued → +1
-  Price crossed ABOVE 50-day MA in last 5 trading days → +2
-  Price above 50-day MA (no recent cross) → +1
-  No earnings within 14 days → +1
-  Bear case downside <30% → +1
-  Base case upside >20% → +1
-  ─────────────────────────────────
-  Maximum: 8 points
+  Monte Carlo ≥85% undervalued             → +2
+  Monte Carlo 70–84% undervalued           → +1
+  Price crossed ABOVE 50-day MA last 5 days
+      with volume ≥1.5× 20-day avg         → +2  (high-conviction cross)
+      with volume < 1.5× 20-day avg        → +1  (weak-volume cross)
+  Price above 50-day MA (no recent cross)  → +1
+  No earnings within 14 days              → +1
+  Bear case downside <30%                 → +1
+  Base case upside >20%                   → +1
+  Stock 20-day return > SPY 20-day return → +1  (relative strength)
+  ─────────────────────────────────────────────
+  Maximum: 9 points
+
+Results are cached per-ticker for 4 hours to speed up watchlist refreshes and
+absorb transient API failures gracefully.
 """
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+# ── Result cache ──────────────────────────────────────────────────────────────
+_ANALYSIS_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 4 * 3600  # 4 hours
+
+# ── SPY 20-day return cache (shared across all ticker analyses in a session) ──
+_SPY_CACHE: dict = {"ts": 0.0, "ret": None}
+_SPY_CACHE_TTL = 6 * 3600  # 6 hours
+
+
+def _get_spy_20d_return() -> float | None:
+    """Return SPY's 20-trading-day price return %, cached for 6 hours."""
+    t = time.time()
+    if t - _SPY_CACHE["ts"] < _SPY_CACHE_TTL and _SPY_CACHE["ret"] is not None:
+        return _SPY_CACHE["ret"]
+    try:
+        from services.polygon_client import get_close_prices
+        closes = get_close_prices("SPY", days=30)
+        if len(closes) >= 21:
+            ret = round((closes[-1] / closes[-21] - 1) * 100, 2)
+            _SPY_CACHE.update({"ts": t, "ret": ret})
+            return ret
+    except Exception as e:
+        logger.warning("SPY 20d return fetch failed: %s", e)
+    return None
 
 
 def _fetch_ma_data(ticker: str) -> dict | None:
     """
-    Fetch ~100 calendar days of closes (≈70 trading days), compute 50-day SMA,
-    detect whether a golden cross happened in the last 5 trading days.
+    Fetch ~100 calendar days of (close, volume) pairs, compute 50-day SMA,
+    detect whether a golden cross happened in the last 5 trading days, and
+    check whether that cross was on high volume (≥1.5× 20-day avg).
+    Also computes the stock's 20-day return for relative strength comparison.
     Returns None on failure or insufficient data.
     """
     try:
-        from services.polygon_client import get_close_prices
-        closes = get_close_prices(ticker, days=100)
-        if len(closes) < 52:
+        from services.polygon_client import get_close_and_volume
+        pairs = get_close_and_volume(ticker, days=100)
+        if len(pairs) < 52:
             return None
 
+        closes = [p[0] for p in pairs]
+        volumes = [p[1] for p in pairs]
         n = len(closes)
         ma50 = sum(closes[-50:]) / 50
         current_price = closes[-1]
         above_ma = current_price > ma50
 
-        # Detect cross in last 5 trading days.
-        # At index i: price=closes[i], MA=mean(closes[i-49:i+1])
-        # Cross: prev_price ≤ prev_ma AND curr_price > curr_ma
+        avg_vol_20d = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else None
+
         crossover_5d = False
+        volume_confirmed = False
+        cross_volume = None
         for i in range(max(50, n - 5), n):
             curr_p = closes[i]
             curr_m = sum(closes[i - 49:i + 1]) / 50
@@ -46,13 +84,24 @@ def _fetch_ma_data(ticker: str) -> dict | None:
             prev_m = sum(closes[i - 50:i]) / 50
             if prev_p <= prev_m and curr_p > curr_m:
                 crossover_5d = True
+                cross_volume = volumes[i]
+                if avg_vol_20d and avg_vol_20d > 0 and cross_volume >= 1.5 * avg_vol_20d:
+                    volume_confirmed = True
                 break
+
+        rel_strength_20d = None
+        if len(closes) >= 21:
+            rel_strength_20d = round((closes[-1] / closes[-21] - 1) * 100, 2)
 
         return {
             "current_price": round(current_price, 2),
             "ma50": round(ma50, 2),
             "above_ma": above_ma,
             "crossover_5d": crossover_5d,
+            "volume_confirmed": volume_confirmed,
+            "cross_volume": int(cross_volume) if cross_volume else None,
+            "avg_volume_20d": int(avg_vol_20d) if avg_vol_20d else None,
+            "rel_strength_20d": rel_strength_20d,
         }
     except Exception as e:
         logger.warning("MA fetch failed for %s: %s", ticker, e)
@@ -63,10 +112,11 @@ def _calculate_score(
     dcf: dict,
     ma_data: dict | None,
     earnings_days: int | None,
+    spy_20d_return: float | None = None,
 ) -> tuple:
     """
     Returns (score, breakdown, action, suggested_size, blocked).
-    breakdown keys: "monte_carlo", "ma", "earnings", "bear", "base"
+    breakdown keys: "monte_carlo", "ma", "earnings", "bear", "base", "rel_strength"
     Each has: earned (int|None), max (int), label (str), detail (str), optional flags.
     """
     score = 0
@@ -99,15 +149,32 @@ def _calculate_score(
             "detail": "No simulation data",
         }
 
-    # ── 2. 50-day MA (0-2 pts) ───────────────────────────────────────────────
+    # ── 2. 50-day MA with volume confirmation (0-2 pts) ──────────────────────
     if ma_data:
         if ma_data["crossover_5d"]:
-            score += 2
-            breakdown["ma"] = {
-                "earned": 2, "max": 2, "label": "50-day MA",
-                "detail": f"Crossed above 50-day MA in last 5 days (${ma_data['ma50']:,.2f}) — momentum signal",
-                "crossover": True,
-            }
+            vol_confirmed = ma_data.get("volume_confirmed", True)
+            if vol_confirmed:
+                score += 2
+                avg_v = ma_data.get("avg_volume_20d")
+                cross_v = ma_data.get("cross_volume")
+                vol_note = ""
+                if avg_v and cross_v:
+                    ratio = cross_v / avg_v
+                    vol_note = f" ({ratio:.1f}× avg daily volume)"
+                breakdown["ma"] = {
+                    "earned": 2, "max": 2, "label": "50-day MA",
+                    "detail": f"Crossed above 50-day MA (${ma_data['ma50']:,.2f}) with strong volume{vol_note}",
+                    "crossover": True,
+                    "volume_confirmed": True,
+                }
+            else:
+                score += 1
+                breakdown["ma"] = {
+                    "earned": 1, "max": 2, "label": "50-day MA",
+                    "detail": f"Crossed above 50-day MA (${ma_data['ma50']:,.2f}) on below-average volume — lower conviction",
+                    "crossover": True,
+                    "volume_confirmed": False,
+                }
         elif ma_data["above_ma"]:
             score += 1
             breakdown["ma"] = {
@@ -193,6 +260,28 @@ def _calculate_score(
         breakdown["base"] = {
             "earned": None, "max": 1, "label": "Base case",
             "detail": "No DCF data",
+        }
+
+    # ── 6. Relative strength vs S&P 500 (0-1 pt) ────────────────────────────
+    stock_20d = ma_data.get("rel_strength_20d") if ma_data else None
+    if stock_20d is not None and spy_20d_return is not None:
+        if stock_20d > spy_20d_return:
+            score += 1
+            diff = stock_20d - spy_20d_return
+            breakdown["rel_strength"] = {
+                "earned": 1, "max": 1, "label": "Rel. Strength",
+                "detail": f"Outperforming S&P 500 by +{diff:.1f}% over 20 days ({stock_20d:+.1f}% vs SPY {spy_20d_return:+.1f}%)",
+            }
+        else:
+            diff = spy_20d_return - stock_20d
+            breakdown["rel_strength"] = {
+                "earned": 0, "max": 1, "label": "Rel. Strength",
+                "detail": f"Underperforming S&P 500 by {diff:.1f}% over 20 days ({stock_20d:+.1f}% vs SPY {spy_20d_return:+.1f}%)",
+            }
+    else:
+        breakdown["rel_strength"] = {
+            "earned": None, "max": 1, "label": "Rel. Strength",
+            "detail": "Insufficient data for comparison",
         }
 
     # ── Action & position sizing ─────────────────────────────────────────────
@@ -327,7 +416,9 @@ def _combined_recommendation(dcf_score: int, paradigm_score: int) -> tuple:
 
 def analyze_trigger(ticker: str) -> dict:
     """
-    Full trigger analysis: DCF + Monte Carlo + 50-day MA + earnings → trigger score.
+    Full trigger analysis: DCF + Monte Carlo + 50-day MA (volume-confirmed) +
+    earnings + relative strength vs SPY → 0–9 point trigger score.
+    Results are cached for 4 hours per ticker.
     Raises ValueError if fundamentals are unavailable (propagated from dcf_service).
     """
     from services.dcf_service import analyze as dcf_analyze
@@ -335,27 +426,33 @@ def analyze_trigger(ticker: str) -> dict:
 
     ticker = ticker.upper().strip()
 
+    # ── Cache check ──────────────────────────────────────────────────────────
+    cached = _ANALYSIS_CACHE.get(ticker)
+    if cached and (time.time() - cached[0]) < _CACHE_TTL:
+        logger.debug("Cache hit for %s", ticker)
+        return cached[1]
+
     dcf = dcf_analyze(ticker)
 
     ma_data = _fetch_ma_data(ticker)
 
     # Re-anchor above_ma to the Finnhub current price (same price shown to user).
-    # Polygon historical closes can lag intraday moves; this keeps the MA badge
-    # and the score consistent with the price displayed on screen.
     if ma_data and dcf.get("current_price"):
         current_price = dcf["current_price"]
         ma_data["above_ma"] = current_price > ma_data["ma50"]
-        # Crossover is invalid if price has since fallen back below MA
         if not ma_data["above_ma"]:
             ma_data["crossover_5d"] = False
+            ma_data["volume_confirmed"] = False
 
     try:
         earnings_days = get_earnings_this_month(ticker)
     except Exception:
         earnings_days = None
 
+    spy_20d_return = _get_spy_20d_return()
+
     score, breakdown, action, suggested_size, blocked = _calculate_score(
-        dcf, ma_data, earnings_days
+        dcf, ma_data, earnings_days, spy_20d_return
     )
 
     paradigm_score, paradigm_breakdown, paradigm_label = _calculate_paradigm_score(dcf)
@@ -377,7 +474,7 @@ def analyze_trigger(ticker: str) -> dict:
         bear_protection_label = None
         bear_protection_level = None
 
-    return {
+    result = {
         **dcf,
         "trigger_score": score,
         "trigger_action": action,
@@ -387,6 +484,11 @@ def analyze_trigger(ticker: str) -> dict:
         "ma50": ma_data["ma50"] if ma_data else None,
         "above_ma": ma_data["above_ma"] if ma_data else None,
         "crossover_5d": ma_data["crossover_5d"] if ma_data else None,
+        "volume_confirmed": ma_data.get("volume_confirmed") if ma_data else None,
+        "cross_volume": ma_data.get("cross_volume") if ma_data else None,
+        "avg_volume_20d": ma_data.get("avg_volume_20d") if ma_data else None,
+        "rel_strength_20d": ma_data.get("rel_strength_20d") if ma_data else None,
+        "spy_20d_return": spy_20d_return,
         "earnings_days": earnings_days,
         "bear_protection_label": bear_protection_label,
         "bear_protection_level": bear_protection_level,
@@ -396,3 +498,6 @@ def analyze_trigger(ticker: str) -> dict:
         "combined_rec_label": combined_label,
         "combined_rec_desc": combined_desc,
     }
+
+    _ANALYSIS_CACHE[ticker] = (time.time(), result)
+    return result

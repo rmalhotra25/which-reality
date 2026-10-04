@@ -123,7 +123,7 @@ function UpgradeAlerts({ upgrades, onAnalyze, onDismiss }) {
                 {cfg.icon} {u.action}
               </span>
               <span style={{ fontSize: '13px', fontWeight: 700, color: cfg.color }}>
-                Score {u.score}/8
+                Score {u.score}/9
               </span>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
                 <button
@@ -214,12 +214,12 @@ function WatchlistSection({ watchlist, refreshProgress, onAnalyze, onRemove, onR
                 padding: '3px 10px', fontSize: '11px', fontWeight: 700, borderRadius: '6px',
                 background: cfg.badge, color: cfg.badgeText,
               }}>
-                {isLoading ? '⟳' : cfg.icon} {displayScore}/8 {displayAction}
+                {isLoading ? '⟳' : cfg.icon} {displayScore}/9 {displayAction}
               </span>
               {scoreChanged && !isLoading && (
                 <span style={{ fontSize: '11px', color: upgraded ? '#48bb78' : deteriorated ? '#fc8181' : '#718096' }}>
                   {upgraded ? '↑ upgraded' : deteriorated ? '↓ deteriorated' : ''}
-                  {` (was ${item.scoreAtAdd}/8)`}
+                  {` (was ${item.scoreAtAdd}/9)`}
                 </span>
               )}
               <span style={{ fontSize: '11px', color: '#4a5568' }}>
@@ -268,7 +268,7 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
           alignItems: 'center', justifyContent: 'center',
         }}>
           <span style={{ fontSize: '28px', fontWeight: 900, color: cfg.badgeText, lineHeight: 1 }}>{score}</span>
-          <span style={{ fontSize: '11px', color: cfg.badgeText, opacity: 0.8 }}>/8</span>
+          <span style={{ fontSize: '11px', color: cfg.badgeText, opacity: 0.8 }}>/9</span>
         </div>
         <div style={{ fontSize: '10px', color: '#718096', marginTop: '4px' }}>TRIGGER SCORE</div>
       </div>
@@ -299,7 +299,7 @@ function TriggerBadge({ score, action, blocked, suggestedSize }) {
 
       <div style={{ flex: 1, minWidth: '160px' }}>
         <div style={{ height: '8px', background: '#1a1f2e', borderRadius: '4px', overflow: 'hidden' }}>
-          <div style={{ width: `${(score / 8) * 100}%`, height: '100%', background: cfg.badge, borderRadius: '4px', transition: 'width 0.4s ease' }} />
+          <div style={{ width: `${(score / 9) * 100}%`, height: '100%', background: cfg.badge, borderRadius: '4px', transition: 'width 0.4s ease' }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '10px', color: '#4a5568' }}>
           <span>0</span><span>WATCH 3</span><span>BUY 5</span><span>STRONG 7</span><span>8</span>
@@ -497,7 +497,7 @@ function PutSellingCard({ r }) {
         <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '10px' }}>SETUP CHECKLIST</div>
         <div style={{ background: '#0f1117', border: `1px solid ${allGreen ? '#276749' : '#4a3000'}`, borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <Check ok={checks.earningsClear} label="Earnings clear (>14 days after expiry)" />
-          <Check ok={checks.scoreGood} label={`Trigger score 5/8 or higher (current: ${score}/8)`} />
+          <Check ok={checks.scoreGood} label={`Trigger score 5/9 or higher (current: ${score}/9)`} />
           <Check ok={checks.bearAboveStrike} label={`Bear case above strike (bear: $${bearPrice?.toFixed(2) ?? '—'} vs strike: $${strike})`} />
           <Check ok={checks.discountToDcf} label={`Assignment at discount to DCF median ($${effectiveCost?.toFixed(2)} vs $${median?.toFixed(2) ?? '—'})`} />
           {allGreen ? (
@@ -523,7 +523,7 @@ function PutSellingCard({ r }) {
 // ─── Score breakdown ──────────────────────────────────────────────────────────
 function ScoreBreakdown({ breakdown }) {
   if (!breakdown) return null
-  const items = [breakdown.monte_carlo, breakdown.ma, breakdown.earnings, breakdown.bear, breakdown.base].filter(Boolean)
+  const items = [breakdown.monte_carlo, breakdown.ma, breakdown.earnings, breakdown.bear, breakdown.base, breakdown.rel_strength].filter(Boolean)
   return (
     <div style={{ background: '#0f1117', border: '1px solid #2d3748', borderRadius: '10px', padding: '16px 20px' }}>
       <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '12px' }}>POINT BREAKDOWN</div>
@@ -553,7 +553,7 @@ function ScoreBreakdown({ breakdown }) {
 }
 
 // ─── MA status ────────────────────────────────────────────────────────────────
-function MaStatusCard({ ma50, aboveMa, crossover5d, currentPrice }) {
+function MaStatusCard({ ma50, aboveMa, crossover5d, currentPrice, volumeConfirmed }) {
   if (ma50 == null) return null
   const color = crossover5d ? '#48bb78' : aboveMa ? '#68d391' : '#fc8181'
   const bg = crossover5d ? '#0a2218' : aboveMa ? '#0a1a10' : '#2d1515'
@@ -563,7 +563,9 @@ function MaStatusCard({ ma50, aboveMa, crossover5d, currentPrice }) {
       <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, letterSpacing: '0.08em', marginBottom: '6px' }}>50-DAY MOVING AVERAGE</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '16px', fontWeight: 700, color }}>
-          {crossover5d ? '🚀 Golden cross (last 5 days)' : aboveMa ? '↑ Above MA' : '↓ Below MA'}
+          {crossover5d
+            ? (volumeConfirmed ? '🚀 Golden cross — high volume' : '↗ Golden cross — weak volume')
+            : aboveMa ? '↑ Above MA' : '↓ Below MA'}
         </span>
         <span style={{ fontSize: '13px', color: '#a0aec0' }}>
           MA: ${ma50.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -619,7 +621,7 @@ function PortfolioSummary({ portfolio, selected, onSelect, onRemove }) {
             }}>
               <span style={{ fontSize: '13px', fontWeight: 700, color: isActive ? cfg.badgeText : '#e2e8f0' }}>{s.ticker}</span>
               <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', background: cfg.badge, color: cfg.badgeText }}>
-                {s.blocked ? '⛔' : s.score}/8
+                {s.blocked ? '⛔' : s.score}/9
               </span>
               <span onClick={e => { e.stopPropagation(); onRemove(s.ticker) }} style={{ fontSize: '11px', color: '#4a5568', cursor: 'pointer', marginLeft: '2px', lineHeight: 1 }} title="Remove">×</span>
             </div>
@@ -887,7 +889,7 @@ function DualLensCard({ r }) {
         <div style={{ flex: 1, background: '#0f1117', borderRadius: '8px', padding: '12px', border: '1px solid #2d3748', textAlign: 'center' }}>
           <div style={{ fontSize: '18px', marginBottom: '4px' }}>📊</div>
           <div style={{ fontSize: '10px', color: '#718096', fontWeight: 600, letterSpacing: '0.06em', marginBottom: '6px' }}>VALUATION</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: dcfColor, lineHeight: 1 }}>{dcfScore}/8</div>
+          <div style={{ fontSize: '28px', fontWeight: 800, color: dcfColor, lineHeight: 1 }}>{dcfScore}/9</div>
           <div style={{ fontSize: '11px', color: '#718096', marginTop: '4px' }}>{dcfStrength}</div>
         </div>
 
@@ -984,7 +986,7 @@ function TopRatedCard({ stock, onAnalyze }) {
           alignItems: 'center', justifyContent: 'center',
         }}>
           <span style={{ fontSize: '20px', fontWeight: 900, color: cfg.badgeText, lineHeight: 1 }}>{stock.score}</span>
-          <span style={{ fontSize: '10px', color: cfg.badgeText, opacity: 0.8 }}>/8</span>
+          <span style={{ fontSize: '10px', color: cfg.badgeText, opacity: 0.8 }}>/9</span>
         </div>
       </div>
 
@@ -1070,7 +1072,7 @@ function NearTriggerCard({ stock, onAnalyze }) {
         alignItems: 'center', justifyContent: 'center', flexShrink: 0,
       }}>
         <span style={{ fontSize: '16px', fontWeight: 900, color: '#fefcbf', lineHeight: 1 }}>{stock.score}</span>
-        <span style={{ fontSize: '9px', color: '#fefcbf', opacity: 0.8 }}>/8</span>
+        <span style={{ fontSize: '9px', color: '#fefcbf', opacity: 0.8 }}>/9</span>
       </div>
 
       <div style={{ flex: 1, minWidth: '150px' }}>
@@ -1182,7 +1184,7 @@ function TopRatedTab({ onAnalyze }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
           <p style={{ fontSize: '13px', color: '#718096', margin: '0 0 4px' }}>
-            S&P 500 + Nasdaq 100 · Two-stage funnel · 6/8 trigger score required
+            S&P 500 + Nasdaq 100 · Two-stage funnel · 6/9 trigger score required
           </p>
           {data?.scanned_at && (
             <div style={{ fontSize: '11px', color: '#4a5568' }}>
@@ -1249,7 +1251,7 @@ function TopRatedTab({ onAnalyze }) {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
               <span style={{ fontSize: '13px', fontWeight: 700, color: '#48bb78', letterSpacing: '0.06em' }}>
-                ⭐ TOP RATED — 6/8 TRIGGER SCORE
+                ⭐ TOP RATED — 6/9 TRIGGER SCORE
               </span>
               <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.top_rated?.length || 0} stocks)</span>
             </div>
@@ -1261,7 +1263,7 @@ function TopRatedTab({ onAnalyze }) {
               </div>
             ) : (
               <div style={{ color: '#4a5568', padding: '20px 16px', background: '#0f1117', border: '1px solid #2d3748', borderRadius: '8px', fontSize: '13px', textAlign: 'center' }}>
-                No stocks reached 6/8 this scan. Check Near Trigger for close candidates.
+                No stocks reached 6/9 this scan. Check Near Trigger for close candidates.
               </div>
             )}
           </div>
@@ -1271,7 +1273,7 @@ function TopRatedTab({ onAnalyze }) {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: '#fbd38d', letterSpacing: '0.06em' }}>
-                  ⚡ NEAR TRIGGER — 5/8 (one criterion away)
+                  ⚡ NEAR TRIGGER — 5/9 (one criterion away)
                 </span>
                 <span style={{ fontSize: '12px', color: '#4a5568' }}>({data.near_trigger.length})</span>
               </div>
@@ -1476,7 +1478,7 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '240px' }}>
-              <MaStatusCard ma50={r.ma50} aboveMa={r.above_ma} crossover5d={r.crossover_5d} currentPrice={r.current_price} />
+              <MaStatusCard ma50={r.ma50} aboveMa={r.above_ma} crossover5d={r.crossover_5d} currentPrice={r.current_price} volumeConfirmed={r.volume_confirmed} />
             </div>
             <div style={{ flex: 1, minWidth: '240px' }}>
               <BearProtectionCard level={r.bear_protection_level} bearUpside={r.dcf_bear_upside} />
@@ -1503,7 +1505,7 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
               <div>
                 <div style={{ fontSize: '13px', fontWeight: 700, color: '#63b3ed', marginBottom: '2px' }}>PUT SELLING OPPORTUNITY</div>
                 <div style={{ fontSize: '12px', color: '#718096' }}>
-                  This stock scores {r.trigger_score}/8 — a good candidate for cash-secured puts.
+                  This stock scores {r.trigger_score}/9 — a good candidate for cash-secured puts.
                   Open the <strong style={{ color: '#90cdf4' }}>🔄 Wheel Strategy</strong> tab to see live put tiers, strike selection, and annualized returns.
                 </div>
               </div>
@@ -1980,7 +1982,7 @@ function MoversSubTab({ onAnalyze }) {
                     <span style={{ fontSize: '13px', color: '#4a5568', fontWeight: 700 }}>#{i + 1}</span>
                     <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>{r.ticker}</span>
                     <span style={{ fontSize: '12px', color: '#718096', flex: 1 }}>{r.name || ''}</span>
-                    <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '13px', fontWeight: 700, background: score >= 7 ? '#1a3a2a' : score >= 5 ? '#1a2a3a' : '#2d3748', color: score >= 7 ? '#68d391' : score >= 5 ? '#90cdf4' : '#a0aec0', border: `1px solid ${score >= 7 ? '#276749' : score >= 5 ? '#2b6cb0' : '#4a5568'}` }}>{score}/8</span>
+                    <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '13px', fontWeight: 700, background: score >= 7 ? '#1a3a2a' : score >= 5 ? '#1a2a3a' : '#2d3748', color: score >= 7 ? '#68d391' : score >= 5 ? '#90cdf4' : '#a0aec0', border: `1px solid ${score >= 7 ? '#276749' : score >= 5 ? '#2b6cb0' : '#4a5568'}` }}>{score}/9</span>
                     <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700, color: acColor, background: '#2d3748', border: `1px solid ${acColor}44` }}>{action}</span>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
@@ -2150,7 +2152,7 @@ export default function StockTriggersTab() {
           🎯 Stock Triggers
         </h2>
         <p style={{ fontSize: '13px', color: '#718096', margin: 0 }}>
-          DCF · Monte Carlo · 50-day MA crossover · Earnings calendar · 0–8 point trigger score
+          DCF · Monte Carlo · 50-day MA (volume-confirmed) · Relative strength vs S&P 500 · 0–9 point trigger score
         </p>
       </div>
 

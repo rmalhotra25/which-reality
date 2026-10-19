@@ -87,4 +87,8 @@ export const api = {
     scan: () => request('/api/flow/scan'),
   },
   getStatus: () => request('/api/status'),
+  twelveStep: {
+    getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),
+    screener: (filters) => request('/api/twelve-step/screener', { method: 'POST', body: filters }),
+  },
 }

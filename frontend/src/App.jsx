@@ -12,6 +12,7 @@ import StockTriggersTab from './tabs/StockTriggersTab'
 import MomentumTab from './tabs/MomentumTab'
 import DividendPathTab from './tabs/DividendPathTab'
 import LeveragedMATab from './tabs/LeveragedMATab'
+import TwelveStepTab from './tabs/TwelveStepTab'
 
 const TABS = [
   { id: 'pulse',        label: '⚡ Market Pulse' },
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'momentum',   label: '🔀 Momentum' },
   { id: 'divpath',     label: '💵 Dividend Path' },
   { id: 'levma',       label: '📡 Leveraged Signals' },
+  { id: 'twelvestep',  label: '🔍 12 Step Process' },
   { id: 'options',     label: '📈 Options Trading' },
   { id: 'wheel',       label: '🔄 Wheel Strategy' },
   { id: 'coveredcalls',label: '💰 Covered Calls' },
@@ -130,6 +132,7 @@ export default function App() {
           {activeTab === 'momentum'     && <MomentumTab />}
           {activeTab === 'divpath'      && <DividendPathTab />}
           {activeTab === 'levma'        && <LeveragedMATab />}
+          {activeTab === 'twelvestep'  && <TwelveStepTab />}
         </TabErrorBoundary>
       </main>
     </div>

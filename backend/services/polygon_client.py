@@ -235,6 +235,22 @@ def get_close_prices(ticker: str, days: int = 250) -> list[float]:
         return []
 
 
+def get_close_and_volume(ticker: str, days: int = 250) -> list[tuple[float, float]]:
+    """Daily (close, volume) pairs ascending for the last N calendar days."""
+    from datetime import date, timedelta
+    c = _client()
+    to_date = date.today().isoformat()
+    buf = days + 120
+    from_date = (date.today() - timedelta(days=buf)).isoformat()
+    try:
+        aggs = c.get_aggs(ticker, 1, "day", from_date, to_date, adjusted=True, sort="asc", limit=buf)
+        pairs = [(float(a.close), float(a.volume or 0)) for a in (aggs or []) if a.close]
+        return pairs[-days:] if len(pairs) > days else pairs
+    except Exception as e:
+        logger.warning("get_close_and_volume failed for %s: %s", ticker, e)
+        return []
+
+
 def get_ticker_snapshot(ticker: str) -> dict:
     """Current price, day change %, OHLCV for a single equity ticker."""
     c = _client()

@@ -16,7 +16,7 @@ def _get_annual_financials_list(ticker: str, years: int = 5) -> list[dict]:
     from services.polygon_client import _client
     c = _client()
 
-    def _v(obj, *attrs):
+    def _f(obj, *attrs):
         for a in attrs:
             v = getattr(obj, a, None)
             if v is not None:
@@ -26,52 +26,51 @@ def _get_annual_financials_list(ticker: str, years: int = 5) -> list[dict]:
                     pass
         return None
 
-    result = []
     try:
-        items = list(c.list_financials(
-            ticker=ticker, timeframe="annual", limit=years, order="desc", include_sources=False
-        ))
-        for fin in items:
-            fins = getattr(fin, "financials", None)
-            if not fins:
-                continue
-            period = (
-                getattr(fin, "fiscal_year", None)
-                or str(getattr(fin, "end_date", "") or "")[:4]
-                or ""
-            )
-            row: dict = {"period": str(period)}
-            inc = getattr(fins, "income_statement", None)
-            if inc:
-                row["revenue"] = _v(inc, "revenues", "revenue")
-                row["gross_profit"] = _v(inc, "gross_profit")
-                row["operating_income"] = _v(inc, "operating_income_loss")
-                row["net_income"] = _v(inc, "net_income_loss")
-                row["shares"] = _v(inc, "diluted_average_shares", "basic_average_shares")
-                row["cost_of_revenue"] = _v(inc, "cost_of_revenue")
-                row["operating_expenses"] = _v(inc, "operating_expenses")
-            bs = getattr(fins, "balance_sheet", None)
+        kw = dict(tickers=ticker, timeframe="annual", limit=years, sort="desc")
+        inc_rows = list(c.list_financials_income_statements(**kw))
+        bs_rows  = list(c.list_financials_balance_sheets(**kw))
+        cf_rows  = list(c.list_financials_cash_flow_statements(**kw))
+
+        def _year(r):
+            return str(int(r.fiscal_year)) if r.fiscal_year else str(r.period_end or "")[:4]
+
+        bs_by_year = {_year(r): r for r in bs_rows}
+        cf_by_year = {_year(r): r for r in cf_rows}
+
+        result = []
+        for inc in inc_rows:
+            period = _year(inc)
+            bs = bs_by_year.get(period)
+            cf = cf_by_year.get(period)
+            row: dict = {"period": period}
+
+            row["revenue"]           = _f(inc, "revenue")
+            row["gross_profit"]      = _f(inc, "gross_profit")
+            row["operating_income"]  = _f(inc, "operating_income")
+            row["net_income"]        = _f(inc, "net_income_loss_attributable_common_shareholders",
+                                          "consolidated_net_income_loss")
+            row["shares"]            = _f(inc, "diluted_shares_outstanding", "basic_shares_outstanding")
+            row["cost_of_revenue"]   = _f(inc, "cost_of_revenue")
+            row["operating_expenses"] = _f(inc, "total_operating_expenses")
+
             if bs:
-                row["total_debt"] = _v(
-                    bs, "long_term_debt", "debt_and_capital_lease_obligations"
-                )
-                row["cash"] = _v(
-                    bs,
-                    "cash_and_cash_equivalents_including_restricted_cash",
-                    "cash_and_cash_equivalents",
-                )
-            cf = getattr(fins, "cash_flow_statement", None)
+                row["total_debt"] = _f(bs, "long_term_debt_and_capital_lease_obligations")
+                row["cash"]       = _f(bs, "cash_and_equivalents")
+
             if cf:
-                ocf = _v(cf, "net_cash_flow_from_operating_activities")
-                capex = _v(cf, "capital_expenditure")
+                ocf   = _f(cf, "net_cash_from_operating_activities")
+                capex = _f(cf, "purchase_of_property_plant_and_equipment")
                 row["operating_cash_flow"] = ocf
                 row["capex"] = capex
                 if ocf is not None and capex is not None:
-                    row["free_cash_flow"] = ocf + capex  # capex stored as negative
+                    row["free_cash_flow"] = ocf + capex  # capex is negative (cash outflow)
+
             result.append(row)
+        return result
     except Exception as e:
         logger.warning("_get_annual_financials_list failed for %s: %s", ticker, e)
-    return result
+        return []
 
 
 def get_twelve_step_data(ticker: str) -> dict:

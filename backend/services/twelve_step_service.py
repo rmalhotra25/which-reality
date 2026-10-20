@@ -6,67 +6,69 @@ import concurrent.futures
 import logging
 
 from services.finnhub_client import get_basic_financials, get_company_profile
-from services.polygon_client import get_ticker_snapshot
+from services.polygon_client import get_ticker_snapshot  # price/market-cap snapshot
 
 logger = logging.getLogger(__name__)
 
 
 def _get_annual_financials_list(ticker: str, years: int = 5) -> list[dict]:
-    """Annual financials for the last N fiscal years, most recent first."""
-    from services.polygon_client import _client
-    c = _client()
-
-    def _f(obj, *attrs):
-        for a in attrs:
-            v = getattr(obj, a, None)
-            if v is not None:
-                try:
-                    return float(v)
-                except Exception:
-                    pass
-        return None
-
+    """Annual financials for the last N fiscal years via yfinance (most recent first)."""
     try:
-        kw = dict(tickers=ticker, timeframe="annual", limit=years, sort="desc")
-        inc_rows = list(c.list_financials_income_statements(**kw))
-        bs_rows  = list(c.list_financials_balance_sheets(**kw))
-        cf_rows  = list(c.list_financials_cash_flow_statements(**kw))
+        import math
+        import yfinance as yf
 
-        def _year(r):
-            return str(int(r.fiscal_year)) if r.fiscal_year else str(r.period_end or "")[:4]
+        stock = yf.Ticker(ticker)
+        income  = stock.income_stmt    # columns = fiscal year-end dates, descending
+        balance = stock.balance_sheet
+        cashflow = stock.cashflow
 
-        bs_by_year = {_year(r): r for r in bs_rows}
-        cf_by_year = {_year(r): r for r in cf_rows}
+        if income is None or income.empty:
+            logger.warning("yfinance: no income data for %s", ticker)
+            return []
+
+        def _v(df, col, *names):
+            if df is None or df.empty or col not in df.columns:
+                return None
+            for name in names:
+                if name in df.index:
+                    try:
+                        fv = float(df.at[name, col])
+                        if not math.isnan(fv):
+                            return fv
+                    except Exception:
+                        pass
+            return None
 
         result = []
-        for inc in inc_rows:
-            period = _year(inc)
-            bs = bs_by_year.get(period)
-            cf = cf_by_year.get(period)
-            row: dict = {"period": period}
+        for col in list(income.columns)[:years]:
+            year = str(col.year) if hasattr(col, "year") else str(col)[:4]
 
-            row["revenue"]           = _f(inc, "revenue")
-            row["gross_profit"]      = _f(inc, "gross_profit")
-            row["operating_income"]  = _f(inc, "operating_income")
-            row["net_income"]        = _f(inc, "net_income_loss_attributable_common_shareholders",
-                                          "consolidated_net_income_loss")
-            row["shares"]            = _f(inc, "diluted_shares_outstanding", "basic_shares_outstanding")
-            row["cost_of_revenue"]   = _f(inc, "cost_of_revenue")
-            row["operating_expenses"] = _f(inc, "total_operating_expenses")
+            ocf   = _v(cashflow, col, "Operating Cash Flow")
+            capex = _v(cashflow, col, "Capital Expenditure")
+            fcf   = _v(cashflow, col, "Free Cash Flow")
+            if fcf is None and ocf is not None and capex is not None:
+                fcf = ocf + capex  # capex is negative in yfinance
 
-            if bs:
-                row["total_debt"] = _f(bs, "long_term_debt_and_capital_lease_obligations")
-                row["cash"]       = _f(bs, "cash_and_equivalents")
-
-            if cf:
-                ocf   = _f(cf, "net_cash_from_operating_activities")
-                capex = _f(cf, "purchase_of_property_plant_and_equipment")
-                row["operating_cash_flow"] = ocf
-                row["capex"] = capex
-                if ocf is not None and capex is not None:
-                    row["free_cash_flow"] = ocf + capex  # capex is negative (cash outflow)
-
-            result.append(row)
+            result.append({
+                "period":            year,
+                "revenue":           _v(income, col, "Total Revenue"),
+                "gross_profit":      _v(income, col, "Gross Profit"),
+                "operating_income":  _v(income, col, "Operating Income",
+                                        "Total Operating Income As Reported"),
+                "net_income":        _v(income, col, "Net Income",
+                                        "Net Income Common Stockholders"),
+                "shares":            _v(income, col, "Diluted Average Shares", "Diluted Shares",
+                                        "Basic Average Shares", "Basic Shares"),
+                "cost_of_revenue":   _v(income, col, "Cost Of Revenue"),
+                "operating_expenses": _v(income, col, "Total Operating Expenses",
+                                         "Operating Expense"),
+                "total_debt":        _v(balance, col, "Total Debt", "Long Term Debt"),
+                "cash":              _v(balance, col, "Cash And Cash Equivalents",
+                                        "Cash Cash Equivalents And Short Term Investments"),
+                "operating_cash_flow": ocf,
+                "capex":             capex,
+                "free_cash_flow":    fcf,
+            })
         return result
     except Exception as e:
         logger.warning("_get_annual_financials_list failed for %s: %s", ticker, e)

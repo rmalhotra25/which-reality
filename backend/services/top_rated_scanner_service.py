@@ -396,31 +396,34 @@ def run_top_rated_scan(force: bool = False) -> dict:
                 logger.warning("Polygon batch snapshot failed: %s — skipping Stage 1a", e)
                 snapshots = {}
 
-            polygon_available = bool(snapshots)
-            if not polygon_available:
-                # Polygon returned no data (market closed / API issue) — skip price/vol filter
-                # and pass all tickers to Stage 1b so Finnhub fundamentals do the filtering.
-                logger.info("Stage 1a: Polygon returned no snapshot data — passing all %d tickers to Stage 1b", len(universe))
-                stage1a = list(universe)
-                rej_pv = {"price": 0, "volume": 0, "no_data": len(universe)}
-            else:
-                stage1a = []
-                rej_pv = {"price": 0, "volume": 0, "no_data": 0}
-                for t in universe:
-                    snap = snapshots.get(t)
-                    if not snap:
-                        rej_pv["no_data"] += 1
-                        continue
-                    # Use prev_close as fallback when market is closed (day.close = 0)
-                    price = snap.get("price") or snap.get("prev_close") or 0
-                    vol = snap.get("volume") or 0
-                    if price < 15:
-                        rej_pv["price"] += 1
-                        continue
-                    if vol > 0 and vol < 1_000_000:
-                        rej_pv["volume"] += 1
-                        continue
-                    stage1a.append(t)
+            if not snapshots:
+                # Polygon returned no data — fail closed: without price/volume data
+                # the pre-filter cannot run and the scan result would be unreliable.
+                logger.warning("Top Rated Scanner: Polygon returned no data — scan aborted (fail closed)")
+                _set_progress(status="error", error="Polygon price data unavailable. Check POLYGON_API_KEY and try again.")
+                return {
+                    "error": "Polygon price data unavailable. The scan requires live price data to filter candidates.",
+                    "top_rated": [],
+                    "near_trigger": [],
+                }
+
+            stage1a = []
+            rej_pv = {"price": 0, "volume": 0, "no_data": 0}
+            for t in universe:
+                snap = snapshots.get(t)
+                if not snap:
+                    rej_pv["no_data"] += 1
+                    continue
+                # Use prev_close as fallback when market is closed (day.close = 0)
+                price = snap.get("price") or snap.get("prev_close") or 0
+                vol = snap.get("volume") or 0
+                if price < 15:
+                    rej_pv["price"] += 1
+                    continue
+                if vol > 0 and vol < 1_000_000:
+                    rej_pv["volume"] += 1
+                    continue
+                stage1a.append(t)
 
             logger.info(
                 "Stage 1a: %d → %d (rej price=%d vol=%d no_data=%d)",

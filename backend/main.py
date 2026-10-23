@@ -98,7 +98,7 @@ app.add_middleware(
 )
 
 from routers import options, wheel  # noqa: E402
-from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, leveraged_ma, twelve_step, iv_history, alerts, book  # noqa: E402
+from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
@@ -114,7 +114,6 @@ app.include_router(scanner.router)
 app.include_router(options_flow.router)
 app.include_router(discovery.router)
 app.include_router(dcf.router)
-app.include_router(leveraged_ma.router)
 app.include_router(twelve_step.router)
 app.include_router(iv_history.router)
 app.include_router(alerts.router)

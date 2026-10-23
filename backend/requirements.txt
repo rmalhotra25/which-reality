@@ -1,13 +1,13 @@
 fastapi==0.115.0
-pandas>=2.0.0
-numpy>=1.24.0
+pandas==3.0.6          # pinned for reproducibility
+numpy==2.4.6           # pinned for reproducibility
 uvicorn[standard]==0.30.6
 sqlalchemy==2.0.35
 pydantic-settings==2.5.2
 apscheduler==3.10.4
 pytz==2024.2
-anthropic>=1,<2
-yfinance>=0.2.51
+anthropic==1.15.0      # pinned for reproducibility
+yfinance==1.7.0        # pinned for reproducibility
 finnhub-python==2.4.28
 feedparser==6.0.11
 requests==2.32.3

@@ -455,6 +455,52 @@ def refresh_wheel():
     return {"status": "queued", "message": "Wheel analysis started in background"}
 
 
+@router.get("/scanner/candidates")
+def get_scanner_candidates():
+    """
+    Return the cached wheel scanner results (put + call candidates).
+    This endpoint never triggers a scan -- consistent with the Phase 1 rule
+    that page loads must not trigger analysis runs.
+    """
+    from services.wheel_scanner_service import get_put_cache, get_call_cache
+    put_cache = get_put_cache()
+    call_cache = get_call_cache()
+    return {
+        "puts": put_cache,
+        "calls": call_cache,
+        "has_data": put_cache is not None or call_cache is not None,
+    }
+
+
+@router.post("/scanner/refresh")
+def refresh_scanner():
+    """Trigger a full wheel scanner run in the background."""
+    import threading
+
+    def _run():
+        from database import SessionLocal
+        from services.wheel_scanner_service import run_put_scanner, run_call_scanner
+        db = SessionLocal()
+        try:
+            run_put_scanner(db)
+            run_call_scanner(db)
+        except Exception as e:
+            logger.error("Wheel scanner run failed: %s", e, exc_info=True)
+            import services.run_status as run_status
+            run_status.set_error("wheel_scanner", str(e))
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "queued", "message": "Wheel scanner started in background"}
+
+
+@router.get("/scanner/status")
+def get_scanner_status():
+    import services.run_status as run_status
+    return run_status.get_all().get("wheel_scanner", {"state": "idle"})
+
+
 def _generate_call_suggestion_bg(pos_id: int) -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine

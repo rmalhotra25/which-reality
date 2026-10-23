@@ -247,6 +247,31 @@ def run_alert_outcome_job() -> None:
         db.close()
 
 
+def run_wheel_scanner_job() -> None:
+    """Run the wheel put + call scanner after market open and mid-afternoon."""
+    import datetime as _dt
+    from database import SessionLocal
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping wheel scanner -- not a trading day")
+        return
+
+    logger.info("Scheduler: running wheel scanner")
+    db = SessionLocal()
+    try:
+        from services.wheel_scanner_service import run_put_scanner, run_call_scanner
+        run_put_scanner(db)
+        run_call_scanner(db)
+        logger.info("Scheduler: wheel scanner complete")
+    except Exception as e:
+        logger.error("Wheel scanner failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("wheel_scanner", str(e))
+    finally:
+        db.close()
+
+
 def run_leveraged_ma_signals() -> None:
     """Run daily MA crossing engine after market close (17:00 ET)."""
     import datetime as _dt
@@ -351,6 +376,21 @@ def start_scheduler() -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=1800,
     )
+
+    # Wheel scanner: 10:30 AM and 14:00 Eastern (after open + mid-afternoon)
+    for scanner_hour, scanner_minute in [(10, 30), (14, 0)]:
+        scheduler.add_job(
+            run_wheel_scanner_job,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=scanner_hour,
+                minute=scanner_minute,
+                timezone=EASTERN,
+            ),
+            id=f"wheel_scanner_{scanner_hour:02d}{scanner_minute:02d}",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
 
     # Weekly Tuesday 9:05 AM Eastern — refresh covered call suggestions
     # (Monday could be a holiday, so Tuesday is safer)

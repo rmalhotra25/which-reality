@@ -36,6 +36,9 @@ export const api = {
     exportPositions: () => request('/api/wheel/positions/export'),
     getRollAlert: (id) => request(`/api/wheel/positions/${id}/roll-alert`),
     getRollSuggestion: (id) => request(`/api/wheel/positions/${id}/roll-suggestion`, { method: 'POST' }),
+    getScannerCandidates: () => request('/api/wheel/scanner/candidates'),
+    refreshScanner: () => request('/api/wheel/scanner/refresh', { method: 'POST' }),
+    getScannerStatus: () => request('/api/wheel/scanner/status'),
   },
   market: {
     getContext: (refresh = false) => request(`/api/market/context${refresh ? '?refresh=true' : ''}`),

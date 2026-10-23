@@ -13,6 +13,8 @@ services:
         sync: false          # enter in Render dashboard — required for options data (Massive/Polygon)
       - key: FINNHUB_API_KEY
         sync: false          # enter in Render dashboard — free key from finnhub.io
+      - key: FMP_API_KEY
+        sync: false          # enter in Render dashboard — optional, used by 12-Step screener
       - key: DATABASE_URL
         sync: false          # IMPORTANT: set this to your Neon/Render PostgreSQL URL
                              # Format: postgresql://user:password@host/dbname

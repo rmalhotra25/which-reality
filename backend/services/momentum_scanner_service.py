@@ -401,3 +401,56 @@ def launch_scan_background(force: bool = False) -> None:
     )
     t.start()
     logger.info("Momentum scanner launched in background (force=%s)", force)
+
+
+def get_momentum_evidence(tickers: list) -> dict:
+    """
+    Per-ticker momentum evidence for the directional engine, read from the
+    most recent scan cache (which holds the top-10 scored alerts).
+
+    Returns {ticker: {"total_score": float, "convergence": bool,
+                      "signals": {...}, "scanned_at": str | None}}
+    for the requested tickers that appear in the cached alerts. A ticker
+    that is not in the top 10 gets no entry: that means "no momentum
+    evidence", not a zero score.
+
+    This is the real API for the evidence attach. The directional engine
+    used to call a MomentumScannerService class with a
+    get_signals_for_ticker method and a "convergence_score" field, none of
+    which ever existed in this module, so its momentum evidence silently
+    never attached.
+
+    If the cache is missing or older than the TTL, one background rescan is
+    launched (never while a scan is already running) and whatever data
+    exists is still returned, with its scanned_at for freshness.
+    """
+    wanted = {t.upper() for t in tickers}
+    data = None
+    try:
+        if os.path.exists(_CACHE_FILE):
+            with open(_CACHE_FILE) as f:
+                data = json.load(f)
+    except Exception:
+        data = None
+
+    stale = data is None or (time.time() - data.get("cached_at", 0)) > _CACHE_TTL
+    if stale and get_scan_status().get("status") != "running":
+        try:
+            launch_scan_background()
+        except Exception as e:
+            logger.debug("Momentum evidence: background launch failed: %s", e)
+
+    if not data:
+        return {}
+
+    evidence = {}
+    for alert in data.get("alerts", []):
+        ticker = (alert.get("ticker") or "").upper()
+        if ticker in wanted:
+            evidence[ticker] = {
+                "total_score": float(alert.get("total_score", 0)),
+                "convergence": bool(alert.get("convergence", False)),
+                "signals": alert.get("signals", {}),
+                "scanned_at": data.get("scanned_at"),
+            }
+    return evidence

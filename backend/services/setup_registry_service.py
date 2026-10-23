@@ -1,0 +1,312 @@
+"""
+Setup registry service.
+
+Handles status enforcement, seeding the six registered setups, and
+reading the backtest verdict from the report file on disk.
+"""
+import os
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+VALID_STATUSES = {"LIVE", "SHADOW", "RETIRED"}
+
+# Absolute path to the backtests directory
+_HERE = os.path.dirname(os.path.abspath(__file__))
+BACKTESTS_DIR = os.path.normpath(os.path.join(_HERE, "..", "..", "backtests"))
+
+
+# ---------------------------------------------------------------------------
+# Status enforcement
+# ---------------------------------------------------------------------------
+
+def _read_report_fields(report_file: str) -> tuple[str | None, str | None]:
+    """
+    Parse a backtest markdown report and return (verdict, data_source_stamp).
+    verdict is the word after '**' on the Verdict line (e.g. PASSES, SHADOW ONLY, FAILS).
+    data_source_stamp is the text after '**Data source**: '.
+    Returns (None, None) if the file is missing or unparseable.
+    """
+    path = os.path.join(BACKTESTS_DIR, os.path.basename(report_file))
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        text = open(path).read()
+    except Exception as e:
+        logger.warning("Could not read backtest file %s: %s", path, e)
+        return None, None
+
+    verdict = None
+    data_source = None
+
+    for line in text.splitlines():
+        if line.startswith("**Data source**:"):
+            data_source = line.split(":", 1)[1].strip()
+        m = re.match(r"^\*\*(.+?)\*\*", line)
+        if m and not line.startswith("**Data source**"):
+            candidate = m.group(1)
+            if candidate in ("PASSES", "SHADOW ONLY", "FAILS"):
+                verdict = candidate
+
+    return verdict, data_source
+
+
+def _qualifies_for_live(verdict: str | None, data_source: str | None) -> bool:
+    """
+    A setup may be LIVE only when:
+      - The verdict is PASSES
+      - The data source stamp starts with REAL (not SYNTHETIC, not MODELED)
+    """
+    if verdict != "PASSES":
+        return False
+    if data_source is None:
+        return False
+    return data_source.strip().upper().startswith("REAL")
+
+
+def enforce_status(
+    requested_status: str,
+    verdict: str | None,
+    data_source: str | None,
+    setup_name: str = "",
+) -> str:
+    """
+    Apply the status enforcement rule and return the allowed status.
+    Raises ValueError if the caller tries to set LIVE when the rule is not met.
+    """
+    if requested_status not in VALID_STATUSES:
+        raise ValueError(f"Unknown status '{requested_status}'. Must be one of {VALID_STATUSES}.")
+
+    if requested_status == "LIVE":
+        if not _qualifies_for_live(verdict, data_source):
+            raise ValueError(
+                f"Cannot set '{setup_name or 'setup'}' to LIVE. "
+                "LIVE requires a backtest stamped with real data (Data source: REAL ...) "
+                f"and a verdict of PASSES. "
+                f"Current verdict: {verdict!r}, data source: {data_source!r}. "
+                "Synthetic or modeled-only results cap the status at SHADOW."
+            )
+
+    return requested_status
+
+
+def resolve_status_from_file(report_file: str | None) -> tuple[str, str | None, str | None]:
+    """
+    Derive the correct status for a setup given its report file.
+    Returns (status, verdict, data_source_stamp).
+    """
+    if not report_file:
+        return "SHADOW", None, None
+    verdict, data_source = _read_report_fields(report_file)
+    if verdict is None:
+        return "SHADOW", None, None
+    if _qualifies_for_live(verdict, data_source):
+        return "LIVE", verdict, data_source
+    return "SHADOW", verdict, data_source
+
+
+# ---------------------------------------------------------------------------
+# Registry definitions
+# ---------------------------------------------------------------------------
+
+_SETUPS = [
+    {
+        "setup_key": "quality_pullback",
+        "name": "Quality Pullback",
+        "job": "buy_and_hold",
+        "recipe": (
+            "Universe: S&P 500 + Dividend Achievers with at least 5 years of history.\n"
+            "Signal (evaluated at close of day T):\n"
+            "  - Price within 2% above the 50-day or 200-day moving average\n"
+            "  - 200-day MA is rising (today's value above value 20 days ago)\n"
+            "  - RSI(14) below 55 now, and was above 60 within the prior 20 sessions\n"
+            "    (pulled back from momentum, not a broken stock)\n"
+            "  - Volume below the 20-day average volume (quiet pullback, not distribution)\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open plus 0.05% slippage.\n"
+            "Exit: stop on close below 200-day MA; target when RSI(14) exceeds 68; "
+            "30-day time stop."
+        ),
+        "backtest_file": "backtests/quality_pullback.md",
+    },
+    {
+        "setup_key": "premium_at_support",
+        "name": "Premium at Support (Wheel)",
+        "job": "wheel",
+        "recipe": (
+            "Universe: S&P 500 + Dividend Achievers (same quality filter as Quality Pullback).\n"
+            "Signal (evaluated at close of day T):\n"
+            "  - Price within 2% of the 50-day MA (above or below)\n"
+            "  - 200-day MA rising\n"
+            "  - IV percentile in the top third of the trailing 252-session history\n"
+            "    (HV used as IV proxy until live IV history is deep enough; labeled as approximate)\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open for the stock signal.\n"
+            "Options trade: sell a 30-delta cash-secured put, targeting 37 DTE; close at 50% "
+            "profit or 21 DTE; model assignment if the put expires ITM.\n"
+            "Stock exit: stop on close below 200-day MA; 30-day time stop.\n"
+            "Note: all options P&L figures are modeled using Black-Scholes with HV as the IV proxy."
+        ),
+        "backtest_file": "backtests/premium_at_support.md",
+    },
+    {
+        "setup_key": "volume_breakout",
+        "name": "Volume-Confirmed Breakout",
+        "job": "directional",
+        "recipe": (
+            "Universe: app directional universe (DEFAULT_UNIVERSE in stock_data.py).\n"
+            "Signal (evaluated at close of day T):\n"
+            "  - Close above the prior 55-day high (today excluded from the window)\n"
+            "  - Volume at least 1.5 times the 20-day average volume\n"
+            "  - Price above a rising 50-day MA\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open plus 0.05% slippage.\n"
+            "Exit: stop on close below the breakout level; target at entry plus 2 times ATR(14); "
+            "15-day time stop."
+        ),
+        "backtest_file": "backtests/volume_breakout.md",
+    },
+    {
+        "setup_key": "oversold_bounce",
+        "name": "Oversold Bounce in a Quality Name",
+        "job": "buy_and_hold",
+        "recipe": (
+            "Universe: 12 Step Process passing names (quality filter from the app's screener).\n"
+            "Signal (evaluated at close of day T):\n"
+            "  - RSI(14) below 30 (deeply oversold on a short-term basis)\n"
+            "  - Price above the 200-day MA (long-term uptrend intact)\n"
+            "  - 200-day MA rising (not in a structural downtrend)\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open.\n"
+            "Exit: RSI(14) back above 50 (mean reversion complete); stop on close below the "
+            "200-day MA; 30-day time stop.\n"
+            "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
+        ),
+        "backtest_file": None,
+    },
+    {
+        "setup_key": "trend_pullback_reversal",
+        "name": "Trend Pullback Reversal",
+        "job": "directional",
+        "recipe": (
+            "Universe: app directional universe.\n"
+            "Signal (evaluated at close of day T):\n"
+            "  - Established uptrend: price above rising 20-day and 50-day MAs\n"
+            "  - Pullback to within 1% of the 20-day or 50-day MA\n"
+            "  - Reversal confirmation: RSI(14) turning up from below 50 OR bullish engulfing "
+            "candle at the MA level (today's close above today's open; today's open below "
+            "yesterday's close; today's close above yesterday's open)\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open.\n"
+            "Exit: stop below the low of the signal candle (defined risk); target at prior "
+            "swing high; 15-day time stop.\n"
+            "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
+        ),
+        "backtest_file": None,
+    },
+    {
+        "setup_key": "post_earnings_drift",
+        "name": "Post-Earnings Drift",
+        "job": "directional",
+        "recipe": (
+            "Universe: any liquid name that reports earnings with a beat and raised guidance.\n"
+            "Signal (evaluated on the second day after the earnings gap):\n"
+            "  - Earnings beat: reported EPS above consensus estimate\n"
+            "  - Guidance raised for the next quarter or full year\n"
+            "  - Gap holds: second-day close above first-day close (gap not filled)\n"
+            "  - IV crush confirmed: implied volatility on the second day below the "
+            "30-day average IV before the event\n"
+            "Entry: second session close after the earnings gap.\n"
+            "Exit: target at prior high or 10% above entry; stop at the gap open (first-day "
+            "open); 15-day time stop.\n"
+            "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
+        ),
+        "backtest_file": None,
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Seed function
+# ---------------------------------------------------------------------------
+
+def seed_registry(db) -> None:
+    """
+    Insert all six setups into the database if they are not already there.
+    Status is derived from the backtest file on disk using the enforcement rule.
+    Safe to call on every startup; already-existing rows are not modified.
+    """
+    from models.setup_registry import SetupRegistry
+
+    for defn in _SETUPS:
+        existing = (
+            db.query(SetupRegistry)
+            .filter(SetupRegistry.setup_key == defn["setup_key"])
+            .first()
+        )
+        if existing:
+            continue
+
+        status, verdict, data_source = resolve_status_from_file(defn["backtest_file"])
+        row = SetupRegistry(
+            setup_key=defn["setup_key"],
+            name=defn["name"],
+            job=defn["job"],
+            recipe=defn["recipe"],
+            status=status,
+            backtest_file=defn["backtest_file"],
+            backtest_verdict=verdict,
+            backtest_data_source=data_source,
+        )
+        db.add(row)
+        logger.info(
+            "setup_registry: seeded '%s' as %s (verdict=%s, data_source=%s)",
+            defn["setup_key"], status, verdict, data_source,
+        )
+
+    try:
+        db.commit()
+    except Exception as e:
+        logger.error("setup_registry: seed commit failed: %s", e)
+        db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Utility read functions
+# ---------------------------------------------------------------------------
+
+def get_all_setups(db) -> list:
+    from models.setup_registry import SetupRegistry
+    return db.query(SetupRegistry).order_by(SetupRegistry.id).all()
+
+
+def get_setup(db, setup_key: str):
+    from models.setup_registry import SetupRegistry
+    return (
+        db.query(SetupRegistry)
+        .filter(SetupRegistry.setup_key == setup_key)
+        .first()
+    )
+
+
+def set_setup_status(db, setup_key: str, new_status: str) -> dict:
+    """
+    Update a setup's status. Enforces the LIVE rule.
+    Returns {"ok": True, "status": "LIVE"} or raises ValueError.
+    """
+    from models.setup_registry import SetupRegistry
+
+    row = db.query(SetupRegistry).filter(SetupRegistry.setup_key == setup_key).first()
+    if row is None:
+        raise ValueError(f"Setup '{setup_key}' not found in registry.")
+
+    allowed = enforce_status(
+        new_status,
+        row.backtest_verdict,
+        row.backtest_data_source,
+        setup_name=row.name,
+    )
+    row.status = allowed
+    db.commit()
+    return {"ok": True, "status": row.status, "setup_key": setup_key}

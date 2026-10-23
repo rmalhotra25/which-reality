@@ -199,6 +199,54 @@ def run_top_rated_scan_job() -> None:
         logger.error("Top-rated scan failed: %s", e, exc_info=True)
 
 
+def run_alert_engine_job() -> None:
+    """Evaluate all setup signals and journal any alerts. Runs after market close."""
+    import datetime as _dt
+    from database import SessionLocal
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping alert engine -- not a trading day")
+        return
+
+    logger.info("Scheduler: running setup alert engine")
+    db = SessionLocal()
+    try:
+        from services.alert_engine import run_alert_engine
+        result = run_alert_engine(db)
+        logger.info("Scheduler: alert engine complete: %s", result)
+    except Exception as e:
+        logger.error("Alert engine failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("alert_engine", str(e))
+    finally:
+        db.close()
+
+
+def run_alert_outcome_job() -> None:
+    """Mark open alerts closed when target/stop/time-stop is hit."""
+    import datetime as _dt
+    from database import SessionLocal
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping alert outcome job -- not a trading day")
+        return
+
+    logger.info("Scheduler: running alert outcome job")
+    db = SessionLocal()
+    try:
+        from services.alert_journal_service import run_outcome_job
+        result = run_outcome_job(db)
+        logger.info("Scheduler: alert outcome job complete: %s", result)
+    except Exception as e:
+        logger.error("Alert outcome job failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("alert_journal", str(e))
+    finally:
+        db.close()
+
+
 def run_leveraged_ma_signals() -> None:
     """Run daily MA crossing engine after market close (17:00 ET)."""
     import datetime as _dt
@@ -282,6 +330,24 @@ def start_scheduler() -> BackgroundScheduler:
         run_leveraged_ma_signals,
         CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=EASTERN),
         id="leveraged_ma_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 17:30 ET -- setup alert engine (after close, uses end-of-day prices)
+    scheduler.add_job(
+        run_alert_engine_job,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone=EASTERN),
+        id="alert_engine_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 8:00 AM ET -- alert outcome job (before open, marks exits from prior day close)
+    scheduler.add_job(
+        run_alert_outcome_job,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone=EASTERN),
+        id="alert_outcome_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )

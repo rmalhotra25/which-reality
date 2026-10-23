@@ -37,13 +37,6 @@ export const api = {
     getRollAlert: (id) => request(`/api/wheel/positions/${id}/roll-alert`),
     getRollSuggestion: (id) => request(`/api/wheel/positions/${id}/roll-suggestion`, { method: 'POST' }),
   },
-  longterm: {
-    getRecommendations: () => request('/api/longterm/recommendations'),
-    refresh: () => request('/api/longterm/refresh', { method: 'POST' }),
-  },
-  lookup: {
-    analyze: (ticker) => request('/api/lookup/analyze', { method: 'POST', body: { ticker } }),
-  },
   market: {
     getContext: (refresh = false) => request(`/api/market/context${refresh ? '?refresh=true' : ''}`),
   },

@@ -645,7 +645,8 @@ class StockDataService:
         provider = ChainProvider()
 
         # Polygon primary
-        puts, price = provider._fetch_polygon_rows(ticker, "put", 14, 45)
+        live_price = provider.fetch_price(ticker)
+        puts, price = provider._fetch_polygon_rows(ticker, "put", 14, 45, near_price=live_price)
         is_polygon = bool(puts and price)
 
         if not is_polygon:
@@ -806,7 +807,8 @@ class StockDataService:
         provider = ChainProvider()
 
         # Polygon primary
-        calls, price = provider._fetch_polygon_rows(ticker, "call", 4, 30)
+        live_price = provider.fetch_price(ticker)
+        calls, price = provider._fetch_polygon_rows(ticker, "call", 4, 30, near_price=live_price)
         is_polygon = bool(calls and price)
 
         if not is_polygon:

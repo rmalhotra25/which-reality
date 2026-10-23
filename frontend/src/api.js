@@ -17,6 +17,8 @@ export const api = {
   options: {
     getRecommendations: () => request('/api/options/recommendations'),
     refresh: () => request('/api/options/refresh', { method: 'POST' }),
+    getDirectional: () => request('/api/options/directional'),
+    refreshDirectional: () => request('/api/options/directional/refresh', { method: 'POST' }),
   },
   wheel: {
     getRecommendations: () => request('/api/wheel/recommendations'),

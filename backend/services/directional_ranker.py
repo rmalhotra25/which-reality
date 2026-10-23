@@ -200,6 +200,72 @@ def score_trend_alignment(above_ma50: bool | None, above_ma200: bool | None,
         return 20.0  # above both MAs, bearish play against trend
 
 
+# ---------------------------------------------------------------------------
+# Risk tiers (presentation only; never ranking inputs)
+# ---------------------------------------------------------------------------
+
+TIER_LABELS = {"lower": "Lower risk", "balanced": "Balanced", "higher": "Higher risk"}
+
+
+def compute_prob_profit(delta_abs: float | None) -> float | None:
+    """
+    Probability-of-profit proxy for a long-premium candidate.
+    Uses abs(delta), the same convention as score_probability, clamped to
+    0.01-0.99. A missing or zero delta returns None: no estimate is shown
+    rather than a fabricated one.
+    """
+    if not delta_abs:
+        return None
+    return round(max(0.01, min(0.99, abs(delta_abs))), 3)
+
+
+def compute_reward_risk(payoff_at_target: float | None,
+                        max_loss_per_contract: float | None) -> float | None:
+    """
+    Reward-to-risk multiple: payoff at target divided by max loss.
+    Both inputs are per-contract dollars (payoff_at_target is net P&L per
+    contract, max_loss_per_contract is entry premium x 100), so the units
+    cancel. A missing or zero max loss, or a missing or negative payoff at
+    target, returns None.
+    """
+    if payoff_at_target is None or max_loss_per_contract is None:
+        return None
+    loss = abs(max_loss_per_contract)
+    if loss <= 0 or payoff_at_target < 0:
+        return None
+    return round(payoff_at_target / loss, 2)
+
+
+def compute_risk_tier(prob_profit: float | None) -> str | None:
+    """
+    Bucket a candidate by probability of profit ONLY. Reward-to-risk is
+    displayed beside the tier but never moves a candidate between tiers:
+    a low-probability trade stays "higher" no matter how large the payoff.
+    Returns "lower", "balanced", "higher", or None when there is no
+    probability estimate.
+    """
+    if prob_profit is None:
+        return None
+    if prob_profit >= 0.65:
+        return "lower"
+    if prob_profit >= 0.45:
+        return "balanced"
+    return "higher"
+
+
+def compute_fits_challenge(max_loss_per_contract: float | None,
+                           per_trade_cap_dollars: float | None) -> bool:
+    """
+    True when one contract's max loss fits inside the Challenge per-trade
+    risk cap. max_loss_per_contract is already a per-contract dollar figure
+    (entry premium x 100). A missing max loss, or an unavailable cap (no
+    initialized Challenge account), never fits.
+    """
+    if max_loss_per_contract is None or per_trade_cap_dollars is None:
+        return False
+    return abs(max_loss_per_contract) <= per_trade_cap_dollars + 1e-9
+
+
 def compute_ranking_components(
     delta_abs: float,
     underlying_entry: float | None,

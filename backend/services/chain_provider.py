@@ -49,6 +49,17 @@ class ChainError:
     sources_tried: list[str] = field(default_factory=list)
 
 
+def _safe_int(x) -> int:
+    """int() that survives None and NaN. yfinance chain frames carry NaN
+    volume/openInterest on illiquid strikes, NaN is truthy, and
+    int(NaN) raises ValueError, which used to kill the whole fallback."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return 0
+    return 0 if math.isnan(v) else int(v)
+
+
 # ---------------------------------------------------------------------------
 # Black-Scholes helpers (duplicated from stock_data to keep this module
 # self-contained; stock_data's copies remain authoritative for the tiers)
@@ -202,6 +213,7 @@ class ChainProvider:
                 contract_type=contract_type,
                 near_price=near_price,
                 strike_pct_range=0.25,
+                dte_min=dte_min,
             )
             if not snapshots:
                 outcome = get_last_snapshot_outcome() or {}
@@ -446,8 +458,8 @@ class ChainProvider:
                     "theta_seller": theta_seller,
                     "gamma": None,
                     "vega": None,
-                    "volume": int(row.get("volume") or 0),
-                    "open_interest": int(row.get("openInterest") or 0),
+                    "volume": _safe_int(row.get("volume")),
+                    "open_interest": _safe_int(row.get("openInterest")),
                 })
 
             self.last_yfinance_note = f"yfinance ok ({len(rows)} rows)"

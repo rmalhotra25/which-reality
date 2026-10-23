@@ -126,6 +126,7 @@ def get_options_chain_snapshot(
     contract_type: str | None = None,
     near_price: float | None = None,
     strike_pct_range: float = 0.20,
+    dte_min: int = 0,
 ) -> list:
     """Real-time options chain snapshot with Greeks via Polygon (requires Options plan).
 
@@ -154,7 +155,10 @@ def get_options_chain_snapshot(
 
     today = date.today()
     params = {
-        "expiration_date.gte": today.isoformat(),
+        # Start the window at dte_min, not today: the endpoint returns one
+        # 250-contract page ordered by expiry, so asking from today fills
+        # the page with sub-window weeklies the caller then discards.
+        "expiration_date.gte": (today + timedelta(days=dte_min)).isoformat(),
         "expiration_date.lte": (today + timedelta(days=dte_max)).isoformat(),
         "limit": 250,
     }

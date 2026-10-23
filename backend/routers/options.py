@@ -11,6 +11,12 @@ from database import get_db
 from models.recommendation import Recommendation, TabType
 from models.directional_candidate import DirectionalCandidate
 from schemas.recommendation import RecommendationSchema
+from services.directional_ranker import (
+    compute_prob_profit,
+    compute_reward_risk,
+    compute_risk_tier,
+    compute_fits_challenge,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,6 +66,26 @@ def refresh_options(db: Session = Depends(get_db)):
 # Phase 3A: directional candidates (cache-only GET; POST to refresh)
 # ---------------------------------------------------------------------------
 
+def _challenge_per_trade_cap(db: Session) -> float | None:
+    """Challenge per-trade risk cap in dollars, or None when unavailable.
+
+    Failure-isolated: an uninitialized Challenge account, a missing state
+    field, or any challenge-side error yields None, which makes every
+    candidate's fits_challenge False without breaking this response.
+    """
+    try:
+        from services import challenge_service
+
+        state = challenge_service.compute_state(db)
+        if not state.get("initialized"):
+            return None
+        cap = (state.get("risk_caps") or {}).get("per_trade_cap")
+        return float(cap) if cap is not None else None
+    except Exception:
+        logger.warning("challenge cap lookup failed; fits_challenge disabled", exc_info=True)
+        return None
+
+
 @router.get("/directional")
 def get_directional_candidates(db: Session = Depends(get_db)):
     """Return the latest directional candidates batch (cache-only, never triggers a run)."""
@@ -73,8 +99,10 @@ def get_directional_candidates(db: Session = Depends(get_db)):
     run_at = rows[0].run_at.isoformat() if rows[0].run_at else None
     regime = rows[0].regime_verdict if rows else None
     data_complete = rows[0].regime_data_complete if rows else None
+    per_trade_cap = _challenge_per_trade_cap(db)
 
     def _serialize(c: DirectionalCandidate) -> dict:
+        prob_profit = compute_prob_profit(c.delta_abs)
         try:
             components = json.loads(c.ranking_components_json or "{}")
         except Exception:
@@ -103,6 +131,10 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             "underlying_target": c.underlying_target,
             "underlying_stop": c.underlying_stop,
             "delta_abs": c.delta_abs,
+            "prob_profit": prob_profit,
+            "reward_risk": compute_reward_risk(c.payoff_at_target, c.max_loss_per_contract),
+            "risk_tier": compute_risk_tier(prob_profit),
+            "fits_challenge": compute_fits_challenge(c.max_loss_per_contract, per_trade_cap),
             "current_price": c.current_price,
             "atm_iv_pct": c.atm_iv_pct,
             "expected_move_dollars": c.expected_move_dollars,

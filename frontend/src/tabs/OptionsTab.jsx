@@ -84,6 +84,40 @@ function AiUnavailableBadge() {
   )
 }
 
+// Risk tier comes from win probability only (backend). Reward-to-risk is
+// shown beside it as context and never changes the tier.
+const TIER_CONFIG = {
+  lower:    { label: 'Lower risk',  bg: '#1a3a1a', border: '#276749', color: '#68d391' },
+  balanced: { label: 'Balanced',    bg: '#1a2f4a', border: '#2b6cb0', color: '#90cdf4' },
+  higher:   { label: 'Higher risk', bg: '#3a2a1a', border: '#9c4221', color: '#f6ad55' },
+}
+
+function TierBadge({ tier }) {
+  const cfg = TIER_CONFIG[tier]
+  if (!cfg) return null
+  return (
+    <span style={{
+      background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700,
+      letterSpacing: '0.03em',
+    }}>
+      {cfg.label.toUpperCase()}
+    </span>
+  )
+}
+
+function FitsChallengeBadge() {
+  return (
+    <span style={{
+      background: '#2a1a3a', color: '#d6bcfa', border: '1px solid #6b46c1',
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700,
+      letterSpacing: '0.03em',
+    }}>
+      FITS CHALLENGE
+    </span>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Ranking formula row
 // ---------------------------------------------------------------------------
@@ -247,6 +281,8 @@ function CandidateCard({ c, isYellow }) {
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {c.risk_tier && <TierBadge tier={c.risk_tier} />}
+          {c.fits_challenge && <FitsChallengeBadge />}
           {c.iv_crush_risk && <IVCrushBadge earningsDays={c.earnings_days_away} />}
           {isYellow && <AgainstRegimeBadge />}
           {c.ai_available === false && <AiUnavailableBadge />}
@@ -262,6 +298,8 @@ function CandidateCard({ c, isYellow }) {
           { label: 'Stop', val: c.underlying_stop?.toFixed(2) },
           { label: 'ATM IV', val: c.atm_iv_pct != null ? `${c.atm_iv_pct.toFixed(1)}%` : null },
           { label: 'Delta', val: c.delta_abs != null ? c.delta_abs.toFixed(2) : null },
+          { label: 'Win prob', val: c.prob_profit != null ? `${Math.round(c.prob_profit * 100)}%` : null },
+          { label: 'Reward/Risk', val: c.reward_risk != null ? `${c.reward_risk.toFixed(1)}x` : null },
         ].filter(x => x.val != null).map(({ label, val }) => (
           <div key={label}>
             <span style={{ color: '#4a5568', fontSize: 10, textTransform: 'uppercase' }}>{label} </span>
@@ -394,6 +432,7 @@ export default function OptionsTab() {
   const [error, setError] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [pollCount, setPollCount] = useState(0)
+  const [tierFilter, setTierFilter] = useState('all')
 
   const load = useCallback(async () => {
     try {
@@ -468,6 +507,9 @@ export default function OptionsTab() {
   const verdict = data?.regime || 'UNKNOWN'
   const dataComplete = data?.data_complete ?? false
   const candidates = data?.candidates || []
+  const visibleCandidates = tierFilter === 'all'
+    ? candidates
+    : candidates.filter((c) => c.risk_tier === tierFilter)
   const suppressed = data?.suppressed || []
   const isYellow = verdict === 'YELLOW'
   const runAt = data?.run_at
@@ -516,13 +558,42 @@ export default function OptionsTab() {
       {candidates.length > 0 && (
         <div>
           <div style={{ color: '#718096', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
-            {candidates.length} ranked candidate{candidates.length !== 1 ? 's' : ''} sorted by expectancy score
+            {visibleCandidates.length} of {candidates.length} ranked candidate{candidates.length !== 1 ? 's' : ''} sorted by expectancy score
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(440px, 1fr))', gap: 16 }}>
-            {candidates.map((c) => (
-              <CandidateCard key={`${c.ticker}-${c.option_type}`} c={c} isYellow={isYellow} />
+          {/* Risk tier filter (client-side; order within the view is unchanged) */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+            {[
+              { key: 'all', label: 'All' },
+              { key: 'lower', label: 'Lower risk' },
+              { key: 'balanced', label: 'Balanced' },
+              { key: 'higher', label: 'Higher risk' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setTierFilter(key)}
+                style={{
+                  padding: '6px 14px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer',
+                  background: tierFilter === key ? '#2b6cb0' : '#1a1f2e',
+                  color: tierFilter === key ? '#fff' : '#a0aec0',
+                  border: `1px solid ${tierFilter === key ? '#2b6cb0' : '#2d3748'}`,
+                }}
+              >
+                {label}
+              </button>
             ))}
           </div>
+          {visibleCandidates.length === 0 ? (
+            <div style={{ color: '#718096', fontSize: 13, padding: '12px 0' }}>
+              No candidates in this tier in the latest run.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(440px, 1fr))', gap: 16 }}>
+              {visibleCandidates.map((c) => (
+                <CandidateCard key={`${c.ticker}-${c.option_type}`} c={c} isYellow={isYellow} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

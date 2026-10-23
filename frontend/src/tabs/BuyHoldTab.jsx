@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import TwelveStepTab from './TwelveStepTab'
 import { api } from '../api'
 
@@ -322,14 +322,49 @@ export default function BuyHoldTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
+  const [scanError, setScanError] = useState(null)
+  const pollRef = useRef(null)
+
+  function startPolling() {
+    if (pollRef.current) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const state = await api.discovery.get()
+        setDiscovery(state)
+        if (state.status !== 'scanning') {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+        }
+      } catch {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }, 3000)
+  }
 
   useEffect(() => {
     setLoading(true)
     api.discovery.get()
-      .then(setDiscovery)
+      .then(state => {
+        setDiscovery(state)
+        if (state.status === 'scanning') startPolling()
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
+
+  async function handleRunScan() {
+    setScanError(null)
+    try {
+      await api.discovery.scan()
+      const state = await api.discovery.get()
+      setDiscovery(state)
+      startPolling()
+    } catch (e) {
+      setScanError(e.message)
+    }
+  }
 
   function handleRunWizard(ticker) {
     setWizardTicker(ticker)
@@ -369,25 +404,61 @@ export default function BuyHoldTab() {
         <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#fff', margin: '0 0 4px', letterSpacing: '-0.3px' }}>
           Buy and Hold
         </h1>
-        <p style={{ fontSize: '13px', color: C.muted, margin: '0 0 18px' }}>
+        <p style={{ fontSize: '13px', color: C.muted, margin: '0 0 14px' }}>
           Discovery candidates + 12-Step deep-dive analysis
         </p>
+
+        {/* Scan button -- always visible, disabled while scanning */}
+        {!loading && (
+          <button
+            onClick={handleRunScan}
+            disabled={isScanning}
+            style={{
+              padding: '8px 20px',
+              background: isScanning ? C.faint : C.accent,
+              color: isScanning ? C.muted : '#000',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: 700,
+              cursor: isScanning ? 'not-allowed' : 'pointer',
+              fontSize: '13px',
+              marginBottom: '14px',
+            }}
+          >
+            {isScanning ? 'Scanning...' : 'Run discovery scan'}
+          </button>
+        )}
+
         {loading && <div style={{ fontSize: '13px', color: C.muted }}>Loading cached results...</div>}
+
         {!loading && !hasResults && !isScanning && (
-          <p style={{ fontSize: '12px', color: C.muted, lineHeight: 1.5 }}>
-            No discovery results yet. Open the Discovery screen and run a scan, then come back.
+          <p style={{ fontSize: '12px', color: C.muted, lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
+            No candidates cached yet. Run a discovery scan to search the full universe of ~300 stocks.
+            The scan takes a few minutes to complete.
           </p>
         )}
-        {!loading && generatedAt && (
-          <div style={{ fontSize: '12px', color: C.faint }}>
+
+        {isScanning && (
+          <div style={{ fontSize: '12px', color: C.yellow, marginBottom: '4px' }}>
+            Scan in progress -- crawling the full universe. This takes a few minutes...
+          </div>
+        )}
+
+        {!loading && generatedAt && !isScanning && (
+          <div style={{ fontSize: '12px', color: C.faint, marginTop: '4px' }}>
             Last scan: {generatedAt}
             {discovery?.results?.fundamentals_fetched && <span> · {discovery.results.fundamentals_fetched} companies analyzed</span>}
           </div>
         )}
-        {isScanning && (
-          <div style={{ fontSize: '12px', color: C.yellow }}>Discovery scan in progress...</div>
+
+        {isScanning && generatedAt && (
+          <div style={{ fontSize: '12px', color: C.faint, marginTop: '4px' }}>
+            Previous scan: {generatedAt}
+          </div>
         )}
-        {error && <div style={{ fontSize: '12px', color: C.red }}>Error: {error}</div>}
+
+        {error && <div style={{ fontSize: '12px', color: C.red, marginTop: '4px' }}>Error: {error}</div>}
+        {scanError && <div style={{ fontSize: '12px', color: C.red, marginTop: '4px' }}>Could not start scan: {scanError}</div>}
       </div>
 
       {/* Candidates */}

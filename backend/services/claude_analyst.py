@@ -658,6 +658,50 @@ class ClaudeAnalyst:
         return self._parse(raw)
 
     # ------------------------------------------------------------------
+    # Phase 3A: directional candidate explainer (top 3 only)
+    # ------------------------------------------------------------------
+    def explain_directional_candidates(self, candidates: list[dict]) -> list[dict]:
+        """
+        Write a plain-language explanation for each already-ranked candidate.
+        Claude does NOT select or re-rank. It receives computed fields and writes
+        2-3 sentences per candidate: why it is a setup to watch, what the risk is,
+        and what invalidates the thesis.
+
+        Returns a list of dicts, one per candidate, in the same order as input.
+        Each dict has {"ticker": ..., "explanation": ...}.
+        If the call fails, the caller marks ai_available=False.
+        """
+        if not candidates:
+            return []
+
+        system = (
+            "You are an options trading coach explaining already-selected setups in plain language. "
+            "The code has already ranked these candidates using a transparent expectancy formula. "
+            "Your only job is to write a clear, honest 2-3 sentence summary per candidate: "
+            "why this setup scored well, what the key risk is, and what price action would invalidate it. "
+            "Use plain language. No jargon. No re-ranking. Respond ONLY with a valid JSON array."
+        )
+
+        candidates_text = json.dumps(candidates, indent=2)
+        user = (
+            f"Write plain-language explanations for these {len(candidates)} directional option candidates. "
+            f"Each has already been scored by code (score = prob*0.30 + R/R*0.35 + IV_context*0.20 + trend*0.15). "
+            f"Return a JSON array with one object per candidate, in the same order:\n"
+            f'[{{"ticker":"AAPL","explanation":"2-3 sentence plain explanation."}}, ...]\n\n'
+            f"Candidates:\n{candidates_text}"
+        )
+
+        try:
+            raw = self._call(system, user, max_tokens=1200)
+            result = self._parse(raw)
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as e:
+            logger.warning("explain_directional_candidates failed: %s", e)
+            return []
+
+    # ------------------------------------------------------------------
     # Watchlist multi-strategy scoring
     # ------------------------------------------------------------------
     def score_watchlist_ticker(self, ticker: str, info: dict) -> dict:

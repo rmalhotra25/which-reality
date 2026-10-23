@@ -7,26 +7,26 @@ import PerformanceTab from './tabs/PerformanceTab'
 import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
-import DiscoveryTab from './tabs/DiscoveryTab'
 import StockTriggersTab from './tabs/StockTriggersTab'
 import MomentumTab from './tabs/MomentumTab'
-import DividendPathTab from './tabs/DividendPathTab'
 import LeveragedMATab from './tabs/LeveragedMATab'
 import TwelveStepTab from './tabs/TwelveStepTab'
 import AlertsTab from './tabs/AlertsTab'
+import BuyHoldTab from './tabs/BuyHoldTab'
+import IncomeTab from './tabs/IncomeTab'
 
 const TABS = [
   { id: 'alerts',       label: '🔔 Setup Alerts' },
   { id: 'pulse',        label: '⚡ Market Pulse' },
-  { id: 'discovery',   label: '🔭 Discovery' },
-  { id: 'triggers',    label: '🎯 Stock Triggers' },
-  { id: 'momentum',   label: '🔀 Momentum' },
-  { id: 'divpath',     label: '💵 Dividend Path' },
-  { id: 'levma',       label: '📡 Leveraged Signals' },
+  { id: 'buyhold',      label: '📊 Buy and Hold' },
+  { id: 'income',       label: '💵 Income' },
+  { id: 'triggers',     label: '🎯 Stock Triggers' },
+  { id: 'momentum',    label: '🔀 Momentum' },
+  { id: 'levma',        label: '📡 Leveraged Signals' },
   { id: 'twelvestep',  label: '🔍 12 Step Process' },
-  { id: 'options',     label: '📈 Options Trading' },
-  { id: 'wheel',       label: '🔄 Wheel Strategy' },
-  { id: 'coveredcalls',label: '💰 Covered Calls' },
+  { id: 'options',      label: '📈 Options Trading' },
+  { id: 'wheel',        label: '🔄 Wheel Strategy' },
+  { id: 'coveredcalls', label: '💰 Covered Calls' },
   { id: 'watchlist',   label: '👁 Watchlist' },
   { id: 'performance', label: '🏆 Performance' },
 ]
@@ -129,10 +129,10 @@ export default function App() {
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}
           {activeTab === 'watchlist'    && <WatchlistTab />}
           {activeTab === 'performance'  && <PerformanceTab />}
-          {activeTab === 'discovery'    && <DiscoveryTab />}
+          {activeTab === 'buyhold'      && <BuyHoldTab />}
+          {activeTab === 'income'       && <IncomeTab />}
           {activeTab === 'triggers'     && <StockTriggersTab />}
           {activeTab === 'momentum'     && <MomentumTab />}
-          {activeTab === 'divpath'      && <DividendPathTab />}
           {activeTab === 'levma'        && <LeveragedMATab />}
           {activeTab === 'twelvestep'  && <TwelveStepTab />}
           {activeTab === 'alerts'      && <AlertsTab />}

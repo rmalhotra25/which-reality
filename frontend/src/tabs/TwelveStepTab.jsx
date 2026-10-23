@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { api } from '../api'
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -691,7 +691,7 @@ function Step12Data({ data, dcfInputs, setDcfInputs, dcfResult }) {
 }
 
 // ─── Main Component ────────────────────────────────────────────────────────────
-export default function TwelveStepTab() {
+export default function TwelveStepTab({ initialTicker = null, onBack = null }) {
   const [view, setView] = useState('landing') // 'landing' | 'screener' | 'wizard'
   const [tickerInput, setTickerInput] = useState('')
   const [ticker, setTicker] = useState('')
@@ -712,6 +712,15 @@ export default function TwelveStepTab() {
     min_volume: 200000,
     limit: 40,
   })
+
+  const _initDone = useRef(false)
+  useEffect(() => {
+    if (initialTicker && !_initDone.current) {
+      _initDone.current = true
+      startAnalysis(initialTicker)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const autoEvals = useMemo(() => {
     if (!tickerData) return {}
@@ -974,7 +983,7 @@ export default function TwelveStepTab() {
     return (
       <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-          <button onClick={() => setView('landing')} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '13px' }}>← Back</button>
+          <button onClick={() => onBack ? onBack() : setView('landing')} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '13px' }}>← Back</button>
           <h2 style={{ color: C.text, fontSize: '18px', fontWeight: 700, margin: 0 }}>Stock Screener</h2>
         </div>
 
@@ -1107,7 +1116,7 @@ export default function TwelveStepTab() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
         <button
-          onClick={() => setView('landing')}
+          onClick={() => onBack ? onBack() : setView('landing')}
           style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '13px' }}
         >
           ← Back
@@ -1276,10 +1285,10 @@ export default function TwelveStepTab() {
                 Save Analysis
               </button>
               <button
-                onClick={() => setView('landing')}
+                onClick={() => onBack ? onBack() : setView('landing')}
                 style={{ padding: '8px 20px', background: C.cardAlt, color: C.text, border: `1px solid ${C.border}`, borderRadius: '8px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
               >
-                New Analysis
+                {onBack ? '← Back to Candidates' : 'New Analysis'}
               </button>
             </div>
           </div>

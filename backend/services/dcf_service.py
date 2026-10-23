@@ -95,6 +95,8 @@ def _build_fundamentals(ticker: str) -> dict | None:
         "return_1y": metrics.get("52WeekPriceReturnDaily"),
         "return_6m": metrics.get("26WeekPriceReturnDaily"),
         "revenue_growth_annual": metrics.get("revenueGrowthAnnual"),
+        "week52_high": metrics.get("52WeekHigh"),
+        "week52_low": metrics.get("52WeekLow"),
     }
 
 
@@ -328,6 +330,14 @@ def _monte_carlo_dcf(
         return {}
 
 
+def _safe_earnings_days(ticker: str) -> int | None:
+    try:
+        from services.finnhub_client import get_earnings_this_month
+        return get_earnings_this_month(ticker)
+    except Exception:
+        return None
+
+
 def analyze(ticker: str) -> dict:
     """
     Full DCF analysis for a single ticker.
@@ -477,6 +487,14 @@ def analyze(ticker: str) -> dict:
         "event_risk_discount": round(event_risk_discount, 2) if event_risk_discount > 0 else None,
         "event_risk_reason": event_risk_reason,
         "wacc_sensitivity": _wacc_sensitivity(revenue_0, fcf_0, scenarios, market_cap, shares_m, current_price),
+        # Price context
+        "high_52w": d.get("week52_high"),
+        "low_52w": d.get("week52_low"),
+        "pct_below_52w_high": round(
+            (d["week52_high"] - current_price) / d["week52_high"] * 100, 1
+        ) if d.get("week52_high") and d["week52_high"] > 0 and current_price else None,
+        # Earnings window (days until next earnings, or None if beyond 30-day window)
+        "next_earnings_days": _safe_earnings_days(ticker),
     }
 
 

@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from models.recommendation import Recommendation, TabType, GradeEnum
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
-from services.claude_analyst import ClaudeAnalyst
 from services.quant_scorer import (
     compute_options_quant_score, compute_entry_exit_options,
     recommend_strategy_type, compute_entry_exit_multi_leg,
@@ -110,7 +109,6 @@ class OptionsEngine:
         self.db = db
         self.scraper = NewsScraper()
         self.stock_data = StockDataService()
-        self.analyst = ClaudeAnalyst()
 
     def run(self) -> None:
         logger.info("OptionsEngine: starting analysis run")
@@ -147,8 +145,10 @@ class OptionsEngine:
             tech_str = _format_technicals(technicals, chain_context)
             market_context = f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
 
-            recs = self.analyst.analyze_options(news_str, tech_str, market_context,
-                                                quant_scores=quant_scores)
+            from services.claude_analyst import ClaudeAnalyst
+            analyst = ClaudeAnalyst()
+            recs = analyst.analyze_options(news_str, tech_str, market_context,
+                                           quant_scores=quant_scores)
             self._store(recs, run_at, technicals, quant_scores)
             run_status.set_success("options")
             logger.info("OptionsEngine: stored %d recommendations", len(recs))

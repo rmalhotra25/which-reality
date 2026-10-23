@@ -25,11 +25,9 @@ def analyze_covered_calls(req: CoveredCallRequest):
         raise HTTPException(status_code=400, detail="Invalid ticker. Use 1-6 letters (e.g. SCHD, QQQM).")
 
     from services.stock_data import StockDataService
-    from services.claude_analyst import ClaudeAnalyst
     from services.iv_rank_service import get_iv_rank
 
     stock_data = StockDataService()
-    analyst = ClaudeAnalyst()
 
     tech = stock_data.get_price_and_technicals(ticker)
     tech_price = tech.get("price")
@@ -55,24 +53,28 @@ def analyze_covered_calls(req: CoveredCallRequest):
     current_price = call_tiers.get("current_price") or tech_price
 
     try:
+        from services.claude_analyst import ClaudeAnalyst
+        analyst = ClaudeAnalyst()
         result = analyst.suggest_covered_calls(
             ticker=ticker,
             current_price=current_price,
             call_tiers=call_tiers,
             cost_basis=req.cost_basis,
         )
-        result["ticker"] = ticker
-        result["current_price"] = current_price
-        result["data_source"] = call_tiers.get("data_source", "last_trade")
-        result["expiry"] = call_tiers.get("expiry")
-        result["dte"] = call_tiers.get("dte")
-        result["atm_iv_pct"] = call_tiers.get("atm_iv_pct")
-        result["options_type"] = call_tiers.get("options_type", "weekly")
-        result["iv_rank"] = get_iv_rank(ticker)
-        return result
     except Exception as e:
-        logger.error("Covered call analysis failed for %s: %s", ticker, e)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        logger.warning("Claude unavailable for %s covered calls: %s", ticker, e)
+        result = {"tiers": [], "iv_environment": None, "ai_unavailable": True}
+
+    result["ticker"] = ticker
+    result["current_price"] = current_price
+    result["data_source"] = call_tiers.get("data_source", "last_trade")
+    result["expiry"] = call_tiers.get("expiry")
+    result["dte"] = call_tiers.get("dte")
+    result["atm_iv_pct"] = call_tiers.get("atm_iv_pct")
+    result["options_type"] = call_tiers.get("options_type", "weekly")
+    result["iv_rank"] = get_iv_rank(ticker)
+    result["call_tiers"] = call_tiers
+    return result
 
 
 @router.post("/weekly-analyze")
@@ -86,11 +88,9 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
         raise HTTPException(status_code=400, detail="Invalid ticker. Use 1-6 letters (e.g. AAPL, SPY).")
 
     from services.stock_data import StockDataService
-    from services.claude_analyst import ClaudeAnalyst
     from services.iv_rank_service import get_iv_rank
 
     stock_data = StockDataService()
-    analyst = ClaudeAnalyst()
 
     weekly_tiers = stock_data.get_weekly_call_tiers(ticker)
     if not weekly_tiers:
@@ -110,6 +110,8 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
     iv_rank = get_iv_rank(ticker)
 
     try:
+        from services.claude_analyst import ClaudeAnalyst
+        analyst = ClaudeAnalyst()
         result = analyst.suggest_weekly_covered_call(
             ticker=ticker,
             current_price=current_price,
@@ -117,14 +119,16 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
             iv_rank=iv_rank,
             cost_basis=req.cost_basis,
         )
-        result["ticker"] = ticker
-        result["current_price"] = current_price
-        result["expiry"] = weekly_tiers.get("expiry")
-        result["dte"] = weekly_tiers.get("dte")
-        result["atm_iv_pct"] = weekly_tiers.get("atm_iv_pct")
-        result["iv_rank"] = iv_rank
-        result["data_source"] = weekly_tiers.get("data_source", "last_trade")
-        return result
     except Exception as e:
-        logger.error("Weekly covered call analysis failed for %s: %s", ticker, e)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        logger.warning("Claude unavailable for %s weekly covered calls: %s", ticker, e)
+        result = {"ai_unavailable": True}
+
+    result["ticker"] = ticker
+    result["current_price"] = current_price
+    result["expiry"] = weekly_tiers.get("expiry")
+    result["dte"] = weekly_tiers.get("dte")
+    result["atm_iv_pct"] = weekly_tiers.get("atm_iv_pct")
+    result["iv_rank"] = iv_rank
+    result["data_source"] = weekly_tiers.get("data_source", "last_trade")
+    result["call_tiers"] = weekly_tiers
+    return result

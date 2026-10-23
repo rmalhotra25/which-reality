@@ -3,7 +3,6 @@ import TabNav from './components/TabNav'
 import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
-import CoveredCallsTab from './tabs/CoveredCallsTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
 import LeveragedMATab from './tabs/LeveragedMATab'
 import AlertsTab from './tabs/AlertsTab'
@@ -20,7 +19,6 @@ const TABS = [
   { id: 'income',       label: '💵 Income' },
   { id: 'book',         label: '📖 Book' },
   { id: 'alerts',       label: '🔔 Setup Alerts' },
-  { id: 'coveredcalls', label: '💰 Covered Calls' },
 ]
 
 class TabErrorBoundary extends Component {
@@ -118,7 +116,6 @@ export default function App() {
           {activeTab === 'pulse'        && <MarketPulseTab />}
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}
-          {activeTab === 'coveredcalls' && <CoveredCallsTab />}
           {activeTab === 'buyhold'      && <BuyHoldTab />}
           {activeTab === 'income'       && <IncomeTab />}
           {activeTab === 'book'         && <BookTab />}

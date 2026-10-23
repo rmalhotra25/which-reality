@@ -286,6 +286,729 @@ function downloadJson(data, filename) {
   URL.revokeObjectURL(url)
 }
 
+// ---------------------------------------------------------------------------
+// Covered Calls section (moved from the former Covered Calls tab, stage 3
+// cleanup). Same endpoints, inputs and outputs: api.coveredCalls.analyze
+// for the income generator and api.coveredCalls.weeklyAnalyze for the
+// weekly scanner below it.
+// ---------------------------------------------------------------------------
+
+const WEEKLY_TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'COIN', 'PLTR', 'AMD', 'META']
+
+const TIER_BADGE = {
+  aggressive: { color: '#fc8181', label: 'Aggressive' },
+  balanced:   { color: '#f6e05e', label: 'Balanced' },
+  conservative: { color: '#68d391', label: 'Conservative' },
+}
+
+function WeeklyScanner() {
+  const [ticker, setTicker] = useState('')
+  const [costBasis, setCostBasis] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const analyze = async (sym) => {
+    const symbol = (sym || ticker).trim().toUpperCase()
+    if (!symbol) return
+    setTicker(symbol)
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const cb = costBasis ? parseFloat(costBasis) : null
+      const data = await api.coveredCalls.weeklyAnalyze(symbol, cb)
+      setResult(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const rec = result
+  const badge = rec ? TIER_BADGE[rec.recommended_tier] : null
+  const tiers = rec?.tiers ?? {}
+
+  return (
+    <div style={{ marginTop: '40px', paddingTop: '32px', borderTop: '1px solid #2d3748' }}>
+      <div style={{ marginBottom: '20px' }}>
+        <div style={{ fontSize: '18px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' }}>
+          📆 This Week's Options Scanner
+        </div>
+        <div style={{ fontSize: '13px', color: '#718096' }}>
+          AI analyzes live news + this week's option chain and tells you exactly what to sell by Friday
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Ticker</div>
+          <input
+            style={{ width: '120px', padding: '10px 14px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', color: '#e2e8f0', fontSize: '16px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', outline: 'none' }}
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && analyze()}
+            placeholder="AAPL"
+            maxLength={6}
+          />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '11px', color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Cost Basis / share (optional)</div>
+          <input
+            style={{ width: '130px', padding: '10px 14px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', color: '#e2e8f0', fontSize: '14px', outline: 'none' }}
+            type="number" step="0.01" min="0"
+            value={costBasis}
+            onChange={(e) => setCostBasis(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && analyze()}
+            placeholder="e.g. 185.00"
+          />
+        </div>
+        <button
+          style={{ padding: '10px 22px', background: loading ? '#2d3748' : '#276749', color: loading ? '#718096' : '#fff', border: 'none', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 600, alignSelf: 'flex-end', whiteSpace: 'nowrap' }}
+          onClick={() => analyze()}
+          disabled={loading || !ticker.trim()}
+        >
+          {loading ? '⏳ Analyzing...' : '📆 Analyze This Week'}
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
+        {WEEKLY_TICKERS.map((sym) => (
+          <button key={sym} style={{ padding: '4px 11px', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '20px', color: '#a0aec0', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }} onClick={() => analyze(sym)}>{sym}</button>
+        ))}
+      </div>
+      <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '20px' }}>
+        Best for stocks with weekly options — SPY, QQQ, large-cap tech, etc.
+      </div>
+
+      {error && (
+        <div style={{ color: '#fc8181', padding: '14px 16px', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', fontSize: '14px', marginBottom: '20px' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      {rec && (
+        <div>
+          {/* Header bar */}
+          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px', color: '#a0aec0' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Ticker</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.ticker}</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Price</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{ccFmt(rec.current_price)}</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Expiry</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.expiry} ({rec.dte}d)</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>ATM IV</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{rec.atm_iv_pct ?? '—'}%</div>
+            </div>
+            {rec.iv_rank?.iv_rank != null && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>IV Rank</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: rec.iv_rank.iv_rank >= 50 ? '#68d391' : rec.iv_rank.iv_rank < 25 ? '#fc8181' : '#fbd38d' }}>
+                  {rec.iv_rank.iv_rank}<span style={{ fontSize: '10px', color: '#718096', marginLeft: '3px' }}>/ 100</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {rec.data_source === 'last_trade' && (
+            <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '12px' }}>
+              ℹ Markets closed — using last-trade prices. Live bid/ask available during market hours.
+            </div>
+          )}
+
+          {/* Risk flag */}
+          {rec.risk_flag && (
+            <div style={{ fontSize: '13px', color: '#f6e05e', background: '#2d2200', border: '1px solid #b7791f', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px' }}>
+              ⚠ {rec.risk_flag}
+            </div>
+          )}
+
+          {/* Main recommendation card */}
+          <div style={{ background: '#0d2218', border: `2px solid ${badge?.color ?? '#68d391'}`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+              <span style={{ fontSize: '22px', fontWeight: 800, color: badge?.color ?? '#68d391' }}>{ccFmt(rec.strike)} Call</span>
+              {badge && (
+                <span style={{ fontSize: '11px', fontWeight: 700, color: badge.color, background: 'rgba(0,0,0,0.4)', border: `1px solid ${badge.color}`, borderRadius: '12px', padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {badge.label}
+                </span>
+              )}
+              <span style={{ marginLeft: 'auto', fontSize: '22px', fontWeight: 800, color: '#68d391' }}>{ccFmt(rec.premium_per_contract)}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '16px' }}>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Strike</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{ccFmt(rec.strike)}</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Call-Away Chance</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{rec.call_away_chance_pct ?? '—'}%</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px 10px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Weekly Yield</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{rec.weekly_yield_pct ?? '—'}%</div>
+              </div>
+            </div>
+
+            {rec.recommendation && (
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '5px' }}>AI Recommendation</div>
+                <div style={{ fontSize: '14px', color: '#cbd5e0', lineHeight: 1.6 }}>{rec.recommendation}</div>
+              </div>
+            )}
+
+            {rec.news_impact && (
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '5px' }}>This Week's News</div>
+                <div style={{ fontSize: '13px', color: '#90cdf4', lineHeight: 1.5, fontStyle: 'italic' }}>{rec.news_impact}</div>
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {rec.if_called && (
+                <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, marginBottom: '4px' }}>If shares get called away</div>
+                  <div style={{ fontSize: '12px', color: '#cbd5e0', lineHeight: 1.5 }}>{rec.if_called}</div>
+                </div>
+              )}
+              {rec.if_not_called && (
+                <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, marginBottom: '4px' }}>If shares stay below strike</div>
+                  <div style={{ fontSize: '12px', color: '#cbd5e0', lineHeight: 1.5 }}>{rec.if_not_called}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Tier cards for balanced + conservative */}
+          {(tiers.balanced || tiers.conservative) && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#718096', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.05em', marginBottom: '10px' }}>Other Options This Week</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {['balanced', 'conservative'].map((tierKey) => {
+                  const t = tiers[tierKey]
+                  if (!t) return null
+                  const b = TIER_BADGE[tierKey]
+                  const isRec = rec.recommended_tier === tierKey
+                  const bgColor = tierKey === 'balanced' ? '#1a1400' : '#071410'
+                  const borderColor = isRec ? b.color : (tierKey === 'balanced' ? '#b7791f44' : '#27674944')
+                  return (
+                    <div key={tierKey} style={{ background: bgColor, border: `1px solid ${borderColor}`, borderRadius: '10px', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '16px', fontWeight: 800, color: b.color }}>{ccFmt(t.strike)} Call</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: b.color, background: 'rgba(0,0,0,0.4)', border: `1px solid ${b.color}`, borderRadius: '12px', padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.label}</span>
+                        {isRec && <span style={{ fontSize: '10px', color: b.color, fontWeight: 700, marginLeft: 'auto' }}>← AI Pick</span>}
+                        <span style={{ fontSize: '16px', fontWeight: 800, color: '#68d391', marginLeft: isRec ? '0' : 'auto' }}>{ccFmt(t.premium_per_contract)}</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Strike</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{ccFmt(t.strike)}</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Premium</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{ccFmt(t.mid_premium)} mid</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Call-Away</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{t.call_away_chance_pct}%</div>
+                        </div>
+                        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '7px 10px' }}>
+                          <div style={{ fontSize: '10px', color: '#718096', textTransform: 'uppercase', fontWeight: 600 }}>Weekly Yield</div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{t.pct_of_stock_weekly}%</div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: '11px', color: '#4a5568' }}>
+            AI analysis using live news + options data — not financial advice. Verify quotes with your broker before trading.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const TIER_CONFIG = {
+  aggressive: {
+    label: 'Aggressive',
+    sublabel: 'Highest income · Shares likely sold',
+    borderColor: '#c53030',
+    bg: '#1f0a0a',
+    headerBg: '#3a1212',
+    accentColor: '#fc8181',
+    icon: '🔴',
+  },
+  balanced: {
+    label: 'Balanced',
+    sublabel: 'Good income · Moderate risk',
+    borderColor: '#b7791f',
+    bg: '#1a1400',
+    headerBg: '#2d2200',
+    accentColor: '#f6e05e',
+    icon: '🟡',
+  },
+  conservative: {
+    label: 'Conservative',
+    sublabel: 'Keep shares · Lower premium',
+    borderColor: '#276749',
+    bg: '#071410',
+    headerBg: '#0d2218',
+    accentColor: '#68d391',
+    icon: '🟢',
+  },
+}
+
+const QUICK_TICKERS = ['AMZN', 'SCHD', 'VTI', 'QQQM', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'COIN', 'PLTR']
+
+const ccStyles = {
+  header: { marginBottom: '24px' },
+  title: { fontSize: '20px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' },
+  subtitle: { fontSize: '13px', color: '#718096' },
+  formRow: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '16px',
+    alignItems: 'flex-end',
+    flexWrap: 'wrap',
+  },
+  inputGroup: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  label: { fontSize: '11px', color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' },
+  tickerInput: {
+    width: '120px',
+    padding: '10px 14px',
+    background: '#1a1f2e',
+    border: '1px solid #2d3748',
+    borderRadius: '8px',
+    color: '#e2e8f0',
+    fontSize: '16px',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+    outline: 'none',
+  },
+  costInput: {
+    width: '130px',
+    padding: '10px 14px',
+    background: '#1a1f2e',
+    border: '1px solid #2d3748',
+    borderRadius: '8px',
+    color: '#e2e8f0',
+    fontSize: '14px',
+    outline: 'none',
+  },
+  generateBtn: (loading) => ({
+    padding: '10px 22px',
+    background: loading ? '#2d3748' : '#2b6cb0',
+    color: loading ? '#718096' : '#fff',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: loading ? 'not-allowed' : 'pointer',
+    fontSize: '14px',
+    fontWeight: 600,
+    alignSelf: 'flex-end',
+    whiteSpace: 'nowrap',
+  }),
+  quickRow: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' },
+  chip: {
+    padding: '4px 11px',
+    background: '#1a1f2e',
+    border: '1px solid #2d3748',
+    borderRadius: '20px',
+    color: '#a0aec0',
+    fontSize: '12px',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  hint: { fontSize: '12px', color: '#4a5568', marginBottom: '24px' },
+  error: { color: '#fc8181', padding: '14px 16px', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', fontSize: '14px', marginBottom: '20px' },
+  metaBar: {
+    display: 'flex',
+    gap: '20px',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    background: '#1a1f2e',
+    border: '1px solid #2d3748',
+    borderRadius: '8px',
+    padding: '12px 16px',
+    marginBottom: '20px',
+    fontSize: '13px',
+    color: '#a0aec0',
+  },
+  metaItem: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  metaLabel: { fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 },
+  metaValue: { fontSize: '14px', fontWeight: 700, color: '#e2e8f0' },
+  ivNote: { fontSize: '13px', color: '#90cdf4', fontStyle: 'italic', flex: 1 },
+  tiersGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+    gap: '16px',
+    marginBottom: '20px',
+  },
+  tierCard: (cfg) => ({
+    background: cfg.bg,
+    border: `1px solid ${cfg.borderColor}`,
+    borderRadius: '12px',
+    overflow: 'hidden',
+  }),
+  tierHeader: (cfg) => ({
+    background: cfg.headerBg,
+    borderBottom: `1px solid ${cfg.borderColor}`,
+    padding: '14px 16px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+  }),
+  tierIcon: { fontSize: '20px' },
+  tierLabelGroup: { flex: 1 },
+  tierLabel: (cfg) => ({ fontSize: '16px', fontWeight: 700, color: cfg.accentColor }),
+  tierSublabel: { fontSize: '11px', color: '#718096', marginTop: '1px' },
+  premiumBig: (cfg) => ({
+    fontSize: '22px',
+    fontWeight: 800,
+    color: cfg.accentColor,
+    textAlign: 'right',
+  }),
+  premiumLabel: { fontSize: '10px', color: '#718096', textAlign: 'right', marginTop: '1px' },
+  tierBody: { padding: '16px' },
+  section: { marginBottom: '14px' },
+  sectionLabel: {
+    fontSize: '10px',
+    color: '#718096',
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    fontWeight: 600,
+    marginBottom: '5px',
+  },
+  sectionText: { fontSize: '13px', color: '#cbd5e0', lineHeight: 1.6 },
+  statsRow: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '8px',
+    marginBottom: '14px',
+  },
+  statBox: {
+    background: 'rgba(0,0,0,0.3)',
+    borderRadius: '6px',
+    padding: '8px 10px',
+  },
+  statLabel: { fontSize: '10px', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 },
+  statValue: { fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' },
+  bestFor: (cfg) => ({
+    fontSize: '12px',
+    color: cfg.accentColor,
+    fontStyle: 'italic',
+    padding: '8px 10px',
+    background: 'rgba(0,0,0,0.3)',
+    borderRadius: '6px',
+    lineHeight: 1.5,
+  }),
+  thinWarning: {
+    fontSize: '12px',
+    color: '#f6e05e',
+    background: '#2d2200',
+    border: '1px solid #b7791f',
+    borderRadius: '6px',
+    padding: '6px 10px',
+    marginTop: '10px',
+  },
+  disclaimer: { fontSize: '11px', color: '#4a5568', marginTop: '16px' },
+  dataSourceNote: { fontSize: '12px', color: '#4a5568', marginTop: '4px' },
+  statPill: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  statVal: { fontSize: '14px', fontWeight: 700, color: '#e2e8f0' },
+}
+
+function ccFmt(val) {
+  if (val == null) return '—'
+  return `$${Number(val).toFixed(2)}`
+}
+
+function TierCard({ tier, data, cfg }) {
+  if (!data) return null
+  const rawTier = tier    // 'aggressive' | 'balanced' | 'conservative'
+
+  return (
+    <div style={ccStyles.tierCard(cfg)}>
+      <div style={ccStyles.tierHeader(cfg)}>
+        <span style={ccStyles.tierIcon}>{cfg.icon}</span>
+        <div style={ccStyles.tierLabelGroup}>
+          <div style={ccStyles.tierLabel(cfg)}>{cfg.label}</div>
+          <div style={ccStyles.tierSublabel}>{cfg.sublabel}</div>
+        </div>
+        <div>
+          <div style={ccStyles.premiumBig(cfg)}>{ccFmt(data.premium_per_contract)}</div>
+          <div style={ccStyles.premiumLabel}>per contract</div>
+        </div>
+      </div>
+
+      <div style={ccStyles.tierBody}>
+        {/* Key stats */}
+        <div style={ccStyles.statsRow}>
+          <div style={ccStyles.statBox}>
+            <div style={ccStyles.statLabel}>Strike</div>
+            <div style={ccStyles.statValue}>{ccFmt(data.strike)}</div>
+          </div>
+          <div style={ccStyles.statBox}>
+            <div style={ccStyles.statLabel}>Expiry</div>
+            <div style={ccStyles.statValue}>{data.expiry} ({data.dte}d)</div>
+          </div>
+          <div style={ccStyles.statBox}>
+            <div style={ccStyles.statLabel}>Call-Away Chance</div>
+            <div style={ccStyles.statValue}>{data.call_away_chance_pct ?? '—'}%</div>
+          </div>
+          <div style={ccStyles.statBox}>
+            <div style={ccStyles.statLabel}>Weekly Yield</div>
+            <div style={ccStyles.statValue}>{data.pct_of_stock_weekly ?? '—'}%</div>
+          </div>
+        </div>
+
+        {/* AI plain-English explanation */}
+        {data.premium_plain && (
+          <div style={ccStyles.section}>
+            <div style={ccStyles.sectionLabel}>What you collect</div>
+            <div style={ccStyles.sectionText}>{data.premium_plain}</div>
+          </div>
+        )}
+
+        {data.callaway_plain && (
+          <div style={ccStyles.section}>
+            <div style={ccStyles.sectionLabel}>Chance of losing shares</div>
+            <div style={ccStyles.sectionText}>{data.callaway_plain}</div>
+          </div>
+        )}
+
+        {data.if_called_plain && (
+          <div style={ccStyles.section}>
+            <div style={ccStyles.sectionLabel}>If your shares get called away</div>
+            <div style={ccStyles.sectionText}>{data.if_called_plain}</div>
+          </div>
+        )}
+
+        {data.if_not_called_plain && (
+          <div style={ccStyles.section}>
+            <div style={ccStyles.sectionLabel}>If shares stay below strike</div>
+            <div style={ccStyles.sectionText}>{data.if_not_called_plain}</div>
+          </div>
+        )}
+
+        {data.best_for && (
+          <div style={ccStyles.bestFor(cfg)}>Best for: {data.best_for}</div>
+        )}
+
+        {data.thin_market_note && (
+          <div style={ccStyles.thinWarning}>⚠ {data.thin_market_note}</div>
+        )}
+
+        {data.below_threshold && !data.thin_market_note && (
+          <div style={ccStyles.thinWarning}>
+            ⚠ Premium is below 0.3%/week — options are thin on {rawTier} strikes this week
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CoveredCallAnalyzer() {
+  const [ticker, setTicker] = useState('')
+  const [costBasis, setCostBasis] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const generate = async (sym) => {
+    const symbol = (sym || ticker).trim().toUpperCase()
+    if (!symbol) return
+    setTicker(symbol)
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const cb = costBasis ? parseFloat(costBasis) : null
+      const data = await api.coveredCalls.analyze(symbol, cb)
+      setResult(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleKey = (e) => {
+    if (e.key === 'Enter') generate()
+  }
+
+  const tiers = result?.tiers ?? []
+  const tierMap = {}
+  tiers.forEach((t) => { tierMap[t.tier] = t })
+
+  return (
+    <div>
+      <div style={ccStyles.header}>
+        <div style={ccStyles.title}>Covered Call Income Generator</div>
+        <div style={ccStyles.subtitle}>
+          Own 100 shares? Generate three call strategies to earn income — works with weekly and monthly options.
+        </div>
+      </div>
+
+      <div style={ccStyles.formRow}>
+        <div style={ccStyles.inputGroup}>
+          <div style={ccStyles.label}>Ticker</div>
+          <input
+            style={ccStyles.tickerInput}
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            onKeyDown={handleKey}
+            placeholder="SCHD"
+            maxLength={6}
+          />
+        </div>
+        <div style={ccStyles.inputGroup}>
+          <div style={ccStyles.label}>Cost Basis / share (optional)</div>
+          <input
+            style={ccStyles.costInput}
+            type="number"
+            step="0.01"
+            min="0"
+            value={costBasis}
+            onChange={(e) => setCostBasis(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="e.g. 28.50"
+          />
+        </div>
+        <button
+          style={ccStyles.generateBtn(loading)}
+          onClick={() => generate()}
+          disabled={loading || !ticker.trim()}
+        >
+          {loading ? '⏳ Analyzing...' : '📊 Generate Calls'}
+        </button>
+      </div>
+
+      <div style={ccStyles.quickRow}>
+        {QUICK_TICKERS.map((sym) => (
+          <button key={sym} style={ccStyles.chip} onClick={() => generate(sym)}>{sym}</button>
+        ))}
+      </div>
+      <div style={ccStyles.hint}>Click a ticker above or type your own — works for stocks and ETFs</div>
+
+      {error && <div style={ccStyles.error}>⚠ {error}</div>}
+
+      {result && (
+        <>
+          {/* Meta bar */}
+          <div style={ccStyles.metaBar}>
+            <div style={ccStyles.metaItem}>
+              <div style={ccStyles.metaLabel}>Ticker</div>
+              <div style={ccStyles.metaValue}>{result.ticker}</div>
+            </div>
+            <div style={ccStyles.metaItem}>
+              <div style={ccStyles.metaLabel}>Current Price</div>
+              <div style={ccStyles.metaValue}>{ccFmt(result.current_price)}</div>
+            </div>
+            <div style={ccStyles.metaItem}>
+              <div style={ccStyles.metaLabel}>Expiry</div>
+              <div style={ccStyles.metaValue}>{result.expiry} ({result.dte}d)</div>
+            </div>
+            <div style={ccStyles.metaItem}>
+              <div style={ccStyles.metaLabel}>Option Cycle</div>
+              <div style={{
+                ...ccStyles.metaValue,
+                color: result.options_type === 'monthly' ? '#f6e05e' : '#68d391',
+                fontSize: '13px',
+                fontWeight: 700,
+              }}>
+                {result.options_type === 'monthly' ? '📅 Monthly' : '📆 Weekly'}
+              </div>
+            </div>
+            <div style={ccStyles.metaItem}>
+              <div style={ccStyles.metaLabel}>ATM IV</div>
+              <div style={ccStyles.metaValue}>{result.atm_iv_pct ?? '—'}%</div>
+            </div>
+            {result.iv_rank?.iv_rank != null && (
+              <div style={ccStyles.statPill}>
+                <span style={ccStyles.statLabel}>IV Rank</span>
+                <span style={{
+                  ...ccStyles.statVal,
+                  color: result.iv_rank.iv_rank >= 50 ? '#68d391' : result.iv_rank.iv_rank < 25 ? '#fc8181' : '#fbd38d'
+                }}>
+                  {result.iv_rank.iv_rank}
+                  <span style={{ fontSize:'10px', color:'#718096', marginLeft:'3px' }}>/ 100</span>
+                </span>
+              </div>
+            )}
+            {result.iv_environment && (
+              <div style={ccStyles.ivNote}>{result.iv_environment}</div>
+            )}
+          </div>
+
+          {result.iv_rank?.label === 'high' && (
+            <div style={{ fontSize:'12px', color:'#68d391', padding:'4px 0' }}>
+              🔥 IV Rank {result.iv_rank.iv_rank} — premium is historically rich. Good time to sell calls.
+            </div>
+          )}
+          {result.iv_rank?.label === 'low' && (
+            <div style={{ fontSize:'12px', color:'#fc8181', padding:'4px 0' }}>
+              ❄️ IV Rank {result.iv_rank.iv_rank} — premium is historically cheap. Consider waiting for higher IV.
+            </div>
+          )}
+
+          {result.options_type === 'monthly' && (
+            <div style={{ ...ccStyles.dataSourceNote, color: '#f6e05e', marginBottom: '8px' }}>
+              📅 {result.ticker} uses monthly options — no weekly options are listed for this ticker.
+              These strategies expire on {result.expiry}.
+            </div>
+          )}
+          {result.data_source === 'last_trade' && (
+            <div style={ccStyles.dataSourceNote}>
+              ℹ Markets closed — using last-trade prices. Live bid/ask available during market hours.
+            </div>
+          )}
+          {result.data_source === 'synthetic_bs' && (
+            <div style={{ ...ccStyles.dataSourceNote, color: '#fbd38d', background: '#2d2000', border: '1px solid #b7791f', borderRadius: '6px', padding: '8px 12px' }}>
+              🧮 Live options data unavailable — premiums are estimated using Black-Scholes with {result.atm_iv_pct}% historical volatility. Verify actual quotes with your broker before trading.
+            </div>
+          )}
+
+          {/* Three tier cards */}
+          <div style={ccStyles.tiersGrid}>
+            {['aggressive', 'balanced', 'conservative'].map((tier) => (
+              <TierCard
+                key={tier}
+                tier={tier}
+                data={tierMap[tier]}
+                cfg={TIER_CONFIG[tier]}
+              />
+            ))}
+          </div>
+
+          <div style={ccStyles.disclaimer}>
+            AI analysis only — not financial advice. Verify strikes and premiums with your broker before trading.
+          </div>
+        </>
+      )}
+
+      <WeeklyScanner />
+    </div>
+  )
+}
+
 export default function WheelTab() {
   const [recs, setRecs] = useState([])
   const [positions, setPositions] = useState([])
@@ -519,6 +1242,11 @@ export default function WheelTab() {
           ))}
         </div>
       )}
+
+      <hr style={s.divider} />
+
+      {/* Covered Calls: income generator + weekly scanner */}
+      <CoveredCallAnalyzer />
     </div>
   )
 }

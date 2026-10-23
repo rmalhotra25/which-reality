@@ -6,8 +6,10 @@ Exposed via /api/status so the frontend can surface errors to the user.
 from datetime import datetime, timezone
 
 _status: dict = {
-    "options": {"state": "idle", "last_run": None, "error": None},
-    "wheel":   {"state": "idle", "last_run": None, "error": None},
+    "options":       {"state": "idle", "last_run": None, "error": None},
+    "wheel":         {"state": "idle", "last_run": None, "error": None},
+    "alert_engine":  {"state": "idle", "last_run": None, "error": None, "counts": None},
+    "alert_journal": {"state": "idle", "last_run": None, "error": None},
 }
 
 
@@ -28,6 +30,15 @@ def set_error(engine: str, msg: str) -> None:
         "state": "error",
         "last_run": datetime.now(timezone.utc).isoformat(),
         "error": str(msg),
+    }
+
+
+def set_success_with_counts(engine: str, counts: dict) -> None:
+    _status[engine] = {
+        "state": "ok",
+        "last_run": datetime.now(timezone.utc).isoformat(),
+        "error": None,
+        "counts": counts,
     }
 
 

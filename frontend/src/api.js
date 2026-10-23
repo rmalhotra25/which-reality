@@ -79,6 +79,15 @@ export const api = {
   flow: {
     scan: () => request('/api/flow/scan'),
   },
+  alerts: {
+    getToday: () => request('/api/alerts/today'),
+    getRegistry: () => request('/api/alerts/registry'),
+    getStats: () => request('/api/alerts/stats'),
+    getJournal: (setupKey) => request(`/api/alerts/journal${setupKey ? `?setup_key=${setupKey}` : ''}`),
+    setStatus: (key, status) => request(`/api/alerts/registry/${key}/status`, { method: 'POST', body: { status } }),
+    triggerRun: () => request('/api/alerts/run', { method: 'POST' }),
+    triggerOutcomeJob: () => request('/api/alerts/outcome-job', { method: 'POST' }),
+  },
   getStatus: () => request('/api/status'),
   twelveStep: {
     getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),

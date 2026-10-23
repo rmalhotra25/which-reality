@@ -59,11 +59,22 @@ def _auto_run_if_empty() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from database import init_db
+    from database import init_db, SessionLocal
     from scheduler import start_scheduler
 
     init_db()
     logger.info("Database initialised")
+
+    # Seed the setup registry (no-op if rows already exist)
+    _db = SessionLocal()
+    try:
+        from services.setup_registry_service import seed_registry
+        seed_registry(_db)
+    except Exception as e:
+        logger.warning("Setup registry seed failed: %s", e)
+    finally:
+        _db.close()
+
     scheduler = start_scheduler()
     _auto_run_if_empty()
     yield
@@ -87,7 +98,7 @@ app.add_middleware(
 )
 
 from routers import options, wheel  # noqa: E402
-from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, triggers, advanced_scanner, top_rated_scanner, momentum, cef, dividend_path, leveraged_ma, twelve_step, iv_history  # noqa: E402
+from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, triggers, advanced_scanner, top_rated_scanner, momentum, cef, dividend_path, leveraged_ma, twelve_step, iv_history, alerts  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
@@ -110,6 +121,7 @@ app.include_router(triggers.router)
 app.include_router(leveraged_ma.router)
 app.include_router(twelve_step.router)
 app.include_router(iv_history.router)
+app.include_router(alerts.router)
 
 
 @app.get("/api/health", tags=["Health"])

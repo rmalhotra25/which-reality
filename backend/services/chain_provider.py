@@ -22,6 +22,13 @@ from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
 
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    yf = None  # type: ignore[assignment]
+    _YF_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -299,9 +306,7 @@ class ChainProvider:
         Returns (rows, price, source) where source is "yfinance_live" or "yfinance_last_trade".
         Returns ([], None, "") on failure.
         """
-        try:
-            import yfinance as yf
-        except ImportError:
+        if not _YF_AVAILABLE or yf is None:
             return [], None, ""
 
         try:

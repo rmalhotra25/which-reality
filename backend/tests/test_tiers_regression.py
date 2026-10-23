@@ -18,6 +18,8 @@ from datetime import date
 
 import pytest
 
+from services.chain_provider import ChainProvider
+
 TESTS_DIR = os.path.dirname(__file__)
 FIXTURES = os.path.join(TESTS_DIR, "fixtures")
 GOLDENS = os.path.join(TESTS_DIR, "goldens")
@@ -134,13 +136,13 @@ def test_polygon_path(ticker, func_name, ctype, fixed_date):
 
     mock_ticker = make_mock_ticker(yf_data)
 
-    def mock_polygon_chain(self, tkr, ctype_arg, dte_min, dte_max, near_price=None):
+    def mock_polygon_rows(self, tkr, ctype_arg, dte_min, dte_max, near_price=None):
         filtered = [r for r in rows if dte_min <= r["dte"] <= dte_max]
-        return filtered, price
+        return filtered, price if filtered else ([], None)
 
-    with mock.patch.object(StockDataService, "_polygon_options_chain", mock_polygon_chain), \
-         mock.patch("services.stock_data.yf") as mock_yf, \
-         mock.patch("services.stock_data.date", fixed_date):
+    with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_rows), \
+         mock.patch("services.chain_provider.yf") as mock_yf, \
+         mock.patch("services.chain_provider.date", fixed_date):
         mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         result = getattr(svc, func_name)(ticker)
@@ -169,9 +171,9 @@ def test_yfinance_path(ticker, func_name, ctype, fixed_date):
     def mock_polygon_empty(self, tkr, ctype_arg, dte_min, dte_max, near_price=None):
         return [], None
 
-    with mock.patch.object(StockDataService, "_polygon_options_chain", mock_polygon_empty), \
-         mock.patch("services.stock_data.yf") as mock_yf, \
-         mock.patch("services.stock_data.date", fixed_date):
+    with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_empty), \
+         mock.patch("services.chain_provider.yf") as mock_yf, \
+         mock.patch("services.chain_provider.date", fixed_date):
         mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         result = getattr(svc, func_name)(ticker)

@@ -130,6 +130,11 @@ def _historical_volatility(ticker: str) -> float | None:
 class ChainProvider:
     """Provides normalized options chain data with Polygon primary, yfinance fallback."""
 
+    # Human-readable notes on what the most recent fetch from each source
+    # produced, so a total failure can say why instead of going silent.
+    last_polygon_note: str = ""
+    last_yfinance_note: str = ""
+
     # ------------------------------------------------------------------
     # Price pre-fetch
     # ------------------------------------------------------------------
@@ -187,7 +192,10 @@ class ChainProvider:
                     theta_seller, gamma, vega, volume, open_interest.
         """
         try:
-            from services.polygon_client import get_options_chain_snapshot
+            from services.polygon_client import (
+                get_last_snapshot_outcome,
+                get_options_chain_snapshot,
+            )
             snapshots = get_options_chain_snapshot(
                 ticker,
                 dte_max=dte_max,
@@ -196,6 +204,11 @@ class ChainProvider:
                 strike_pct_range=0.25,
             )
             if not snapshots:
+                outcome = get_last_snapshot_outcome() or {}
+                if outcome.get("ticker") == ticker and outcome.get("error"):
+                    self.last_polygon_note = f"polygon error: {outcome['error']}"
+                else:
+                    self.last_polygon_note = "polygon returned 0 contracts"
                 return [], None
 
             today = date.today()
@@ -284,8 +297,19 @@ class ChainProvider:
                 "_fetch_polygon_rows %s: kept=%d skipped(dte=%d mid=%d delta=%d exc=%d)",
                 ticker, len(rows), skipped_dte, skipped_mid, skipped_delta, skipped_exc,
             )
+            if rows:
+                self.last_polygon_note = (
+                    f"polygon ok ({len(rows)} usable rows from {len(snapshots)} contracts)"
+                )
+            else:
+                self.last_polygon_note = (
+                    f"polygon returned {len(snapshots)} contracts but 0 usable rows "
+                    f"(skipped: dte={skipped_dte}, mid={skipped_mid}, "
+                    f"delta={skipped_delta}, exc={skipped_exc})"
+                )
             return rows, underlying_price
         except Exception as e:
+            self.last_polygon_note = f"polygon failed: {type(e).__name__}: {e}"
             logger.warning("_fetch_polygon_rows %s failed: %s", ticker, e)
             return [], None
 
@@ -307,12 +331,14 @@ class ChainProvider:
         Returns ([], None, "") on failure.
         """
         if not _YF_AVAILABLE or yf is None:
+            self.last_yfinance_note = "yfinance is not available in this environment"
             return [], None, ""
 
         try:
             t = yf.Ticker(ticker)
             expiries = t.options
             if not expiries:
+                self.last_yfinance_note = f"yfinance returned no option expiries for {ticker}"
                 return [], None, ""
 
             today = date.today()
@@ -347,11 +373,13 @@ class ChainProvider:
                 except Exception:
                     pass
             if not price:
+                self.last_yfinance_note = f"yfinance could not fetch a price for {ticker}"
                 return [], None, ""
 
             chain = t.option_chain(target_expiry)
             df = chain.calls if contract_type == "call" else chain.puts
             if df.empty:
+                self.last_yfinance_note = "yfinance returned an empty chain for the target expiry"
                 return [], None, ""
             df = df.copy()
 
@@ -373,6 +401,7 @@ class ChainProvider:
             elif "impliedVolatility" in df.columns:
                 df = df[df["impliedVolatility"].fillna(0) > 0].copy()
             if df.empty:
+                self.last_yfinance_note = "yfinance chain was empty after price filters"
                 return [], None, ""
 
             # IV correction: use HV or default when chain IV is near zero
@@ -421,8 +450,10 @@ class ChainProvider:
                     "open_interest": int(row.get("openInterest") or 0),
                 })
 
+            self.last_yfinance_note = f"yfinance ok ({len(rows)} rows)"
             return rows, price, source
         except Exception as e:
+            self.last_yfinance_note = f"yfinance failed: {type(e).__name__}: {e}"
             logger.warning("_fetch_yfinance_rows %s failed: %s", ticker, e)
             return [], None, ""
 
@@ -474,6 +505,10 @@ class ChainProvider:
 
         return ChainError(
             ticker=ticker,
-            reason=f"No chain data from any source (dte={dte_min}-{dte_max}, type={contract_type})",
+            reason=(
+                f"No chain data from any source (dte={dte_min}-{dte_max}, "
+                f"type={contract_type}). {self.last_polygon_note}; "
+                f"{self.last_yfinance_note}"
+            ),
             sources_tried=sources_tried,
         )

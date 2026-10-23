@@ -94,6 +94,22 @@ export const api = {
     triggerOutcomeJob: () => request('/api/alerts/outcome-job', { method: 'POST' }),
   },
   getStatus: () => request('/api/status'),
+  discovery: {
+    get: () => request('/api/discovery'),
+  },
+  dcf: {
+    get: (ticker) => request(`/api/dcf/${encodeURIComponent(ticker)}`),
+  },
+  cef: {
+    scan: () => request('/api/cef/scan'),
+    refresh: () => request('/api/cef/refresh', { method: 'POST' }),
+  },
+  dividendPath: {
+    recommend: (startCap = 61000, weeklyDca = 500) =>
+      request(`/api/dividend-path/recommend?starting_capital=${startCap}&weekly_dca=${weeklyDca}`),
+    refresh: (startCap = 61000, weeklyDca = 500) =>
+      request(`/api/dividend-path/refresh?starting_capital=${startCap}&weekly_dca=${weeklyDca}`, { method: 'POST' }),
+  },
   twelveStep: {
     getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),
     screener: (filters) => request('/api/twelve-step/screener', { method: 'POST', body: filters }),

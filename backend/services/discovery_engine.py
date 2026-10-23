@@ -823,6 +823,15 @@ def _run_scan() -> None:
                     "bull_case": p.get("bull_case", ""),
                     "bear_case": p.get("bear_case", ""),
                     "long_term_rec": p.get("long_term_rec", ""),
+                    "discovery_score": round(
+                        compounder_scores.get(t, 0) if category == "compounder"
+                        else sleeper_scores.get(t, 0), 1
+                    ),
+                    "beta": round(d["beta"], 2) if d.get("beta") else None,
+                    "high_52w": d.get("week52_high"),
+                    "pct_below_52w_high": round(
+                        (d["week52_high"] - (dcf.get("current_price") or d["week52_high"])) / d["week52_high"] * 100, 1
+                    ) if d.get("week52_high") and d["week52_high"] > 0 and dcf.get("current_price") else None,
                 })
             return enriched
 

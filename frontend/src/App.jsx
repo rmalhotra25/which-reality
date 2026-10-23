@@ -4,7 +4,6 @@ import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
-import LeveragedMATab from './tabs/LeveragedMATab'
 import AlertsTab from './tabs/AlertsTab'
 import BuyHoldTab from './tabs/BuyHoldTab'
 import IncomeTab from './tabs/IncomeTab'
@@ -15,7 +14,6 @@ const TABS = [
   { id: 'buyhold',      label: '📊 Buy and Hold' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'options',      label: '📈 Directional' },
-  { id: 'levma',        label: '📡 Leveraged Signals' },
   { id: 'income',       label: '💵 Income' },
   { id: 'book',         label: '📖 Book' },
   { id: 'alerts',       label: '🔔 Setup Alerts' },
@@ -119,7 +117,6 @@ export default function App() {
           {activeTab === 'buyhold'      && <BuyHoldTab />}
           {activeTab === 'income'       && <IncomeTab />}
           {activeTab === 'book'         && <BookTab />}
-          {activeTab === 'levma'        && <LeveragedMATab />}
           {activeTab === 'alerts'       && <AlertsTab />}
         </TabErrorBoundary>
       </main>

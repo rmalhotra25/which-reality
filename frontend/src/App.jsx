@@ -8,6 +8,7 @@ import AlertsTab from './tabs/AlertsTab'
 import BuyHoldTab from './tabs/BuyHoldTab'
 import IncomeTab from './tabs/IncomeTab'
 import BookTab from './tabs/BookTab'
+import ChallengeTab from './tabs/ChallengeTab'
 
 const TABS = [
   { id: 'pulse',        label: '⚡ Today' },
@@ -16,6 +17,7 @@ const TABS = [
   { id: 'options',      label: '📈 Directional' },
   { id: 'income',       label: '💵 Income' },
   { id: 'book',         label: '📖 Book' },
+  { id: 'challenge',    label: '🏆 Challenge' },
   { id: 'alerts',       label: '🔔 Setup Alerts' },
 ]
 
@@ -117,6 +119,7 @@ export default function App() {
           {activeTab === 'buyhold'      && <BuyHoldTab />}
           {activeTab === 'income'       && <IncomeTab />}
           {activeTab === 'book'         && <BookTab />}
+          {activeTab === 'challenge'    && <ChallengeTab />}
           {activeTab === 'alerts'       && <AlertsTab />}
         </TabErrorBoundary>
       </main>

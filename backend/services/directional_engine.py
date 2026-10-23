@@ -445,15 +445,12 @@ class DirectionalEngine:
 
         # Momentum evidence (untested context - separate signal, not ranking input)
         try:
-            from services.momentum_scanner_service import MomentumScannerService
-            scanner = MomentumScannerService()
+            from services.momentum_scanner_service import get_momentum_evidence
+            evidence = get_momentum_evidence(tickers)
             for c in candidates:
-                try:
-                    result = scanner.get_signals_for_ticker(c.ticker)
-                    if result:
-                        c.momentum_score_raw = float(result.get("convergence_score", 0))
-                except Exception:
-                    pass
+                ev = evidence.get(c.ticker)
+                if ev:
+                    c.momentum_score_raw = float(ev["total_score"])
         except Exception as e:
             logger.debug("Momentum evidence attach failed: %s", e)
 

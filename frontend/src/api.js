@@ -122,4 +122,19 @@ export const api = {
     getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),
     screener: (filters) => request('/api/twelve-step/screener', { method: 'POST', body: filters }),
   },
+  challenge: {
+    getState: () => request('/api/challenge'),
+    initAccount: (body) => request('/api/challenge/account', { method: 'POST', body }),
+    addCashFlow: (body) => request('/api/challenge/cash-flows', { method: 'POST', body }),
+    addTrade: (body) => request('/api/challenge/trades', { method: 'POST', body }),
+    updateMark: (id, current_price) =>
+      request(`/api/challenge/trades/${id}/mark`, { method: 'PATCH', body: { current_price } }),
+    closeTrade: (id, body) =>
+      request(`/api/challenge/trades/${id}/close`, { method: 'POST', body }),
+    snapshot: () => request('/api/challenge/snapshot', { method: 'POST' }),
+    refreshAlerts: () => request('/api/challenge/alerts/refresh', { method: 'POST' }),
+    testAlert: () => request('/api/challenge/alerts/test', { method: 'POST' }),
+    setAlertStatus: (id, status) =>
+      request(`/api/challenge/alerts/${id}`, { method: 'PATCH', body: { status } }),
+  },
 }

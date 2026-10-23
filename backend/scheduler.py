@@ -249,6 +249,25 @@ def run_wheel_scanner_job() -> None:
         db.close()
 
 
+def run_challenge_snapshot_job() -> None:
+    """Snapshot the challenge account after the close; no-op if uninitialized."""
+    from database import SessionLocal
+
+    logger.info("Scheduler: running challenge snapshot")
+    db = SessionLocal()
+    try:
+        from services import challenge_service
+        if challenge_service.get_account(db) is None:
+            logger.info("Scheduler: challenge account not initialized -- skipping")
+            return
+        challenge_service.take_snapshot(db)
+        logger.info("Scheduler: challenge snapshot complete")
+    except Exception as e:
+        logger.error("Challenge snapshot failed: %s", e, exc_info=True)
+    finally:
+        db.close()
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -333,6 +352,16 @@ def start_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             misfire_grace_time=1800,
         )
+
+    # Daily 17:15 ET -- challenge account snapshot (end-of-day equity,
+    # stage graduation check); does nothing until the account exists
+    scheduler.add_job(
+        run_challenge_snapshot_job,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=15, timezone=EASTERN),
+        id="challenge_snapshot_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
 
     # Weekly Tuesday 9:05 AM Eastern — refresh covered call suggestions
     # (Monday could be a holiday, so Tuesday is safer)

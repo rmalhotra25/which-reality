@@ -75,7 +75,7 @@ def init_db():
             _url,
         )
 
-    from models import recommendation, wheel, account, watchlist, champion, leveraged_ma, iv_snapshot, setup_registry, setup_alert, directional_candidate, champion_pick  # noqa: F401
+    from models import recommendation, wheel, account, watchlist, champion, leveraged_ma, iv_snapshot, setup_registry, setup_alert, directional_candidate, champion_pick, challenge  # noqa: F401
     Base.metadata.create_all(bind=engine)
     try:
         _migrate_add_columns()

@@ -158,29 +158,6 @@ def run_champions_scan() -> None:
         db.close()
 
 
-def run_advanced_scans() -> None:
-    """Run dividend income + big mover scans overnight so results are ready at market open."""
-    import datetime as _dt
-
-    today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping advanced scans — not a trading day")
-        return
-
-    logger.info("Scheduler: running overnight dividend + mover scans")
-    from services.advanced_scanner_service import run_dividend_scan, run_mover_scan
-    try:
-        run_dividend_scan(force=True)
-        logger.info("Scheduler: dividend scan complete")
-    except Exception as e:
-        logger.error("Overnight dividend scan failed: %s", e, exc_info=True)
-    try:
-        run_mover_scan(force=True)
-        logger.info("Scheduler: mover scan complete")
-    except Exception as e:
-        logger.error("Overnight mover scan failed: %s", e, exc_info=True)
-
-
 def run_discovery_scan_job() -> None:
     """Run the buy-and-hold discovery scan — fires once daily pre-market."""
     import datetime as _dt
@@ -197,24 +174,6 @@ def run_discovery_scan_job() -> None:
         logger.info("Scheduler: discovery scan launched in background thread")
     except Exception as e:
         logger.error("Discovery scan failed to launch: %s", e, exc_info=True)
-
-
-def run_top_rated_scan_job() -> None:
-    """Run the top-rated market scanner — fires daily at 10 AM Eastern."""
-    import datetime as _dt
-
-    today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping top-rated scan — not a trading day")
-        return
-
-    logger.info("Scheduler: running top-rated market scan")
-    from services.top_rated_scanner_service import run_top_rated_scan
-    try:
-        run_top_rated_scan(force=True)
-        logger.info("Scheduler: top-rated scan complete")
-    except Exception as e:
-        logger.error("Top-rated scan failed: %s", e, exc_info=True)
 
 
 def run_alert_engine_job() -> None:
@@ -350,28 +309,12 @@ def start_scheduler() -> BackgroundScheduler:
         misfire_grace_time=600,
     )
 
-    # Daily 6:00 AM Eastern — overnight scans (results ready at open):
-    #   discovery (full-universe buy-and-hold crawl), dividend income, big movers
-    scheduler.add_job(
-        run_advanced_scans,
-        CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=EASTERN),
-        id="advanced_scans_overnight",
-        replace_existing=True,
-        misfire_grace_time=1800,
-    )
+    # Daily 6:00 AM Eastern — discovery scan (full-universe buy-and-hold
+    # crawl), so results are ready at market open
     scheduler.add_job(
         run_discovery_scan_job,
         CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=EASTERN),
         id="discovery_scan_daily",
-        replace_existing=True,
-        misfire_grace_time=1800,
-    )
-
-    # Daily 10:00 AM Eastern — top-rated market scanner (after open, prices settled)
-    scheduler.add_job(
-        run_top_rated_scan_job,
-        CronTrigger(day_of_week="mon-fri", hour=10, minute=0, timezone=EASTERN),
-        id="top_rated_scan_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )

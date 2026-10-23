@@ -5,7 +5,6 @@ import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
-import StockTriggersTab from './tabs/StockTriggersTab'
 import LeveragedMATab from './tabs/LeveragedMATab'
 import AlertsTab from './tabs/AlertsTab'
 import BuyHoldTab from './tabs/BuyHoldTab'
@@ -21,7 +20,6 @@ const TABS = [
   { id: 'income',       label: '💵 Income' },
   { id: 'book',         label: '📖 Book' },
   { id: 'alerts',       label: '🔔 Setup Alerts' },
-  { id: 'triggers',     label: '🎯 Stock Triggers' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
 ]
 
@@ -124,7 +122,6 @@ export default function App() {
           {activeTab === 'buyhold'      && <BuyHoldTab />}
           {activeTab === 'income'       && <IncomeTab />}
           {activeTab === 'book'         && <BookTab />}
-          {activeTab === 'triggers'     && <StockTriggersTab />}
           {activeTab === 'levma'        && <LeveragedMATab />}
           {activeTab === 'alerts'       && <AlertsTab />}
         </TabErrorBoundary>

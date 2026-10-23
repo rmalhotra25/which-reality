@@ -6,9 +6,8 @@ Exposed via /api/status so the frontend can surface errors to the user.
 from datetime import datetime, timezone
 
 _status: dict = {
-    "options":  {"state": "idle", "last_run": None, "error": None},
-    "wheel":    {"state": "idle", "last_run": None, "error": None},
-    "longterm": {"state": "idle", "last_run": None, "error": None},
+    "options": {"state": "idle", "last_run": None, "error": None},
+    "wheel":   {"state": "idle", "last_run": None, "error": None},
 }
 
 

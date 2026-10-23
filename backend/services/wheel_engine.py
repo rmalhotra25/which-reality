@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from models.wheel import WheelRecommendation, WheelPosition, WheelStatus
 from services.news_scraper import NewsScraper
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
-from services.claude_analyst import ClaudeAnalyst
 from services.quant_scorer import compute_wheel_quant_score, compute_entry_exit_wheel
 import services.run_status as run_status
 
@@ -76,7 +75,6 @@ class WheelEngine:
         self.db = db
         self.scraper = NewsScraper()
         self.stock_data = StockDataService()
-        self.analyst = ClaudeAnalyst()
 
     def run(self) -> None:
         logger.info("WheelEngine: starting analysis run")
@@ -97,7 +95,9 @@ class WheelEngine:
                     ee = compute_entry_exit_wheel(tech)
                     quant_scores[ticker] = {**qs, "entry_exit": ee}
 
-            recs = self.analyst.analyze_wheel(news_str, screening_str, quant_scores=quant_scores)
+            from services.claude_analyst import ClaudeAnalyst
+            analyst = ClaudeAnalyst()
+            recs = analyst.analyze_wheel(news_str, screening_str, quant_scores=quant_scores)
 
             # Snap each Claude-suggested strike to the nearest real chain strike
             for rec in recs:
@@ -177,7 +177,8 @@ class WheelEngine:
                 else "unknown"
             )
             technicals = self.stock_data.get_price_and_technicals(position.ticker)
-            suggestion = self.analyst.generate_call_suggestion(
+            from services.claude_analyst import ClaudeAnalyst
+            suggestion = ClaudeAnalyst().generate_call_suggestion(
                 ticker=position.ticker,
                 cost_basis=position.cost_basis or position.put_strike,
                 current_price=current_price,

@@ -5,20 +5,15 @@ router = APIRouter(prefix="/api/momentum", tags=["Momentum Alerts"])
 
 @router.get("/alerts")
 def get_alerts():
-    """Return cached momentum alerts, starting a background scan if stale."""
-    from services.momentum_scanner_service import (
-        _cache_read, get_scan_status, launch_scan_background,
-    )
+    """Return cached momentum alerts. Use POST /refresh to start a new scan."""
+    from services.momentum_scanner_service import _cache_read
     cached = _cache_read()
     if cached:
         return cached
-    status = get_scan_status()
-    if status.get("status") != "running":
-        launch_scan_background(force=False)
     return {
         "alerts": [],
-        "scanning": True,
-        "message": "Scan started — poll /api/momentum/status for progress",
+        "scanning": False,
+        "message": "No cached results yet. POST /api/momentum/refresh to start a scan.",
     }
 
 

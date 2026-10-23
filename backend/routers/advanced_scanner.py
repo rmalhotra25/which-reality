@@ -15,30 +15,24 @@ def scan_status(scan_type: str):
 
 @router.get("/dividend")
 def get_dividend_results():
-    """Return cached dividend scan results, or trigger a fresh scan if cache is stale."""
-    from services.advanced_scanner_service import _load_cache, launch_scan_background, get_scan_status
+    """Return cached dividend scan results. Use POST /refresh/dividend to start a scan."""
+    from services.advanced_scanner_service import _load_cache
     cached = _load_cache("dividend")
     if cached:
         return cached
-    status = get_scan_status("dividend")
-    if not status["running"]:
-        launch_scan_background("dividend")
-    return {"results": [], "scanning": True, "mode": "dividend",
-            "message": "Scan started — poll /api/advanced-scanner/status/dividend for progress"}
+    return {"results": [], "scanning": False, "mode": "dividend",
+            "message": "No cached results yet. POST /api/advanced-scanner/refresh/dividend to start a scan."}
 
 
 @router.get("/movers")
 def get_mover_results():
-    """Return cached big mover scan results, or trigger a fresh scan if cache is stale."""
-    from services.advanced_scanner_service import _load_cache, launch_scan_background, get_scan_status
+    """Return cached big mover scan results. Use POST /refresh/movers to start a scan."""
+    from services.advanced_scanner_service import _load_cache
     cached = _load_cache("movers")
     if cached:
         return cached
-    status = get_scan_status("movers")
-    if not status["running"]:
-        launch_scan_background("movers")
-    return {"results": [], "scanning": True, "mode": "movers",
-            "message": "Scan started — poll /api/advanced-scanner/status/movers for progress"}
+    return {"results": [], "scanning": False, "mode": "movers",
+            "message": "No cached results yet. POST /api/advanced-scanner/refresh/movers to start a scan."}
 
 
 @router.post("/refresh/{scan_type}")

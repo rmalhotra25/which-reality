@@ -62,29 +62,33 @@ def quick_score_ticker(ticker: str):
         raise HTTPException(400, "Invalid ticker symbol")
     try:
         from services.stock_data import get_stock_info
-        from services.claude_analyst import ClaudeAnalyst
-
         info = get_stock_info(ticker)
-        analyst = ClaudeAnalyst()
-        result = analyst.score_watchlist_ticker(ticker, info)
-        return {
-            "ticker": ticker,
-            "wheel_score": result.get("wheel_score"),
-            "wheel_grade": result.get("wheel_grade"),
-            "wheel_note": result.get("wheel_note"),
-            "options_score": result.get("options_score"),
-            "options_grade": result.get("options_grade"),
-            "options_note": result.get("options_note"),
-            "longterm_score": result.get("longterm_score"),
-            "longterm_grade": result.get("longterm_grade"),
-            "longterm_note": result.get("longterm_note"),
-            "best_strategy": result.get("best_strategy"),
-            "summary": result.get("summary"),
-            "earnings_warning": result.get("earnings_warning"),
-        }
     except Exception as e:
-        logger.error("quick score failed for %s: %s", ticker, e)
+        logger.error("stock info failed for %s: %s", ticker, e)
         raise HTTPException(500, str(e))
+
+    try:
+        from services.claude_analyst import ClaudeAnalyst
+        result = ClaudeAnalyst().score_watchlist_ticker(ticker, info)
+    except Exception as e:
+        logger.warning("Claude unavailable for %s quick score: %s", ticker, e)
+        return {"ticker": ticker, "ai_unavailable": True}
+
+    return {
+        "ticker": ticker,
+        "wheel_score": result.get("wheel_score"),
+        "wheel_grade": result.get("wheel_grade"),
+        "wheel_note": result.get("wheel_note"),
+        "options_score": result.get("options_score"),
+        "options_grade": result.get("options_grade"),
+        "options_note": result.get("options_note"),
+        "longterm_score": result.get("longterm_score"),
+        "longterm_grade": result.get("longterm_grade"),
+        "longterm_note": result.get("longterm_note"),
+        "best_strategy": result.get("best_strategy"),
+        "summary": result.get("summary"),
+        "earnings_warning": result.get("earnings_warning"),
+    }
 
 
 @router.post("/{ticker}/score")
@@ -97,29 +101,32 @@ def score_ticker(ticker: str, db: Session = Depends(get_db)):
 
     try:
         from services.stock_data import get_stock_info
-        from services.claude_analyst import ClaudeAnalyst
-
         info = get_stock_info(ticker)
-        analyst = ClaudeAnalyst()
-        result = analyst.score_watchlist_ticker(ticker, info)
-
-        item.wheel_score = result.get("wheel_score")
-        item.wheel_grade = result.get("wheel_grade")
-        item.options_score = result.get("options_score")
-        item.options_grade = result.get("options_grade")
-        item.longterm_score = result.get("longterm_score")
-        item.longterm_grade = result.get("longterm_grade")
-        item.best_strategy = result.get("best_strategy")
-        item.score_summary = result.get("summary")
-        item.earnings_date = result.get("earnings_date")
-        item.earnings_warning = result.get("earnings_warning")
-        item.last_scored = datetime.now(timezone.utc)
-
-        db.commit()
-        db.refresh(item)
     except Exception as e:
-        logger.error("watchlist score failed for %s: %s", ticker, e)
+        logger.error("stock info failed for %s: %s", ticker, e)
         raise HTTPException(500, str(e))
+
+    try:
+        from services.claude_analyst import ClaudeAnalyst
+        result = ClaudeAnalyst().score_watchlist_ticker(ticker, info)
+    except Exception as e:
+        logger.warning("Claude unavailable for %s watchlist score: %s", ticker, e)
+        raise HTTPException(503, "AI scoring is temporarily unavailable. Try again later.")
+
+    item.wheel_score = result.get("wheel_score")
+    item.wheel_grade = result.get("wheel_grade")
+    item.options_score = result.get("options_score")
+    item.options_grade = result.get("options_grade")
+    item.longterm_score = result.get("longterm_score")
+    item.longterm_grade = result.get("longterm_grade")
+    item.best_strategy = result.get("best_strategy")
+    item.score_summary = result.get("summary")
+    item.earnings_date = result.get("earnings_date")
+    item.earnings_warning = result.get("earnings_warning")
+    item.last_scored = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(item)
 
     return _serialize(item)
 

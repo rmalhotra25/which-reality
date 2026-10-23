@@ -10,12 +10,35 @@ _daily_thread: threading.Thread | None = None
 _daily_error: str | None = None
 _thread_lock = threading.Lock()
 
+_NO_POLYGON_MSG = (
+    "POLYGON_API_KEY is not configured. "
+    "Add it to your environment variables to enable live price data."
+)
+
 
 @router.get("/signals")
 def get_signals():
-    """Current confirmed-position state + live intraday prices for all active pairs."""
+    """Current confirmed-position state + live intraday prices for all active pairs.
+
+    Returns stored signal state even when Polygon is not configured; live prices
+    will be absent. Returns 503 only when both Polygon and the database are empty.
+    """
+    from config import settings
     from services.leveraged_ma_service import get_signals_dashboard
-    return get_signals_dashboard()
+    polygon_available = bool(settings.polygon_api_key)
+    try:
+        rows = get_signals_dashboard(live_prices=polygon_available)
+        if not rows and not polygon_available:
+            raise HTTPException(
+                status_code=503,
+                detail=_NO_POLYGON_MSG + " No stored signal data available yet.",
+            )
+        return rows
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("get_signals failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/cash-apy")
@@ -37,6 +60,9 @@ def backtest(
     Run historical backtest for a given asset pair and parameters.
     Returns full-period stats, sub-period breakdowns, and chart data arrays.
     """
+    from config import settings
+    if not settings.polygon_api_key:
+        raise HTTPException(status_code=503, detail=_NO_POLYGON_MSG)
     from services.leveraged_ma_service import run_backtest
     try:
         return run_backtest(asset_key, ma_period, entry_buffer_pct, exit_buffer_pct, cash_apy_pct)

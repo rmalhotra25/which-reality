@@ -298,19 +298,28 @@ def run_daily_signal_engine() -> None:
 # Dashboard data (DB state + live intraday prices)
 # ---------------------------------------------------------------------------
 
-def get_signals_dashboard() -> list[dict]:
+def get_signals_dashboard(live_prices: bool = True) -> list[dict]:
     """
     One row per active asset config with confirmed position, pending signal
     progress, and live intraday prices from Polygon batch snapshot.
+
+    live_prices=False skips the Polygon call and returns stored state only.
     """
     from database import SessionLocal
     from models.leveraged_ma import LeveragedMASignalState
-    from services import polygon_client
 
     db = SessionLocal()
     try:
-        all_tickers = list({t for cfg in ASSET_CONFIGS for t in (cfg["leveraged"], cfg["underlying"])})
-        snapshots = polygon_client.get_snapshots_batch(all_tickers)
+        if live_prices:
+            from services import polygon_client
+            all_tickers = list({t for cfg in ASSET_CONFIGS for t in (cfg["leveraged"], cfg["underlying"])})
+            try:
+                snapshots = polygon_client.get_snapshots_batch(all_tickers)
+            except Exception as e:
+                logger.warning("Polygon snapshot fetch failed, returning stored data: %s", e)
+                snapshots = {}
+        else:
+            snapshots = {}
         today_utc = datetime.now(timezone.utc).date()
         rows: list[dict] = []
 

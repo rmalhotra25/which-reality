@@ -5,21 +5,16 @@ router = APIRouter(prefix="/api/top-rated", tags=["Top Rated Scanner"])
 
 @router.get("/results")
 def get_results():
-    """Return cached top-rated scan results, triggering a background scan if stale."""
-    from services.top_rated_scanner_service import (
-        _load_result_cache, get_scan_status, launch_scan_background,
-    )
+    """Return cached top-rated scan results. Use POST /refresh to start a new scan."""
+    from services.top_rated_scanner_service import _load_result_cache
     cached = _load_result_cache()
     if cached:
         return cached
-    status = get_scan_status()
-    if status.get("status") != "running":
-        launch_scan_background(force=False)
     return {
         "top_rated": [],
         "near_trigger": [],
-        "scanning": True,
-        "message": "Scan started — poll /api/top-rated/status for progress",
+        "scanning": False,
+        "message": "No cached results yet. POST /api/top-rated/refresh to start a scan.",
     }
 
 

@@ -33,9 +33,21 @@ def _auto_run_if_empty() -> None:
             from services.options_engine import OptionsEngine
             from services.wheel_engine import WheelEngine
             from services.champions_engine import run as run_champions
-            OptionsEngine(db).run()
-            WheelEngine(db).run()
-            run_champions(db)
+            import services.run_status as run_status
+            try:
+                OptionsEngine(db).run()
+            except Exception as e:
+                run_status.set_error("options", str(e))
+                logger.error("Auto-seed: options engine failed: %s", e, exc_info=True)
+            try:
+                WheelEngine(db).run()
+            except Exception as e:
+                run_status.set_error("wheel", str(e))
+                logger.error("Auto-seed: wheel engine failed: %s", e, exc_info=True)
+            try:
+                run_champions(db)
+            except Exception as e:
+                logger.error("Auto-seed: champions engine failed: %s", e, exc_info=True)
             logger.info("Auto-seed: initial analysis complete")
         except Exception as e:
             logger.error("Auto-seed failed: %s", e, exc_info=True)

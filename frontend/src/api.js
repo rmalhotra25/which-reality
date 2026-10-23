@@ -103,6 +103,7 @@ export const api = {
   getStatus: () => request('/api/status'),
   discovery: {
     get: () => request('/api/discovery'),
+    scan: () => request('/api/discovery/scan', { method: 'POST' }),
   },
   dcf: {
     get: (ticker) => request(`/api/dcf/${encodeURIComponent(ticker)}`),

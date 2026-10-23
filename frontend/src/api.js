@@ -57,13 +57,20 @@ export const api = {
   watchlist: {
     list: () => request('/api/watchlist'),
     add: (ticker, notes = '') => request('/api/watchlist', { method: 'POST', body: { ticker, notes } }),
+    bulkAdd: (tickers) => request('/api/watchlist/bulk-add', { method: 'POST', body: { tickers } }),
     remove: (ticker) => request(`/api/watchlist/${ticker}`, { method: 'DELETE' }),
     score: (ticker) => request(`/api/watchlist/${ticker}/score`, { method: 'POST' }),
     quickScore: (ticker) => request(`/api/watchlist/${ticker}/quick-score`, { method: 'POST' }),
   },
+  book: {
+    scoreboard: () => request('/api/book/scoreboard'),
+    incomeCalendar: () => request('/api/book/income-calendar'),
+  },
   champions: {
     get: () => request('/api/champions'),
     refresh: () => request('/api/champions/refresh', { method: 'POST' }),
+    stats: () => request('/api/champions/stats'),
+    outcomeJob: () => request('/api/champions/outcome-job', { method: 'POST' }),
   },
   coveredCalls: {
     analyze: (ticker, costBasis = null) =>

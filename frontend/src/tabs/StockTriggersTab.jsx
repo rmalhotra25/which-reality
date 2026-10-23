@@ -17,22 +17,29 @@ const PROTECTION_CONFIG = {
   high:     { color: '#fc8181', bg: '#2d1515', border: '#742a2a', label: 'High downside risk — position size accordingly' },
 }
 
-// ─── Watchlist storage ────────────────────────────────────────────────────────
-const WL_KEY = 'trigger_watchlist'
-const PORT_KEY = 'trigger_portfolio'
+// localStorage keys from the old dual-store design — used only for one-time migration
+const _LEGACY_WL_KEY   = 'trigger_watchlist'
+const _LEGACY_PORT_KEY = 'trigger_portfolio'
 
-function loadWatchlist() {
-  try { return JSON.parse(localStorage.getItem(WL_KEY) || '[]') } catch { return [] }
+function _readLegacyTickers() {
+  const tickers = new Set()
+  try {
+    const wl = JSON.parse(localStorage.getItem(_LEGACY_WL_KEY) || '[]')
+    wl.forEach(item => { if (item && item.ticker) tickers.add(item.ticker) })
+  } catch {}
+  try {
+    const port = JSON.parse(localStorage.getItem(_LEGACY_PORT_KEY) || '[]')
+    port.forEach(item => { if (item && item.ticker) tickers.add(item.ticker) })
+  } catch {}
+  return [...tickers]
 }
-function saveWatchlist(wl) {
-  try { localStorage.setItem(WL_KEY, JSON.stringify(wl)) } catch {}
+
+function _clearLegacyStorage() {
+  try { localStorage.removeItem(_LEGACY_WL_KEY) } catch {}
+  try { localStorage.removeItem(_LEGACY_PORT_KEY) } catch {}
 }
-function loadPortfolio() {
-  try { return JSON.parse(localStorage.getItem(PORT_KEY) || '[]') } catch { return [] }
-}
-function savePortfolio(p) {
-  try { localStorage.setItem(PORT_KEY, JSON.stringify(p)) } catch {}
-}
+
+const _MIGRATION_DONE_KEY = 'triggers_ls_migration_v1'
 
 function isStale(item) {
   if (!item.lastChecked) return true
@@ -1309,7 +1316,7 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [selectedTicker, setSelectedTicker] = useState(null)
-  const [portfolio, setPortfolio] = useState(loadPortfolio)
+  const [portfolio, setPortfolio] = useState([])
 
   // Listen for cross-tab navigation (Top Rated / Watchlist → Analysis)
   useEffect(() => {
@@ -1342,13 +1349,11 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
       setPortfolio(prev => {
         const filtered = prev.filter(p => p.ticker !== sym)
         const entry = { ticker: sym, score: body.trigger_score, action: body.trigger_action, blocked: body.trigger_blocked }
-        const next = [...filtered, entry].sort((a, b) => {
+        return [...filtered, entry].sort((a, b) => {
           if (a.blocked && !b.blocked) return 1
           if (!a.blocked && b.blocked) return -1
           return b.score - a.score
         })
-        savePortfolio(next)
-        return next
       })
     } catch (e) {
       setError(e.message)
@@ -1358,7 +1363,7 @@ function AnalysisTab({ watchlist, addToWatchlist, removeFromWatchlist }) {
   }
 
   function removeFromPortfolio(sym) {
-    setPortfolio(prev => { const next = prev.filter(p => p.ticker !== sym); savePortfolio(next); return next })
+    setPortfolio(prev => prev.filter(p => p.ticker !== sym))
     if (selectedTicker === sym) { setSelectedTicker(null); setResult(null) }
   }
 
@@ -2028,17 +2033,84 @@ function MoversSubTab({ onAnalyze }) {
 export default function StockTriggersTab() {
   const [activeSubTab, setActiveSubTab] = useState('analysis')
 
-  const [watchlist, setWatchlist] = useState(loadWatchlist)
+  const [watchlist, setWatchlist] = useState([])
   const [refreshProgress, setRefreshProgress] = useState({})
   const [upgrades, setUpgrades] = useState([])
   const [dismissedUpgrades, setDismissedUpgrades] = useState([])
-  const didAutoRefresh = useRef(false)
+  const [mergeNotice, setMergeNotice] = useState(null)
+  const didInit = useRef(false)
 
+  // Load watchlist from backend and run one-time localStorage migration
   useEffect(() => {
-    if (didAutoRefresh.current) return
-    didAutoRefresh.current = true
-    const stale = watchlist.filter(isStale)
-    if (stale.length > 0) refreshItems(stale)
+    if (didInit.current) return
+    didInit.current = true
+
+    async function initWatchlist() {
+      // Fetch current backend watchlist
+      let backendItems = []
+      try {
+        const res = await fetch(`${API}/api/watchlist`)
+        if (!res.ok) throw new Error('backend unreachable')
+        backendItems = await res.json()
+      } catch {
+        // Backend unreachable: keep localStorage intact for next load
+        return
+      }
+
+      // One-time migration of legacy localStorage tickers
+      const alreadyMigrated = localStorage.getItem(_MIGRATION_DONE_KEY)
+      if (!alreadyMigrated) {
+        const legacyTickers = _readLegacyTickers()
+        if (legacyTickers.length > 0) {
+          try {
+            const res = await fetch(`${API}/api/watchlist/bulk-add`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tickers: legacyTickers }),
+            })
+            if (res.ok) {
+              const result = await res.json()
+              const added = result.added?.length || 0
+              if (added > 0) {
+                setMergeNotice(`Merged ${added} entr${added === 1 ? 'y' : 'ies'} from local storage into your watchlist.`)
+              }
+              _clearLegacyStorage()
+              localStorage.setItem(_MIGRATION_DONE_KEY, '1')
+              // Re-fetch after migration
+              const res2 = await fetch(`${API}/api/watchlist`)
+              if (res2.ok) backendItems = await res2.json()
+            }
+            // If bulk-add fails, leave localStorage intact — migration retries next load
+          } catch {
+            // Backend error during migration: leave localStorage intact
+            return
+          }
+        } else {
+          _clearLegacyStorage()
+          localStorage.setItem(_MIGRATION_DONE_KEY, '1')
+        }
+      }
+
+      // Map backend items to the shape the rest of the tab expects
+      const mapped = backendItems.map(item => ({
+        ticker: item.ticker,
+        scoreAtAdd: null,
+        actionAtAdd: null,
+        addedAt: item.added_at,
+        currentScore: item.wheel_score,
+        currentAction: null,
+        upgradedFrom: null,
+        lastChecked: item.last_scored,
+        refreshError: null,
+      }))
+      setWatchlist(mapped)
+
+      // Auto-refresh stale items
+      const stale = mapped.filter(isStale)
+      if (stale.length > 0) refreshItems(stale)
+    }
+
+    initWatchlist()
   }, []) // eslint-disable-line
 
   async function refreshItems(items) {
@@ -2059,7 +2131,7 @@ export default function StockTriggersTab() {
         const nowBetter = body.trigger_action === 'SMALL BUY' || body.trigger_action === 'STRONG BUY'
 
         setWatchlist(prev => {
-          const next = prev.map(w => {
+          return prev.map(w => {
             if (w.ticker !== item.ticker) return w
             return {
               ...w,
@@ -2071,8 +2143,6 @@ export default function StockTriggersTab() {
               refreshError: null,
             }
           })
-          saveWatchlist(next)
-          return next
         })
 
         if (wasWatch && nowBetter) {
@@ -2081,11 +2151,9 @@ export default function StockTriggersTab() {
         setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'done' }))
       } catch (e) {
         setWatchlist(prev => {
-          const next = prev.map(w => w.ticker !== item.ticker ? w : {
+          return prev.map(w => w.ticker !== item.ticker ? w : {
             ...w, lastChecked: new Date().toISOString(), refreshError: e.message,
           })
-          saveWatchlist(next)
-          return next
         })
         setRefreshProgress(prev => ({ ...prev, [item.ticker]: 'error' }))
       }
@@ -2094,10 +2162,18 @@ export default function StockTriggersTab() {
     if (newUpgrades.length) setUpgrades(prev => [...prev, ...newUpgrades])
   }
 
-  function addToWatchlist(r) {
+  async function addToWatchlist(r) {
+    if (watchlist.some(w => w.ticker === r.ticker)) return
+    try {
+      await fetch(`${API}/api/watchlist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: r.ticker, notes: '' }),
+      })
+    } catch {}
     setWatchlist(prev => {
       if (prev.some(w => w.ticker === r.ticker)) return prev
-      const entry = {
+      return [...prev, {
         ticker: r.ticker,
         scoreAtAdd: r.trigger_score,
         actionAtAdd: r.trigger_action,
@@ -2107,27 +2183,17 @@ export default function StockTriggersTab() {
         upgradedFrom: null,
         lastChecked: null,
         refreshError: null,
-      }
-      const next = [...prev, entry]
-      saveWatchlist(next)
-      return next
+      }]
     })
-    fetch(`${API}/api/watchlist`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker: r.ticker, notes: '' }),
-    }).catch(() => {})
   }
 
-  function removeFromWatchlist(sym) {
-    setWatchlist(prev => {
-      const next = prev.filter(w => w.ticker !== sym)
-      saveWatchlist(next)
-      return next
-    })
+  async function removeFromWatchlist(sym) {
+    setWatchlist(prev => prev.filter(w => w.ticker !== sym))
     setRefreshProgress(prev => { const n = { ...prev }; delete n[sym]; return n })
     setUpgrades(prev => prev.filter(u => u.ticker !== sym))
-    fetch(`${API}/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' }).catch(() => {})
+    try {
+      await fetch(`${API}/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' })
+    } catch {}
   }
 
   function dismissUpgrade(sym) {
@@ -2147,6 +2213,12 @@ export default function StockTriggersTab() {
 
   return (
     <div style={{ maxWidth: '900px' }}>
+      {mergeNotice && (
+        <div style={{ background: '#0a2218', border: '1px solid #276749', borderRadius: '8px', padding: '10px 16px', marginBottom: '14px', fontSize: '13px', color: '#68d391', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{mergeNotice}</span>
+          <button onClick={() => setMergeNotice(null)} style={{ background: 'none', border: 'none', color: '#68d391', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }}>x</button>
+        </div>
+      )}
       <div style={{ marginBottom: '16px' }}>
         <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#e2e8f0', margin: '0 0 4px' }}>
           🎯 Stock Triggers

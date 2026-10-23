@@ -3,8 +3,6 @@ import TabNav from './components/TabNav'
 import MarketBanner from './components/MarketBanner'
 import OptionsTab from './tabs/OptionsTab'
 import WheelTab from './tabs/WheelTab'
-import PerformanceTab from './tabs/PerformanceTab'
-import WatchlistTab from './tabs/WatchlistTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import MarketPulseTab from './tabs/MarketPulseTab'
 import StockTriggersTab from './tabs/StockTriggersTab'
@@ -14,21 +12,21 @@ import TwelveStepTab from './tabs/TwelveStepTab'
 import AlertsTab from './tabs/AlertsTab'
 import BuyHoldTab from './tabs/BuyHoldTab'
 import IncomeTab from './tabs/IncomeTab'
+import BookTab from './tabs/BookTab'
 
 const TABS = [
-  { id: 'alerts',       label: '🔔 Setup Alerts' },
-  { id: 'pulse',        label: '⚡ Market Pulse' },
+  { id: 'pulse',        label: '⚡ Today' },
   { id: 'buyhold',      label: '📊 Buy and Hold' },
-  { id: 'income',       label: '💵 Income' },
-  { id: 'triggers',     label: '🎯 Stock Triggers' },
-  { id: 'momentum',    label: '🔀 Momentum' },
-  { id: 'levma',        label: '📡 Leveraged Signals' },
-  { id: 'twelvestep',  label: '🔍 12 Step Process' },
-  { id: 'options',      label: '📈 Options Trading' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
+  { id: 'options',      label: '📈 Directional' },
+  { id: 'levma',        label: '📡 Leveraged Signals' },
+  { id: 'income',       label: '💵 Income' },
+  { id: 'book',         label: '📖 Book' },
+  { id: 'alerts',       label: '🔔 Setup Alerts' },
+  { id: 'triggers',     label: '🎯 Stock Triggers' },
+  { id: 'momentum',     label: '🔀 Momentum' },
+  { id: 'twelvestep',   label: '🔍 12 Step' },
   { id: 'coveredcalls', label: '💰 Covered Calls' },
-  { id: 'watchlist',   label: '👁 Watchlist' },
-  { id: 'performance', label: '🏆 Performance' },
 ]
 
 class TabErrorBoundary extends Component {
@@ -127,15 +125,14 @@ export default function App() {
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}
           {activeTab === 'coveredcalls' && <CoveredCallsTab />}
-          {activeTab === 'watchlist'    && <WatchlistTab />}
-          {activeTab === 'performance'  && <PerformanceTab />}
           {activeTab === 'buyhold'      && <BuyHoldTab />}
           {activeTab === 'income'       && <IncomeTab />}
+          {activeTab === 'book'         && <BookTab />}
           {activeTab === 'triggers'     && <StockTriggersTab />}
           {activeTab === 'momentum'     && <MomentumTab />}
           {activeTab === 'levma'        && <LeveragedMATab />}
-          {activeTab === 'twelvestep'  && <TwelveStepTab />}
-          {activeTab === 'alerts'      && <AlertsTab />}
+          {activeTab === 'twelvestep'   && <TwelveStepTab />}
+          {activeTab === 'alerts'       && <AlertsTab />}
         </TabErrorBoundary>
       </main>
     </div>

@@ -424,6 +424,17 @@ def _yf_fetch_summary(ticker: str) -> dict:
 # Public service class
 # ---------------------------------------------------------------------------
 
+# Why the most recent get_put_tiers call returned None, composed from the
+# chain provider's per-source notes, so the API can surface the real cause
+# (provider error, empty chain, filtered rows) instead of a generic line.
+_LAST_CHAIN_ERROR: str | None = None
+
+
+def get_last_chain_error() -> str | None:
+    """Return the recorded reason for the last failed tiers lookup."""
+    return _LAST_CHAIN_ERROR
+
+
 class StockDataService:
 
     def _get_history(self, ticker: str, period: str = "1y") -> pd.DataFrame:
@@ -628,6 +639,8 @@ class StockDataService:
         Fetch real put options chain and return three tiers for wheel strategy analysis.
         Uses Polygon real-time data (with Greeks) when available; falls back to yfinance.
         """
+        global _LAST_CHAIN_ERROR
+        _LAST_CHAIN_ERROR = None
         from services.chain_provider import ChainProvider
         provider = ChainProvider()
 
@@ -638,6 +651,9 @@ class StockDataService:
         if not is_polygon:
             yf_rows, yf_price, yf_source = provider._fetch_yfinance_rows(ticker, "put", 14, 45)
             if not yf_rows or not yf_price:
+                _LAST_CHAIN_ERROR = (
+                    f"{provider.last_polygon_note}; {provider.last_yfinance_note}"
+                )
                 return None
             puts = yf_rows
             price = yf_price
@@ -653,6 +669,7 @@ class StockDataService:
             target_expiry = expiries[0]
         puts = [p for p in puts if p["expiry"] == target_expiry]
         if not puts:
+            _LAST_CHAIN_ERROR = "chain rows existed but none at the target expiry"
             return None
         dte = (date.fromisoformat(target_expiry) - today).days
         atm = min(puts, key=lambda p: abs(p["strike"] - price))

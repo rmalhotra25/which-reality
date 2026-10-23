@@ -270,10 +270,14 @@ def get_put_tiers(ticker: str):
     ticker = ticker.strip().upper()
     if not _TICKER_RE.match(ticker):
         raise HTTPException(status_code=400, detail="Invalid ticker.")
-    from services.stock_data import StockDataService
+    from services.stock_data import StockDataService, get_last_chain_error
     tiers = StockDataService().get_put_tiers(ticker)
     if not tiers:
-        raise HTTPException(status_code=503, detail=f"Could not fetch options chain for {ticker}.")
+        detail = f"Could not fetch options chain for {ticker}."
+        reason = get_last_chain_error()
+        if reason:
+            detail = f"{detail} {reason}"
+        raise HTTPException(status_code=503, detail=detail)
     return tiers
 
 

@@ -2,6 +2,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Most recent options chain snapshot outcome, recorded by
+# get_options_chain_snapshot so callers can surface WHY a chain fetch came
+# back empty instead of only logging it. Shape:
+# {"ticker": str, "error": str | None, "count": int | None, "at": iso str}
+_LAST_SNAPSHOT_OUTCOME: dict | None = None
+
+
+def get_last_snapshot_outcome() -> dict | None:
+    """Return the last recorded options chain snapshot outcome, or None."""
+    return _LAST_SNAPSHOT_OUTCOME
+
 
 def _client():
     from config import settings
@@ -121,8 +132,26 @@ def get_options_chain_snapshot(
     near_price: if provided, restricts strikes to ±strike_pct_range of that price
                 so we fetch active ATM/near-OTM contracts instead of deep ITM junk.
     """
-    from datetime import date, timedelta
-    c = _client()
+    from datetime import date, datetime, timedelta
+
+    global _LAST_SNAPSHOT_OUTCOME
+
+    def _record(error: str | None, count: int | None) -> None:
+        global _LAST_SNAPSHOT_OUTCOME
+        _LAST_SNAPSHOT_OUTCOME = {
+            "ticker": ticker,
+            "error": error,
+            "count": count,
+            "at": datetime.utcnow().isoformat(),
+        }
+
+    try:
+        c = _client()
+    except Exception as e:
+        _record(f"{type(e).__name__}: {e}", None)
+        logger.warning("options_chain_snapshot failed for %s: %s", ticker, e)
+        return []
+
     today = date.today()
     params = {
         "expiration_date.gte": today.isoformat(),
@@ -135,8 +164,11 @@ def get_options_chain_snapshot(
         params["strike_price.gte"] = round(near_price * (1 - strike_pct_range), 2)
         params["strike_price.lte"] = round(near_price * (1 + strike_pct_range), 2)
     try:
-        return list(c.list_snapshot_options_chain(ticker, params=params))
+        snapshots = list(c.list_snapshot_options_chain(ticker, params=params))
+        _record(None, len(snapshots))
+        return snapshots
     except Exception as e:
+        _record(f"{type(e).__name__}: {e}", None)
         logger.warning("options_chain_snapshot failed for %s: %s", ticker, e)
         return []
 

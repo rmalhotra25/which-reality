@@ -162,7 +162,14 @@ def _spy_regime(entry_date: date, spy_closes: np.ndarray, spy_ma200: np.ndarray,
 # Data download / synthetic fallback
 # ---------------------------------------------------------------------------
 
-def _download_history(ticker: str, start: date, end: date) -> pd.DataFrame:
+def _download_history(
+    ticker: str, start: date, end: date, allow_synthetic: bool = True
+) -> tuple[pd.DataFrame, bool]:
+    """
+    Returns (df, is_synthetic).
+    When allow_synthetic=False and yfinance fails, raises RuntimeError
+    instead of falling back to synthetic data.
+    """
     try:
         import yfinance as yf
         df = yf.download(
@@ -177,10 +184,16 @@ def _download_history(ticker: str, start: date, end: date) -> pd.DataFrame:
         df.index = pd.to_datetime(df.index).normalize()
         df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
         if len(df) > 100:
-            return df
+            return df, False
     except Exception as e:
         logger.debug("yfinance download failed for %s: %s", ticker, e)
-    return _synthetic_ohlcv(ticker, start, end)
+
+    if not allow_synthetic:
+        raise RuntimeError(
+            f"Real data unavailable for {ticker}. "
+            "Rerun with --allow-synthetic to use synthetic fallback for mechanics verification."
+        )
+    return _synthetic_ohlcv(ticker, start, end), True
 
 
 def _synthetic_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame:
@@ -607,11 +620,16 @@ def _run_setup(
     spy_closes: np.ndarray, spy_ma200: np.ndarray, spy_dates: np.ndarray,
     extra_state_fn=None,
     compute_options: bool = False,
-) -> list[Trade]:
+    allow_synthetic: bool = True,
+) -> tuple[list[Trade], bool]:
+    """Returns (trades, any_synthetic)."""
     all_trades = []
+    any_synthetic = False
     for ticker in universe:
         try:
-            df = _download_history(ticker, FULL_START, end)
+            df, is_synthetic = _download_history(ticker, FULL_START, end, allow_synthetic)
+            if is_synthetic:
+                any_synthetic = True
             if len(df) < 230:
                 continue
             ticker_trades = _run_single_ticker(
@@ -620,9 +638,11 @@ def _run_setup(
                 extra_state_fn, compute_options,
             )
             all_trades.extend(ticker_trades)
+        except RuntimeError:
+            raise  # propagate abort-on-no-real-data
         except Exception as e:
             logger.debug("backtest skip %s/%s: %s", setup_name, ticker, e)
-    return all_trades
+    return all_trades, any_synthetic
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +686,7 @@ def _split_trades(trades: list) -> dict:
 def _robustness_tests(
     setup_name, signal_fn, exit_fn, universe, base_params, param_keys,
     spy_closes, spy_ma200, spy_dates,
-    extra_state_fn=None, compute_options=False,
+    extra_state_fn=None, compute_options=False, allow_synthetic=True,
 ) -> list[dict]:
     results = []
     subset = universe[:30]
@@ -675,11 +695,11 @@ def _robustness_tests(
         for mult, label in [(0.8, "-20%"), (1.2, "+20%")]:
             variant = dict(base_params)
             variant[key] = base_val * mult
-            trades = _run_setup(
+            trades, _ = _run_setup(
                 setup_name, signal_fn, exit_fn, subset,
                 OOS_START, OOS_END, variant,
                 spy_closes, spy_ma200, spy_dates,
-                extra_state_fn, compute_options,
+                extra_state_fn, compute_options, allow_synthetic,
             )
             oos_stats = _compute_stats_for_trades(trades)
             results.append({
@@ -735,16 +755,25 @@ def _fmt_stats(label: str, s: dict) -> str:
 
 def write_report(path, setup_name, rule_definition, universe_desc,
                  is_period, oos_period, splits, robustness,
-                 verdict_str, fragile, data_is_synthetic,
+                 verdict_str, fragile, data_source,
+                 verdict_reason="",
                  modeled_note="", stock_signal_note="") -> None:
+    """
+    data_source: a pre-formatted string, e.g.
+      "REAL (fetched 2026-10-23)"
+      "SYNTHETIC (mechanics verification only, not market evidence)"
+    verdict_reason: if non-empty, printed alongside the verdict, e.g.
+      "synthetic data: mechanics verification only, not market evidence"
+    """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
     lines = []
     lines.append(f"# Backtest: {setup_name}\n")
     lines.append(f"Generated: {date.today().isoformat()}\n")
+    lines.append(f"**Data source**: {data_source}\n")
 
-    if data_is_synthetic:
+    if "SYNTHETIC" in data_source:
         lines.append(
             "\n> **DATA NOTE: SYNTHETIC** -- this report was generated on procedurally "
             "generated random-walk price data because yfinance had no network access in the "
@@ -807,7 +836,10 @@ def write_report(path, setup_name, rule_definition, universe_desc,
         lines.append("  (no robustness tests run)\n")
 
     lines.append("\n## Verdict\n")
-    lines.append(f"**{verdict_str}**\n")
+    if verdict_reason:
+        lines.append(f"**{verdict_str}** -- {verdict_reason}\n")
+    else:
+        lines.append(f"**{verdict_str}**\n")
 
     with open(path, "w") as f:
         f.writelines(lines)
@@ -815,16 +847,28 @@ def write_report(path, setup_name, rule_definition, universe_desc,
 
 
 # ---------------------------------------------------------------------------
-# Network check
+# Data source label helpers
 # ---------------------------------------------------------------------------
 
-def _check_network() -> bool:
-    try:
-        import yfinance as yf
-        test = yf.download("SPY", period="5d", progress=False, auto_adjust=True)
-        return len(test) > 0
-    except Exception:
-        return False
+SYNTHETIC_REASON = "synthetic data: mechanics verification only, not market evidence"
+
+
+def _data_source_label(is_synthetic: bool) -> str:
+    if is_synthetic:
+        return "SYNTHETIC (mechanics verification only, not market evidence)"
+    return f"REAL (fetched {date.today().isoformat()})"
+
+
+def _apply_synthetic_cap(computed_verdict: str, is_synthetic: bool) -> tuple[str, str]:
+    """
+    Returns (final_verdict, verdict_reason).
+    Caps PASSES at SHADOW ONLY when data is synthetic; FAILS stays FAILS.
+    """
+    if not is_synthetic:
+        return computed_verdict, ""
+    if computed_verdict == "FAILS":
+        return "FAILS", SYNTHETIC_REASON
+    return "SHADOW ONLY", SYNTHETIC_REASON
 
 
 # ---------------------------------------------------------------------------
@@ -834,11 +878,14 @@ def _check_network() -> bool:
 def run_all_setups(
     output_dir: str = "backtests",
     universe_override: list | None = None,
+    allow_synthetic: bool = True,
 ) -> list[dict]:
+    """
+    allow_synthetic=True (default): fall back to synthetic data when yfinance
+      is unreachable; caps verdict at SHADOW ONLY for any setup with synthetic data.
+    allow_synthetic=False: abort with RuntimeError on first real-data fetch failure.
+    """
     import os
-
-    network_ok = _check_network()
-    logger.info("Network available: %s", network_ok)
 
     if universe_override:
         universe_sp = universe_override
@@ -860,7 +907,7 @@ def run_all_setups(
     logger.info("Universes: setups 1+2 = %d tickers, setup 3 = %d tickers",
                 len(universe_sp), len(universe_dir))
 
-    spy_df = _download_history("SPY", FULL_START, OOS_END)
+    spy_df, spy_synthetic = _download_history("SPY", FULL_START, OOS_END, allow_synthetic)
     spy_closes, spy_ma200, spy_dates = _spy_indicator_arrays(spy_df)
     results = []
 
@@ -868,16 +915,17 @@ def run_all_setups(
     p1 = {"pullback_pct": 0.02, "rsi_entry": 55.0, "rsi_reset": 60.0,
           "rsi_target": 68.0, "time_stop_days": 30, "breakout_days": 55}
     logger.info("Setup 1: Quality Pullback (%d tickers)", len(universe_sp))
-    t1 = _run_setup("quality_pullback", _signal_quality_pullback, _exit_quality_pullback,
-                    universe_sp, FULL_START, OOS_END, p1,
-                    spy_closes, spy_ma200, spy_dates)
+    t1, syn1 = _run_setup("quality_pullback", _signal_quality_pullback, _exit_quality_pullback,
+                          universe_sp, FULL_START, OOS_END, p1,
+                          spy_closes, spy_ma200, spy_dates, allow_synthetic=allow_synthetic)
     s1 = _split_trades(t1)
     r1 = _robustness_tests("quality_pullback", _signal_quality_pullback, _exit_quality_pullback,
                             universe_sp, p1, ["pullback_pct", "rsi_entry", "rsi_reset"],
-                            spy_closes, spy_ma200, spy_dates)
+                            spy_closes, spy_ma200, spy_dates, allow_synthetic=allow_synthetic)
     oos1 = s1["out_of_sample"]
     frag1 = _is_fragile(oos1, r1)
-    v1 = _verdict(oos1, frag1, False)
+    v1_raw = _verdict(oos1, frag1, False)
+    v1, vr1 = _apply_synthetic_cap(v1_raw, syn1)
     write_report(
         path=os.path.join(output_dir, "quality_pullback.md"),
         setup_name="Quality Pullback",
@@ -896,9 +944,10 @@ def run_all_setups(
         is_period="2019-01-01 to 2022-12-31",
         oos_period=f"2023-01-01 to {OOS_END.isoformat()}",
         splits=s1, robustness=r1, verdict_str=v1, fragile=frag1,
-        data_is_synthetic=not network_ok,
+        data_source=_data_source_label(syn1), verdict_reason=vr1,
     )
-    results.append({"setup": "quality_pullback", "verdict": v1, "oos_stats": oos1})
+    results.append({"setup": "quality_pullback", "verdict": v1, "oos_stats": oos1,
+                    "data_source": _data_source_label(syn1)})
 
     # ---- Setup 2: Premium at Support (Wheel) ---------------------------------
     p2 = {"support_pct": 0.02, "hv_pct_thresh": 2/3, "put_dte": 37,
@@ -909,16 +958,19 @@ def run_all_setups(
         return {"hv": float(hv) if not np.isnan(hv) else 0.25}
 
     logger.info("Setup 2: Premium at Support (%d tickers)", len(universe_sp))
-    t2 = _run_setup("premium_at_support", _signal_premium_at_support, _exit_premium_support,
-                    universe_sp, FULL_START, OOS_END, p2,
-                    spy_closes, spy_ma200, spy_dates, _esf2, compute_options=True)
+    t2, syn2 = _run_setup("premium_at_support", _signal_premium_at_support, _exit_premium_support,
+                          universe_sp, FULL_START, OOS_END, p2,
+                          spy_closes, spy_ma200, spy_dates, _esf2, compute_options=True,
+                          allow_synthetic=allow_synthetic)
     s2 = _split_trades(t2)
     r2 = _robustness_tests("premium_at_support", _signal_premium_at_support, _exit_premium_support,
                             universe_sp, p2, ["support_pct", "hv_pct_thresh"],
-                            spy_closes, spy_ma200, spy_dates, _esf2)
+                            spy_closes, spy_ma200, spy_dates, _esf2,
+                            allow_synthetic=allow_synthetic)
     oos2 = s2["out_of_sample"]
     frag2 = _is_fragile(oos2, r2)
-    v2 = _verdict(oos2, frag2, True)
+    v2_raw = _verdict(oos2, frag2, True)  # modeled_only=True always caps at SHADOW ONLY
+    v2, vr2 = _apply_synthetic_cap(v2_raw, syn2)
     support_held = sum(1 for t in t2 if t.pnl_pct > 0) / max(len(t2), 1) * 100
     write_report(
         path=os.path.join(output_dir, "premium_at_support.md"),
@@ -941,7 +993,7 @@ def run_all_setups(
         is_period="2019-01-01 to 2022-12-31",
         oos_period=f"2023-01-01 to {OOS_END.isoformat()}",
         splits=s2, robustness=r2, verdict_str=v2, fragile=frag2,
-        data_is_synthetic=not network_ok,
+        data_source=_data_source_label(syn2), verdict_reason=vr2,
         modeled_note=(
             "All options P&L figures are **MODELED** using Black-Scholes with historical "
             "volatility as the IV proxy.  Real IV was not available for historical dates.  "
@@ -954,7 +1006,8 @@ def run_all_setups(
             "This is the stock-side edge only, independent of the options model."
         ),
     )
-    results.append({"setup": "premium_at_support", "verdict": v2, "oos_stats": oos2})
+    results.append({"setup": "premium_at_support", "verdict": v2, "oos_stats": oos2,
+                    "data_source": _data_source_label(syn2)})
 
     # ---- Setup 3: Volume-Confirmed Breakout ----------------------------------
     p3 = {"breakout_days": 55, "vol_mult": 1.5, "atr_mult": 2.0,
@@ -965,16 +1018,19 @@ def run_all_setups(
         return {"breakout_level": float(ph) if not np.isnan(ph) else float(ind["closes"][i])}
 
     logger.info("Setup 3: Volume Breakout (%d tickers)", len(universe_dir))
-    t3 = _run_setup("volume_breakout", _signal_volume_breakout, _exit_volume_breakout,
-                    universe_dir, FULL_START, OOS_END, p3,
-                    spy_closes, spy_ma200, spy_dates, _esf3)
+    t3, syn3 = _run_setup("volume_breakout", _signal_volume_breakout, _exit_volume_breakout,
+                          universe_dir, FULL_START, OOS_END, p3,
+                          spy_closes, spy_ma200, spy_dates, _esf3,
+                          allow_synthetic=allow_synthetic)
     s3 = _split_trades(t3)
     r3 = _robustness_tests("volume_breakout", _signal_volume_breakout, _exit_volume_breakout,
                             universe_dir, p3, ["breakout_days", "vol_mult"],
-                            spy_closes, spy_ma200, spy_dates, _esf3)
+                            spy_closes, spy_ma200, spy_dates, _esf3,
+                            allow_synthetic=allow_synthetic)
     oos3 = s3["out_of_sample"]
     frag3 = _is_fragile(oos3, r3)
-    v3 = _verdict(oos3, frag3, False)
+    v3_raw = _verdict(oos3, frag3, False)
+    v3, vr3 = _apply_synthetic_cap(v3_raw, syn3)
     write_report(
         path=os.path.join(output_dir, "volume_breakout.md"),
         setup_name="Volume-Confirmed Breakout",
@@ -992,10 +1048,11 @@ def run_all_setups(
         is_period="2019-01-01 to 2022-12-31",
         oos_period=f"2023-01-01 to {OOS_END.isoformat()}",
         splits=s3, robustness=r3, verdict_str=v3, fragile=frag3,
-        data_is_synthetic=not network_ok,
+        data_source=_data_source_label(syn3), verdict_reason=vr3,
         modeled_note="Options layer is out of scope for this phase.  Stock-level edge only.",
     )
-    results.append({"setup": "volume_breakout", "verdict": v3, "oos_stats": oos3})
+    results.append({"setup": "volume_breakout", "verdict": v3, "oos_stats": oos3,
+                    "data_source": _data_source_label(syn3)})
 
     logger.info("Verdicts: %s", {r["setup"]: r["verdict"] for r in results})
     return results

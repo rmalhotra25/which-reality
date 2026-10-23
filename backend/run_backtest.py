@@ -2,26 +2,31 @@
 Backtest CLI entry point.
 
 Usage (from the backend/ directory):
-    python run_backtest.py
+    python run_backtest.py [--allow-synthetic]
 
 Options:
-    --output-dir DIR   Folder for result files (default: ../backtests)
-    --tickers A,B,C    Comma-separated ticker list to override the default
-                       universe.  Useful for quick spot-checks.
-    --help             Show this message.
+    --output-dir DIR    Folder for result files (default: ../backtests)
+    --tickers A,B,C     Comma-separated ticker list to override the default
+                        universe.  Useful for quick spot-checks.
+    --allow-synthetic   Allow synthetic random-walk fallback when yfinance is
+                        unreachable.  Without this flag a failed real-data
+                        fetch aborts the run with a clear error.
+    --help              Show this message.
 
 The harness writes three markdown files:
     <output-dir>/quality_pullback.md
     <output-dir>/premium_at_support.md
     <output-dir>/volume_breakout.md
 
-Each file contains: cost assumptions, survivorship caveat, rule definition,
-walk-forward IS/OOS stats, calendar and SPY MA regime splits, +/-20% robustness
-tests, and a verdict (PASSES | SHADOW ONLY | FAILS).
+Each file contains: data source stamp (REAL or SYNTHETIC), cost assumptions,
+survivorship caveat, rule definition, walk-forward IS/OOS stats, calendar and
+SPY MA regime splits, +/-20% robustness tests, and a verdict
+(PASSES | SHADOW ONLY | FAILS).
 
-When run without network access (yfinance unreachable), the harness falls back
-to synthetic random-walk price data and stamps every report with a SYNTHETIC
-data warning.  Rerun on a networked deployment for real edge measurements.
+Synthetic data produces at most SHADOW ONLY verdicts -- never PASSES -- with
+the reason "synthetic data: mechanics verification only, not market evidence"
+printed next to the verdict.  Use --allow-synthetic only to verify mechanics
+in a sandbox without network access.
 
 No-lookahead guarantee: signals are evaluated from df.iloc[:i+1]; the entry
 price is always df.iloc[i+1]["Open"], i.e., the open of the day after the
@@ -62,6 +67,15 @@ def main() -> None:
         help="Comma-separated ticker list to override the default universe",
     )
     parser.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help=(
+            "Allow synthetic random-walk fallback when yfinance is unreachable. "
+            "Without this flag the run aborts if real data cannot be fetched. "
+            "Synthetic runs cap their verdict at SHADOW ONLY."
+        ),
+    )
+    parser.add_argument(
         "--spot-check",
         action="store_true",
         help="Print one example trade per setup to verify no-lookahead",
@@ -81,6 +95,7 @@ def main() -> None:
     results = run_all_setups(
         output_dir=output_dir,
         universe_override=universe_override,
+        allow_synthetic=args.allow_synthetic,
     )
 
     print("\n" + "=" * 60)
@@ -93,7 +108,8 @@ def main() -> None:
         pf  = oos.get("profit_factor", 0)
         pf_str = str(pf) if pf == "inf" else f"{pf:.2f}"
         insufficient = " [INSUFFICIENT SAMPLE]" if oos.get("insufficient_sample") else ""
-        print(f"  {r['setup']:30s}  {r['verdict']:12s}  OOS: n={n}{insufficient}  exp={exp:.3f}%  PF={pf_str}")
+        ds = r.get("data_source", "")
+        print(f"  {r['setup']:30s}  {r['verdict']:12s}  OOS: n={n}{insufficient}  exp={exp:.3f}%  PF={pf_str}  [{ds}]")
 
     print("\nReports written to:", output_dir)
 
@@ -138,7 +154,7 @@ def _print_spot_check(universe_override):
         found = False
         for ticker in tickers:
             try:
-                df = _download_history(ticker, FULL_START, OOS_END)
+                df, _syn = _download_history(ticker, FULL_START, OOS_END, allow_synthetic=True)
                 if len(df) < 230:
                     continue
                 trades = _run_single_ticker(

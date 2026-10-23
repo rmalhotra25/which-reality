@@ -126,6 +126,17 @@ def run_all_analyses() -> None:
     finally:
         db.close()
 
+    # Snap ATM IV for the universe after each analysis run
+    db2 = SessionLocal()
+    try:
+        from services.iv_snapshot_service import snap_iv_universe
+        result = snap_iv_universe(db2)
+        logger.info("Scheduler: IV snapshot complete: %s", result)
+    except Exception as e:
+        logger.error("IV snapshot run failed: %s", e, exc_info=True)
+    finally:
+        db2.close()
+
 
 def run_champions_scan() -> None:
     from database import SessionLocal

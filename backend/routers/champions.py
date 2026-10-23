@@ -73,3 +73,15 @@ def refresh_champions():
     t = threading.Thread(target=_run_job, daemon=True)
     t.start()
     return {"status": "started"}
+
+
+@router.post("/outcome-job")
+def trigger_outcome_job(db: Session = Depends(get_db)):
+    from services.champion_journal_service import run_outcome_job
+    return run_outcome_job(db)
+
+
+@router.get("/stats")
+def get_champion_stats(db: Session = Depends(get_db)):
+    from services.champion_journal_service import get_stats
+    return get_stats(db)

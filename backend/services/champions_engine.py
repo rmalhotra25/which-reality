@@ -160,6 +160,9 @@ def run(db) -> tuple[bool, str | None]:
         return False, "AI returned incomplete results — try again."
 
     run_at = datetime.now(timezone.utc)
+    # Build entry_prices map from survivors list
+    entry_prices = {s["ticker"]: s["price"] for s in survivors}
+
     db.query(Champion).delete()
     for strategy, data in champions.items():
         if not data or not data.get("ticker"):
@@ -175,5 +178,13 @@ def run(db) -> tuple[bool, str | None]:
             run_at=run_at,
         ))
     db.commit()
+
+    # Record picks in persistent journal for grading
+    try:
+        from services.champion_journal_service import record_picks
+        record_picks(db, champions, entry_prices, run_at)
+    except Exception as e:
+        logger.warning("Champions: journal write failed: %s", e)
+
     logger.info("Champions saved: %s", {s: d.get("ticker") for s, d in champions.items()})
     return True, None

@@ -43,6 +43,38 @@ def add_ticker(body: AddBody, db: Session = Depends(get_db)):
     return _serialize(item)
 
 
+class BulkAddBody(BaseModel):
+    tickers: list[str]
+
+
+@router.post("/bulk-add")
+def bulk_add(body: BulkAddBody, db: Session = Depends(get_db)):
+    """
+    Add multiple tickers at once (migration path from localStorage).
+    Backend wins on conflicts: existing tickers are skipped, not overwritten.
+    Returns {added: [ticker,...], skipped: [ticker,...]}.
+    """
+    added = []
+    skipped = []
+    for raw in body.tickers:
+        ticker = raw.strip().upper()
+        if not ticker or not _TICKER_RE.match(ticker):
+            skipped.append(raw)
+            continue
+        existing = db.query(WatchlistItem).filter(WatchlistItem.ticker == ticker).first()
+        if existing:
+            skipped.append(ticker)
+            continue
+        db.add(WatchlistItem(ticker=ticker))
+        added.append(ticker)
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Bulk add failed: {e}")
+    return {"added": added, "skipped": skipped}
+
+
 @router.delete("/{ticker}")
 def remove_ticker(ticker: str, db: Session = Depends(get_db)):
     ticker = ticker.upper()

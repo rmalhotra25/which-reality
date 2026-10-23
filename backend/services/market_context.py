@@ -39,8 +39,11 @@ def _fetch() -> dict:
     spy_vs_50 = round((spy_price / ma50 - 1) * 100, 1) if spy_price and ma50 else None
     spy_vs_200 = round((spy_price / ma200 - 1) * 100, 1) if spy_price and ma200 else None
 
+    # data_complete is True only when we have enough to classify the regime
+    data_complete = bool(spy_price and ma50 and ma200)
+
     regime = _classify_regime(vix, spy_price, ma50, ma200)
-    verdict = _trade_verdict(vix, regime)
+    verdict = _trade_verdict(vix, regime, data_complete)
     vix_label = _vix_label(vix)
 
     return {
@@ -51,6 +54,7 @@ def _fetch() -> dict:
         "spy_vs_200ma_pct": spy_vs_200,
         "market_regime": regime,
         "trade_verdict": verdict,
+        "data_complete": data_complete,
         "summary": _summary(vix, vix_label, spy_price, spy_vs_50, spy_vs_200, regime, verdict),
         "strategy_guidance": _strategy_guidance(vix, regime, vix_label),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -111,6 +115,7 @@ def _fetch_spy() -> tuple[float | None, float | None, float | None]:
 def _unavailable() -> dict:
     return {
         "available": False,
+        "data_complete": False,
         "trade_verdict": "UNKNOWN",
         "market_regime": "UNKNOWN",
         "summary": "Market data temporarily unavailable.",
@@ -138,11 +143,16 @@ def _classify_regime(vix, spy_price, ma50, ma200) -> str:
     return "SIDEWAYS"
 
 
-def _trade_verdict(vix, regime) -> str:
+def _trade_verdict(vix, regime, data_complete: bool = True) -> str:
+    if not data_complete and vix is None:
+        return "UNKNOWN"
     if regime == "VOLATILE" or (vix is not None and vix > 35):
         return "RED"
     if regime == "BEAR" or (vix is not None and vix > 25):
         return "YELLOW"
+    # Only issue GREEN when we have real SPY data to back it
+    if not data_complete:
+        return "UNKNOWN"
     return "GREEN"
 
 

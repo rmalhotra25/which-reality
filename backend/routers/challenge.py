@@ -9,6 +9,7 @@ PATCH /api/challenge/trades/{id}/mark   set a manual mark on an open trade
 POST /api/challenge/trades/{id}/close   close a trade at an exit price
 POST /api/challenge/snapshot         snapshot state, run the graduation check
 POST /api/challenge/alerts/refresh   generate alerts now, return state
+POST /api/challenge/alerts/test      send a Telegram test message, return status
 PATCH /api/challenge/alerts/{id}     set an alert status (read/dismissed/acted)
 """
 import logging
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from services import challenge_service as svc
+from services.telegram_notifier import send_telegram_message, telegram_configured
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/challenge", tags=["Challenge"])
@@ -146,6 +148,14 @@ class AlertStatusIn(BaseModel):
 def refresh_alerts(db: Session = Depends(get_db)):
     svc.generate_challenge_alerts(db)
     return svc.compute_state(db)
+
+
+@router.post("/alerts/test")
+def test_alert():
+    sent = send_telegram_message(
+        "TradeIQ Challenge alerts are connected. This is a test."
+    )
+    return {"telegram_configured": telegram_configured(), "sent": sent}
 
 
 @router.patch("/alerts/{alert_id}")

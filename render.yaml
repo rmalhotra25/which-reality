@@ -15,6 +15,10 @@ services:
         sync: false          # enter in Render dashboard — free key from finnhub.io
       - key: FMP_API_KEY
         sync: false          # enter in Render dashboard — optional, used by 12-Step screener
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # enter in Render dashboard - optional, enables Telegram phone alerts for Challenge alerts
+      - key: TELEGRAM_CHAT_ID
+        sync: false          # enter in Render dashboard - Telegram chat that receives the Challenge alerts
       - key: DATABASE_URL
         sync: false          # IMPORTANT: set this to your Neon/Render PostgreSQL URL
                              # Format: postgresql://user:password@host/dbname

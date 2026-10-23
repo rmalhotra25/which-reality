@@ -358,8 +358,25 @@ const SEVERITY_COLORS = {
   opportunity: C.green, info: C.blue, warning: C.yellow, action: C.red,
 }
 
-function AlertsSection({ alerts, unread, busy, onRefresh, onStatus, onUse }) {
+function AlertsSection({ alerts, unread, busy, telegramConfigured, onRefresh, onStatus, onUse, onTest }) {
   const visible = (alerts || []).filter(a => a.status !== 'dismissed')
+  const [testMsg, setTestMsg] = useState(null)
+  const [testing, setTesting] = useState(false)
+
+  async function handleTest() {
+    setTesting(true)
+    try {
+      const r = await onTest()
+      if (r && r.sent) setTestMsg('Test alert sent. Check your Telegram.')
+      else if (r && r.telegram_configured) setTestMsg('Telegram is configured, but the test send failed. Check the bot token and chat ID.')
+      else setTestMsg('Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable phone alerts.')
+    } catch (e) {
+      setTestMsg(`Test alert failed: ${e.message}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
@@ -369,11 +386,19 @@ function AlertsSection({ alerts, unread, busy, onRefresh, onStatus, onUse }) {
           </h2>
           <p style={{ fontSize: '12px', color: C.muted, margin: '4px 0 0' }}>
             Opportunities sized to your risk budget, positions that need review, milestones.
-            Alerts are in-app only in this version, there is no phone push yet.
+            {telegramConfigured
+              ? ' Phone alerts: on. New alerts are also sent to your Telegram.'
+              : ' Phone alerts: off, set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable.'}
           </p>
         </div>
-        <button style={btnStyle} disabled={busy} onClick={onRefresh}>Check for Alerts</button>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button style={btnStyle} disabled={busy} onClick={onRefresh}>Check for Alerts</button>
+          <button style={btnStyle} disabled={testing} onClick={handleTest}>Send Test Alert</button>
+        </div>
       </div>
+      {testMsg && (
+        <div style={{ fontSize: '12px', color: C.sub, marginBottom: '12px' }}>{testMsg}</div>
+      )}
       {visible.length === 0 ? (
         <div style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: '10px', padding: '20px', textAlign: 'center', color: C.muted, fontSize: '13px' }}>
           No alerts. Nothing fits the risk budget right now, and no position needs review.
@@ -607,6 +632,8 @@ export default function ChallengeTab() {
           alerts={state.alerts}
           unread={state.unread_alert_count || 0}
           busy={busy}
+          telegramConfigured={!!state.telegram_configured}
+          onTest={() => api.challenge.testAlert()}
           onRefresh={() => act(async () => setState(await api.challenge.refreshAlerts()))}
           onStatus={(id, status) => act(() => api.challenge.setAlertStatus(id, status))}
           onUse={a => {

@@ -192,10 +192,16 @@ def _trade_dict(t: ChallengeTrade, mark: float | None = None,
 # State computation
 # ---------------------------------------------------------------------------
 
+def _telegram_configured() -> bool:
+    from services import telegram_notifier
+
+    return telegram_notifier.telegram_configured()
+
+
 def compute_state(db: Session) -> dict:
     account = get_account(db)
     if account is None:
-        return {"initialized": False}
+        return {"initialized": False, "telegram_configured": _telegram_configured()}
 
     stages = (
         db.query(ChallengeStage)
@@ -339,6 +345,7 @@ def compute_state(db: Session) -> dict:
         "scoreboard": _scoreboard(trades),
         "alerts": [_alert_dict(a) for a in alerts],
         "unread_alert_count": unread_count,
+        "telegram_configured": _telegram_configured(),
     }
 
 
@@ -674,6 +681,33 @@ def _gen_drawdown(db: Session, account, stage, state, existing, today_str: str) 
     return 0
 
 
+def _notify_new_alerts(db: Session, account_id: int, new_keys: set) -> None:
+    """Best-effort Telegram notification for alerts created in this run.
+
+    Deliberately isolated: a notifier failure can never break alert
+    generation, snapshots, or stage graduation. Keys whose rows were
+    rolled back by a failed section simply match nothing in the query.
+    """
+    if not new_keys:
+        return
+    try:
+        from services import telegram_notifier
+
+        rows = (
+            db.query(ChallengeAlert)
+            .filter(
+                ChallengeAlert.account_id == account_id,
+                ChallengeAlert.dedupe_key.in_(new_keys),
+            )
+            .order_by(ChallengeAlert.id)
+            .all()
+        )
+        if rows:
+            telegram_notifier.notify_new_alerts(rows)
+    except Exception as e:
+        logger.warning("Challenge Telegram notify failed: %s", type(e).__name__)
+
+
 def generate_challenge_alerts(db: Session) -> int:
     """Generate any new challenge alerts. Returns how many were created."""
     account = get_account(db)
@@ -685,6 +719,7 @@ def generate_challenge_alerts(db: Session) -> int:
         .filter(ChallengeAlert.account_id == account.id)
         .all()
     }
+    existing_before = set(existing)
     stage = _current_stage(db, account.id)
     today_str = date.today().isoformat()
     created = 0
@@ -704,6 +739,7 @@ def generate_challenge_alerts(db: Session) -> int:
     db.commit()
     if created:
         logger.info("Challenge alerts: %d new", created)
+        _notify_new_alerts(db, account.id, existing - existing_before)
     return created
 
 

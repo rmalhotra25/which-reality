@@ -133,6 +133,7 @@ export const api = {
       request(`/api/challenge/trades/${id}/close`, { method: 'POST', body }),
     snapshot: () => request('/api/challenge/snapshot', { method: 'POST' }),
     refreshAlerts: () => request('/api/challenge/alerts/refresh', { method: 'POST' }),
+    testAlert: () => request('/api/challenge/alerts/test', { method: 'POST' }),
     setAlertStatus: (id, status) =>
       request(`/api/challenge/alerts/${id}`, { method: 'PATCH', body: { status } }),
   },

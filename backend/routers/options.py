@@ -102,7 +102,6 @@ def get_directional_candidates(db: Session = Depends(get_db)):
     per_trade_cap = _challenge_per_trade_cap(db)
 
     def _serialize(c: DirectionalCandidate) -> dict:
-        prob_profit = compute_prob_profit(c.delta_abs)
         try:
             components = json.loads(c.ranking_components_json or "{}")
         except Exception:
@@ -111,11 +110,25 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             flow_signals = json.loads(c.flow_signals_json or "null")
         except Exception:
             flow_signals = None
+        # New fields live in the ranking-components JSON (no model schema
+        # change). Legacy rows without them fall back to recomputing from the
+        # stored columns, so old batches still serialize.
+        prob_profit = components.get("prob_profit")
+        if prob_profit is None and c.delta_abs is not None:
+            prob_profit = compute_prob_profit(
+                c.current_price, c.strike, c.entry_premium, c.dte or 0,
+                c.atm_iv_pct or 30.0, c.option_type or "CALL",
+            )
+        reward_risk = components.get("reward_risk")
+        if reward_risk is None:
+            reward_risk = compute_reward_risk(c.payoff_at_target, c.payoff_at_stop)
         return {
             "id": c.id,
             "ticker": c.ticker,
             "rank": c.rank,
             "score": c.score,
+            "ev_dollars": components.get("ev_dollars"),
+            "ev_per_dollar_risked": components.get("ev_per_dollar_risked"),
             "prob_score": c.prob_score,
             "rr_score": c.rr_score,
             "iv_context_score": c.iv_context_score,
@@ -132,11 +145,15 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             "underlying_stop": c.underlying_stop,
             "delta_abs": c.delta_abs,
             "prob_profit": prob_profit,
-            "reward_risk": compute_reward_risk(c.payoff_at_target, c.max_loss_per_contract),
+            "prob_touch_target": components.get("prob_touch_target"),
+            "prob_touch_stop": components.get("prob_touch_stop"),
+            "reward_risk": reward_risk,
             "risk_tier": compute_risk_tier(prob_profit),
             "fits_challenge": compute_fits_challenge(c.max_loss_per_contract, per_trade_cap),
             "current_price": c.current_price,
             "atm_iv_pct": c.atm_iv_pct,
+            "contract_iv_pct": components.get("contract_iv_pct"),
+            "iv_source": components.get("iv_source"),
             "expected_move_dollars": c.expected_move_dollars,
             "expected_move_pct": c.expected_move_pct,
             "payoff_at_target": c.payoff_at_target,
@@ -148,6 +165,7 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             "above_ma50": c.above_ma50,
             "above_ma200": c.above_ma200,
             "earnings_in_window": c.earnings_in_window,
+            "earnings_date": components.get("earnings_date"),
             "earnings_days_away": c.earnings_days_away,
             "earnings_unavailable": c.earnings_unavailable,
             "iv_crush_risk": c.iv_crush_risk,
@@ -173,6 +191,19 @@ def get_directional_candidates(db: Session = Depends(get_db)):
         "candidates": active,
         "suppressed": suppressed,
     }
+
+
+@router.get("/directional/grading")
+def get_directional_grading(db: Session = Depends(get_db)):
+    """Grade settled Directional picks by the EV per $ risked they were picked with.
+
+    Buckets settled journal entries by EV per $ risked and reports win rate
+    and average return per bucket. With fewer than 5 settled outcomes it
+    reports "not enough settled outcomes yet" instead of printing stats.
+    """
+    from services.directional_grading import grade_directional_journal
+
+    return grade_directional_journal(db)
 
 
 @router.post("/directional/refresh")

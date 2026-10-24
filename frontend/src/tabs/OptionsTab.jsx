@@ -84,7 +84,7 @@ function AiUnavailableBadge() {
   )
 }
 
-// Risk tier comes from win probability only (backend). Reward-to-risk is
+// Risk tier comes from real P(profit) only (backend). Reward-to-risk is
 // shown beside it as context and never changes the tier.
 const TIER_CONFIG = {
   lower:    { label: 'Lower risk',  bg: '#1a3a1a', border: '#276749', color: '#68d391' },
@@ -122,13 +122,16 @@ function FitsChallengeBadge() {
 // Ranking formula row
 // ---------------------------------------------------------------------------
 const COMPONENT_LABELS = {
-  prob_score:       { label: 'Probability', weight: '×0.30', desc: 'delta-implied PoP' },
-  rr_score:         { label: 'Reward/Risk', weight: '×0.35', desc: '(target_dist/stop_dist)/3' },
-  iv_context_score: { label: 'IV Context',  weight: '×0.20', desc: 'IV percentile (top-quartile penalty)' },
-  trend_score:      { label: 'Trend',       weight: '×0.15', desc: 'MA50 + MA200 alignment' },
+  prob_score:       { label: 'Probability', desc: 'P(profit) x 100 (diagnostic)' },
+  rr_score:         { label: 'Reward/Risk', desc: 'single R/R, scaled (diagnostic)' },
+  iv_context_score: { label: 'IV Context',  desc: 'IV percentile (diagnostic)' },
+  trend_score:      { label: 'Trend',       desc: 'MA50 + MA200 alignment (diagnostic)' },
 }
 
 function ScoreBar({ value, max = 100 }) {
+  if (value == null) {
+    return <span style={{ color: '#718096', fontSize: 12, minWidth: 28, textAlign: 'right' }}>n/a</span>
+  }
   const pct = Math.max(0, Math.min(100, (value / max) * 100))
   const color = pct >= 70 ? '#68d391' : pct >= 40 ? '#f6e05e' : '#fc8181'
   return (
@@ -143,28 +146,41 @@ function ScoreBar({ value, max = 100 }) {
 
 function RankingPanel({ c }) {
   const components = c.ranking_components || {}
-  const inputs = components.inputs || {}
+  const evPerDollar = c.ev_per_dollar_risked ?? c.score
   return (
     <div style={{ background: '#111827', border: '1px solid #2d3748', borderRadius: 8, padding: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <span style={{ color: '#a0aec0', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Expectancy score
+          Expected value (EV per $ risked)
         </span>
-        <span style={{ color: '#e2e8f0', fontWeight: 800, fontSize: 18 }}>{c.score}</span>
+        <span style={{ color: '#e2e8f0', fontWeight: 800, fontSize: 18 }}>
+          {evPerDollar != null ? `${evPerDollar >= 0 ? '+' : ''}${evPerDollar.toFixed(2)}` : 'n/a'}
+        </span>
+      </div>
+      <div style={{ color: '#718096', fontSize: 11, marginBottom: 10 }}>
+        {c.ev_dollars != null
+          ? `EV per contract: ${c.ev_dollars >= 0 ? '+' : ''}$${c.ev_dollars.toFixed(0)}`
+          : 'EV per contract: n/a'}
+        {'  |  spread unknown (no live quotes)'}
       </div>
       {Object.entries(COMPONENT_LABELS).map(([key, meta]) => (
         <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <span style={{ color: '#718096', fontSize: 11, minWidth: 80 }}>{meta.label} {meta.weight}</span>
-          <ScoreBar value={c[key] ?? 50} />
+          <span style={{ color: '#718096', fontSize: 11, minWidth: 80 }}>{meta.label}</span>
+          <ScoreBar value={c[key] ?? components[key]} />
           <span style={{ color: '#4a5568', fontSize: 10, minWidth: 100 }}>{meta.desc}</span>
         </div>
       ))}
       <div style={{ color: '#4a5568', fontSize: 10, marginTop: 8, fontFamily: 'monospace', lineHeight: 1.5 }}>
-        {c.iv_percentile != null
-          ? `IV pct: ${c.iv_percentile}% ${c.iv_history_building ? '(building history)' : ''}`
-          : c.iv_percentile_available === false ? 'IV pct: no data' : ''}
-        {inputs.target_dist != null
-          ? `  |  R/R inputs: target $${inputs.target_dist} / stop $${inputs.stop_dist}`
+        {components.formula || ''}
+      </div>
+      <div style={{ color: '#4a5568', fontSize: 10, marginTop: 4, lineHeight: 1.5 }}>
+        {c.iv_history_building
+          ? 'IV history building: IV score hidden, no placeholder used'
+          : c.iv_percentile != null
+            ? `IV pct: ${c.iv_percentile}%`
+            : c.iv_percentile_available === false ? 'IV pct: no data' : ''}
+        {c.ranking_components?.reward_risk != null
+          ? `  |  R/R: ${c.ranking_components.reward_risk.toFixed(2)}x (payoff at target / |payoff at stop|)`
           : ''}
       </div>
     </div>
@@ -198,11 +214,11 @@ function FourNumbers({ c }) {
       positive: c.payoff_at_target > 0,
     },
     {
-      label: 'Payoff at stop (50% loss)',
+      label: 'Payoff at stop (premium -50% rule)',
       value: c.payoff_at_stop != null
         ? `${c.payoff_at_stop >= 0 ? '+' : ''}$${c.payoff_at_stop.toFixed(0)}`
         : 'n/a',
-      note: 'at unchanged: -$' + (c.max_loss_per_contract?.toFixed(0) ?? '?') + ' (full loss)',
+      note: 'stop = stock level where the option is worth 50% of premium, at least one expected move away; at unchanged: -$' + (c.max_loss_per_contract?.toFixed(0) ?? '?') + ' (full loss)',
       positive: false,
     },
   ]
@@ -297,9 +313,15 @@ function CandidateCard({ c, isYellow }) {
           { label: 'Target', val: c.underlying_target?.toFixed(2) },
           { label: 'Stop', val: c.underlying_stop?.toFixed(2) },
           { label: 'ATM IV', val: c.atm_iv_pct != null ? `${c.atm_iv_pct.toFixed(1)}%` : null },
-          { label: 'Delta', val: c.delta_abs != null ? c.delta_abs.toFixed(2) : null },
-          { label: 'Win prob', val: c.prob_profit != null ? `${Math.round(c.prob_profit * 100)}%` : null },
+          { label: 'Contract IV', val: c.contract_iv_pct != null ? `${c.contract_iv_pct.toFixed(1)}%` : (c.iv_source === 'atm_fallback' && c.atm_iv_pct != null ? 'ATM fallback' : null) },
+          { label: 'Delta (finish past strike)', val: c.delta_abs != null ? c.delta_abs.toFixed(2) : null },
+          { label: 'P(profit)', val: c.prob_profit != null ? `${Math.round(c.prob_profit * 100)}%` : null },
+          { label: 'P(touch target, approx)', val: c.prob_touch_target != null ? `${Math.round(c.prob_touch_target * 100)}%` : null },
+          { label: 'P(touch stop, approx)', val: c.prob_touch_stop != null ? `${Math.round(c.prob_touch_stop * 100)}%` : null },
+          { label: 'EV / contract', val: c.ev_dollars != null ? `${c.ev_dollars >= 0 ? '+' : ''}$${c.ev_dollars.toFixed(0)}` : null },
+          { label: 'EV per $ risked', val: c.ev_per_dollar_risked != null ? `${c.ev_per_dollar_risked >= 0 ? '+' : ''}${c.ev_per_dollar_risked.toFixed(2)}` : null },
           { label: 'Reward/Risk', val: c.reward_risk != null ? `${c.reward_risk.toFixed(1)}x` : null },
+          { label: 'Earnings', val: c.earnings_date ? `${c.earnings_date}${c.earnings_days_away != null ? ` (${c.earnings_days_away}d)` : ''}` : (c.earnings_in_window === false ? 'none in window' : null) },
         ].filter(x => x.val != null).map(({ label, val }) => (
           <div key={label}>
             <span style={{ color: '#4a5568', fontSize: 10, textTransform: 'uppercase' }}>{label} </span>
@@ -385,7 +407,7 @@ function SuppressedSection({ items }) {
                 }}>
                   {c.option_type}
                 </span>
-                <span style={{ color: '#4a5568', fontSize: 12 }}>score: {c.score}</span>
+                <span style={{ color: '#4a5568', fontSize: 12 }}>EV/$: {c.score != null ? c.score.toFixed(2) : 'n/a'}</span>
               </div>
               <span style={{ color: '#4a5568', fontSize: 12, maxWidth: 400 }}>
                 Suppressed: {c.suppressed_reason || 'regime gate'}
@@ -558,7 +580,7 @@ export default function OptionsTab() {
       {candidates.length > 0 && (
         <div>
           <div style={{ color: '#718096', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
-            {visibleCandidates.length} of {candidates.length} ranked candidate{candidates.length !== 1 ? 's' : ''} sorted by expectancy score
+            {visibleCandidates.length} of {candidates.length} ranked candidate{candidates.length !== 1 ? 's' : ''} sorted by EV per $ risked
           </div>
           {/* Risk tier filter (client-side; order within the view is unchanged) */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>

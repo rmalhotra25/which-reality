@@ -685,7 +685,9 @@ class ClaudeAnalyst:
         candidates_text = json.dumps(candidates, indent=2)
         user = (
             f"Write plain-language explanations for these {len(candidates)} directional option candidates. "
-            f"Each has already been scored by code (score = prob*0.30 + R/R*0.35 + IV_context*0.20 + trend*0.15). "
+            f"Each has already been scored by code (EV = P(profit) x payoff at target "
+            f"- (1 - P(profit)) x max loss, ranked by EV per $ risked; R/R is payoff at "
+            f"target / |payoff at stop|, one figure everywhere). "
             f"Return a JSON array with one object per candidate, in the same order:\n"
             f'[{{"ticker":"AAPL","explanation":"2-3 sentence plain explanation."}}, ...]\n\n'
             f"Candidates:\n{candidates_text}"

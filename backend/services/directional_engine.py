@@ -25,8 +25,10 @@ from services.directional_ranker import (
     compute_delta,
     compute_expected_move,
     compute_payoffs,
+    compute_premium_stop,
+    compute_prob_profit,
+    compute_prob_touch,
     compute_ranking_components,
-    RANKING_FORMULA_TEXT,
 )
 from services.quant_scorer import compute_entry_exit_options
 from services.stock_data import StockDataService, DEFAULT_UNIVERSE
@@ -48,17 +50,18 @@ def _get_watchlist_tickers(db: Session) -> list[str]:
         return []
 
 
-def _get_earnings_proximity(ticker: str, dte: int) -> tuple[bool | None, int | None, bool]:
+def _get_earnings_proximity(ticker: str, dte: int) -> tuple[bool | None, int | None, bool, str | None]:
     """
-    Return (earnings_in_window, days_away, earnings_unavailable).
+    Return (earnings_in_window, days_away, earnings_unavailable, earnings_date).
     earnings_in_window: True if earnings fall within the option's DTE window.
+    earnings_date is an ISO date string, or None when unknown.
     """
     try:
         import yfinance as yf
         stock = yf.Ticker(ticker)
         cal = stock.calendar
         if cal is None:
-            return None, None, True
+            return None, None, True, None
 
         # yfinance returns a dict or DataFrame; normalize to dict
         if hasattr(cal, "to_dict"):
@@ -82,16 +85,104 @@ def _get_earnings_proximity(ticker: str, dte: int) -> tuple[bool | None, int | N
                 break
 
         if earnings_dt is None:
-            return None, None, True
+            return None, None, True, None
 
         today = datetime.now(timezone.utc).date()
         days_away = (earnings_dt - today).days
         in_window = 0 <= days_away <= dte
-        return in_window, days_away, False
+        return in_window, days_away, False, earnings_dt.isoformat()
 
     except Exception as e:
         logger.debug("Earnings fetch failed for %s: %s", ticker, e)
-        return None, None, True
+        return None, None, True, None
+
+
+def earnings_suppression_reason(earnings_in_window: bool | None,
+                                earnings_date: str | None,
+                                earnings_days_away: int | None) -> str | None:
+    """Suppression reason when earnings fall inside the expiry window, else None.
+
+    Pure function so the earnings exclusion is unit-testable without a DB or
+    a live earnings lookup. Same pattern as the wheel scanner's
+    earnings_in_window exclusion.
+    """
+    if earnings_in_window is not True:
+        return None
+    when = f" on {earnings_date}" if earnings_date else ""
+    days = f" ({earnings_days_away} days away)" if earnings_days_away is not None else ""
+    return (
+        f"earnings inside the expiry window{when}{days} - "
+        "IV crush risk; excluded from the ranked list"
+    )
+
+
+def _get_contract_iv(ticker: str, strike: float, option_type: str, dte_target: int,
+                     price: float) -> tuple[float | None, str | None]:
+    """
+    Implied volatility of the specific contract nearest the chosen strike at
+    the expiry nearest the DTE target. Returns (iv_pct, "contract"), or
+    (None, None) when no contract IV can be found, in which case the caller
+    falls back to ATM IV and flags it. Polygon snapshot first (per-contract
+    greeks), yfinance chain second (impliedVolatility column).
+    """
+    target_date = datetime.now(timezone.utc).date() + timedelta(days=dte_target)
+    contract_type = option_type.lower()
+
+    # Polygon snapshot: window the expiry range around the target so the
+    # 250-contract page is not filled with sub-window weeklies.
+    try:
+        from services.polygon_client import get_options_chain_snapshot
+        snaps = get_options_chain_snapshot(
+            ticker,
+            dte_min=max(0, dte_target - 7),
+            dte_max=dte_target + 14,
+            contract_type=contract_type,
+            near_price=price,
+            strike_pct_range=0.20,
+        )
+        best = None
+        best_key = None
+        for s in snaps or []:
+            details = getattr(s, "details", None)
+            iv = getattr(s, "implied_volatility", None)
+            if not details or iv is None:
+                continue
+            try:
+                exp = details.expiration_date
+                exp_date = exp.date() if hasattr(exp, "date") else datetime.strptime(str(exp)[:10], "%Y-%m-%d").date()
+                s_strike = float(details.strike_price)
+                s_iv = float(iv) * 100
+            except Exception:
+                continue
+            key = (abs((exp_date - target_date).days), abs(s_strike - strike))
+            if best_key is None or key < best_key:
+                best_key = key
+                best = s_iv
+        if best:
+            return round(best, 1), "contract"
+    except Exception as e:
+        logger.debug("Contract IV Polygon lookup failed for %s: %s", ticker, e)
+
+    # yfinance fallback: expiry nearest the target, then strike nearest the target.
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        expiries = t.options
+        if expiries:
+            def _exp_date(s: str):
+                return datetime.strptime(s[:10], "%Y-%m-%d").date()
+            expiry = min(expiries, key=lambda s: abs((_exp_date(s) - target_date).days))
+            chain = t.option_chain(expiry)
+            rows = chain.calls if contract_type == "call" else chain.puts
+            if rows is not None and not rows.empty and "impliedVolatility" in rows:
+                row = rows.iloc[(rows["strike"] - strike).abs().argsort()[:1]]
+                iv = float(row["impliedVolatility"].iloc[0]) * 100
+                if iv > 0:
+                    return round(iv, 1), "contract"
+    except Exception as e:
+        logger.debug("Contract IV yfinance lookup failed for %s: %s", ticker, e)
+
+    return None, None
 
 
 class DirectionalEngine:
@@ -165,6 +256,19 @@ class DirectionalEngine:
                     if c.max_loss_per_contract is None or c.entry_premium is None:
                         c.is_suppressed = True
                         c.suppressed_reason = "max loss cannot be stated - entry premium unknown"
+                # Earnings inside the expiry window: excluded from the ranked
+                # list (same pattern as the wheel scanner's earnings handling).
+                for c in candidates:
+                    if c.is_suppressed:
+                        continue
+                    reason = earnings_suppression_reason(
+                        c.earnings_in_window,
+                        c.ranking_components.get("earnings_date"),
+                        c.earnings_days_away,
+                    )
+                    if reason:
+                        c.is_suppressed = True
+                        c.suppressed_reason = reason
 
             # 6. Rank non-suppressed by score
             active = [c for c in candidates if not c.is_suppressed]
@@ -241,9 +345,20 @@ class DirectionalEngine:
         underlying_stop = ee.get("underlying_stop")
 
         atm_iv_pct = tech.get("atm_iv") or tech.get("iv_rank_approx") or 30.0
-        annual_iv = float(atm_iv_pct) / 100.0
 
-        delta_abs = compute_delta(price, strike, DTE_TARGET, atm_iv_pct, option_type)
+        # Contract IV first: the chosen contract's own implied volatility drives
+        # delta, expected move, and every probability. Fall back to ATM IV only
+        # when the contract IV is missing, and flag that fallback on the card.
+        contract_iv_pct, iv_source = _get_contract_iv(
+            ticker, strike, option_type, DTE_TARGET, price
+        )
+        if contract_iv_pct is None:
+            iv_used = float(atm_iv_pct)
+            iv_source = "atm_fallback"
+        else:
+            iv_used = float(contract_iv_pct)
+
+        delta_abs = compute_delta(price, strike, DTE_TARGET, iv_used, option_type)
 
         # IV percentile from Phase 2A store
         from services.iv_snapshot_service import get_iv_percentile
@@ -257,38 +372,74 @@ class DirectionalEngine:
         above_ma50 = ma.get("above_ma50")
         above_ma200 = ma.get("above_ma200")
 
-        # Ranking components
+        # Expected move (contract IV, correct 21-day horizon)
+        exp_dollars, exp_pct = compute_expected_move(price, iv_used, DTE_TARGET)
+
+        # Premium-based stop: the stock level where the option is worth 50% of
+        # the entry premium, at least one expected move away from entry. This
+        # replaces the old fib/ATR stock stop.
+        premium_stop = compute_premium_stop(
+            price, strike, entry_premium, DTE_TARGET, iv_used, option_type, exp_dollars
+        )
+        if premium_stop is not None:
+            underlying_stop = premium_stop
+
+        # Payoffs (stop loss is -50% of premium by the stop definition)
+        payoff_target, payoff_stop, payoff_unchanged = compute_payoffs(
+            option_type, strike, entry_premium, underlying_target, underlying_stop
+        )
+
+        # Real probabilities from the contract IV
+        prob_profit = compute_prob_profit(
+            price, strike, entry_premium, DTE_TARGET, iv_used, option_type
+        )
+        prob_touch_target = (
+            compute_prob_touch(
+                price, underlying_target, DTE_TARGET, iv_used,
+                is_upper=(option_type == "CALL"),
+            )
+            if underlying_target else None
+        )
+        prob_touch_stop = (
+            compute_prob_touch(
+                price, underlying_stop, DTE_TARGET, iv_used,
+                is_upper=(option_type == "PUT"),
+            )
+            if underlying_stop else None
+        )
+
+        # Ranking: real expectancy in dollars, ranked by EV per $ risked.
         components = compute_ranking_components(
-            delta_abs=delta_abs,
-            underlying_entry=underlying_entry,
-            underlying_target=underlying_target,
-            underlying_stop=underlying_stop,
+            prob_profit=prob_profit,
+            payoff_at_target=payoff_target,
+            payoff_at_stop=payoff_stop,
+            max_loss_per_contract=round(entry_premium * 100, 2),
             iv_percentile=iv_percentile,
             iv_available=iv_available,
+            iv_history_building=iv_history_building,
             above_ma50=above_ma50,
             above_ma200=above_ma200,
             option_type=option_type,
         )
 
-        # Expected move
-        exp_dollars, exp_pct = compute_expected_move(price, atm_iv_pct, DTE_TARGET)
-
-        # Payoffs
-        payoff_target, payoff_stop, payoff_unchanged = compute_payoffs(
-            option_type, strike, entry_premium, underlying_target, underlying_stop
-        )
-
         # Earnings proximity
-        earnings_in_window, earnings_days_away, earnings_unavailable = (
+        earnings_in_window, earnings_days_away, earnings_unavailable, earnings_date = (
             _get_earnings_proximity(ticker, DTE_TARGET)
         )
 
-        # IV crush: earnings in window AND IV in top third (>= 67th percentile)
-        iv_crush_risk = (
-            earnings_in_window is True
-            and iv_percentile is not None
-            and iv_percentile >= 67
-        )
+        # IV crush: earnings inside the window is enough on its own. The old
+        # rule also required IV in the top third, which hid the risk whenever
+        # the IV percentile was still the placeholder 50.
+        iv_crush_risk = earnings_in_window is True
+
+        # Extra fields carried in the ranking-components JSON (no model schema
+        # change: DirectionalCandidate has no columns for these yet).
+        components["contract_iv_pct"] = contract_iv_pct
+        components["iv_source"] = iv_source
+        components["earnings_date"] = earnings_date
+        components["prob_touch_target"] = prob_touch_target
+        components["prob_touch_stop"] = prob_touch_stop
+        components["delta_abs"] = round(delta_abs, 3)
 
         expiry_date = (
             datetime.now(timezone.utc).date() + timedelta(days=DTE_TARGET)
@@ -337,6 +488,7 @@ class DirectionalEngine:
 
     def _candidate_to_dict(self, c: DirectionalCandidate) -> dict:
         """Minimal dict for the AI explainer prompt."""
+        components = c.ranking_components
         return {
             "ticker": c.ticker,
             "rank": c.rank,
@@ -349,16 +501,25 @@ class DirectionalEngine:
             "underlying_target": c.underlying_target,
             "underlying_stop": c.underlying_stop,
             "score": c.score,
+            "ev_dollars": components.get("ev_dollars"),
+            "ev_per_dollar_risked": components.get("ev_per_dollar_risked"),
+            "prob_profit": components.get("prob_profit"),
+            "prob_touch_target": components.get("prob_touch_target"),
+            "prob_touch_stop": components.get("prob_touch_stop"),
+            "reward_risk": components.get("reward_risk"),
             "prob_score": c.prob_score,
             "rr_score": c.rr_score,
             "iv_context_score": c.iv_context_score,
             "trend_score": c.trend_score,
             "delta_abs": c.delta_abs,
+            "contract_iv_pct": components.get("contract_iv_pct"),
+            "iv_source": components.get("iv_source"),
             "iv_percentile": c.iv_percentile,
             "iv_percentile_available": c.iv_percentile_available,
             "iv_history_building": c.iv_history_building,
             "iv_crush_risk": c.iv_crush_risk,
             "earnings_in_window": c.earnings_in_window,
+            "earnings_date": components.get("earnings_date"),
             "earnings_days_away": c.earnings_days_away,
             "expected_move_dollars": c.expected_move_dollars,
             "expected_move_pct": c.expected_move_pct,
@@ -388,6 +549,16 @@ class DirectionalEngine:
             "score": c.score,
             "rank": c.rank,
             "ranking_components": components,
+            "prob_profit": components.get("prob_profit"),
+            "prob_touch_target": components.get("prob_touch_target"),
+            "prob_touch_stop": components.get("prob_touch_stop"),
+            "ev_dollars": components.get("ev_dollars"),
+            "ev_per_dollar_risked": components.get("ev_per_dollar_risked"),
+            "reward_risk": components.get("reward_risk"),
+            "contract_iv_pct": components.get("contract_iv_pct"),
+            "iv_source": components.get("iv_source"),
+            "earnings_date": components.get("earnings_date"),
+            "earnings_days_away": c.earnings_days_away,
             "expected_move_dollars": c.expected_move_dollars,
             "expected_move_pct": c.expected_move_pct,
             "payoff_at_target": c.payoff_at_target,

@@ -66,12 +66,12 @@ def refresh_options(db: Session = Depends(get_db)):
 # Phase 3A: directional candidates (cache-only GET; POST to refresh)
 # ---------------------------------------------------------------------------
 
-def _challenge_per_trade_cap(db: Session) -> float | None:
-    """Challenge per-trade risk cap in dollars, or None when unavailable.
+def _challenge_live_state(db: Session) -> dict | None:
+    """Live Challenge state for the fits check, or None when unavailable.
 
     Failure-isolated: an uninitialized Challenge account, a missing state
-    field, or any challenge-side error yields None, which makes every
-    candidate's fits_challenge False without breaking this response.
+    field, or any challenge-side error yields None, and the caller falls
+    back to the per-trade-only check without breaking this response.
     """
     try:
         from services import challenge_service
@@ -79,11 +79,46 @@ def _challenge_per_trade_cap(db: Session) -> float | None:
         state = challenge_service.compute_state(db)
         if not state.get("initialized"):
             return None
-        cap = (state.get("risk_caps") or {}).get("per_trade_cap")
-        return float(cap) if cap is not None else None
+        caps = state.get("risk_caps") or {}
+        return {
+            "per_trade_cap": caps.get("per_trade_cap"),
+            "open_risk_cap": caps.get("open_risk_cap"),
+            "open_risk": state.get("open_risk"),
+            "cash": state.get("cash"),
+            "paused": bool(caps.get("paused")),
+        }
     except Exception:
-        logger.warning("challenge cap lookup failed; fits_challenge disabled", exc_info=True)
+        logger.warning("challenge live-state lookup failed; fits_challenge falls back to per-trade cap", exc_info=True)
         return None
+
+
+def fits_challenge_live(max_loss_per_contract: float | None, live_state: dict | None) -> tuple[bool, str | None]:
+    """Per-trade fit plus live Challenge state (review M28).
+
+    A candidate fits only when the max loss is within the per-trade cap,
+    the post-trade open risk stays within the open-risk cap, the cash
+    covers the max loss, and the account is not paused. When no live state
+    is available, fall back to the per-trade-only check so the tab keeps
+    working.
+    """
+    if max_loss_per_contract is None:
+        return False, "max loss unknown"
+    if live_state is None:
+        fits = compute_fits_challenge(max_loss_per_contract, None)
+        return fits, None if fits else "Challenge account not initialized"
+    if not compute_fits_challenge(max_loss_per_contract, live_state.get("per_trade_cap")):
+        return False, "max loss above the per-trade cap"
+    open_risk_cap = live_state.get("open_risk_cap")
+    open_risk = live_state.get("open_risk")
+    if open_risk_cap is not None and open_risk is not None:
+        if open_risk + max_loss_per_contract > open_risk_cap:
+            return False, "open risk would exceed the 20% cap"
+    cash = live_state.get("cash")
+    if cash is not None and max_loss_per_contract > cash:
+        return False, "max loss exceeds available cash"
+    if live_state.get("paused"):
+        return False, "Challenge account is paused"
+    return True, None
 
 
 @router.get("/directional")
@@ -99,7 +134,7 @@ def get_directional_candidates(db: Session = Depends(get_db)):
     run_at = rows[0].run_at.isoformat() if rows[0].run_at else None
     regime = rows[0].regime_verdict if rows else None
     data_complete = rows[0].regime_data_complete if rows else None
-    per_trade_cap = _challenge_per_trade_cap(db)
+    live_state = _challenge_live_state(db)
 
     def _serialize(c: DirectionalCandidate) -> dict:
         try:
@@ -122,6 +157,7 @@ def get_directional_candidates(db: Session = Depends(get_db)):
         reward_risk = components.get("reward_risk")
         if reward_risk is None:
             reward_risk = compute_reward_risk(c.payoff_at_target, c.payoff_at_stop)
+        _fit, _fit_reason = fits_challenge_live(c.max_loss_per_contract, live_state)
         return {
             "id": c.id,
             "ticker": c.ticker,
@@ -149,7 +185,8 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             "prob_touch_stop": components.get("prob_touch_stop"),
             "reward_risk": reward_risk,
             "risk_tier": compute_risk_tier(prob_profit),
-            "fits_challenge": compute_fits_challenge(c.max_loss_per_contract, per_trade_cap),
+            "fits_challenge": _fit,
+            "fits_challenge_reason": _fit_reason,
             "current_price": c.current_price,
             "atm_iv_pct": c.atm_iv_pct,
             "contract_iv_pct": components.get("contract_iv_pct"),

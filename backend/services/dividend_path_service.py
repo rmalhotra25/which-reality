@@ -1,6 +1,10 @@
 """
-Dividend Income Path — builds a safety-first dividend portfolio and projects
+Dividend Income Path - builds a safety-first dividend portfolio and projects
 the DRIP + DCA compound path to $1,000/month passive income.
+
+Projection is capped at 10 years, uses total-return-consistent math (price and
+dividends grow at the same rate, so yield stays flat), lets negative dividend
+growth through, and returns a bear case plus a labeled assumptions block.
 
 Portfolio Universe: curated Dividend Aristocrats, quality dividend ETFs, REITs
 Scoring (0-100):
@@ -8,7 +12,7 @@ Scoring (0-100):
   Dividend Growth : 25 pts  (5Y CAGR of distributions)
   Price Stability : 20 pts  (low drawdown proxy from 52W range)
   Income Coverage : 15 pts  (years of consistent payments)
-  Diversification : 10 pts  (category bonus — ensures mix of ETF/stock/REIT)
+  Diversification : 10 pts  (category bonus - ensures mix of ETF/stock/REIT)
 
 Cache TTL: 6 hours
 """
@@ -58,7 +62,7 @@ _UNIVERSE = {
     "NOBL": {"category": "etf", "name": "ProShares S&P 500 Div Aristocrats"},
     "SPYD": {"category": "etf", "name": "SPDR Portfolio S&P 500 High Div"},
     "FDVV": {"category": "etf", "name": "Fidelity High Dividend ETF"},
-    # REITs — income generators
+    # REITs - income generators
     "O":    {"category": "reit", "name": "Realty Income"},
     "NNN":  {"category": "reit", "name": "National Retail Properties"},
     "STAG": {"category": "reit", "name": "STAG Industrial"},
@@ -101,16 +105,43 @@ def _get_price_data(ticker: str) -> dict:
         return {}
 
 
+def _compute_ttm_div_growth(payments: list[tuple[date, float]], as_of: date) -> float:
+    """Annualized dividend growth from trailing-12-month totals.
+
+    payments is a list of (ex_date, amount) pairs. Growth compares the sum of
+    payments in the trailing 12 months against the sum in the prior 12 months,
+    annualized only over the actual elapsed months between the midpoints of
+    the two windows. Because both windows are fixed 12-month sums, a quarterly
+    payer and a monthly payer with the same true growth get the same number.
+    Returns 0.0 when either window is empty. Clamped to -50%..+50%.
+    """
+    ttm = [(d, a) for d, a in payments if 0 <= (as_of - d).days <= 365]
+    prior = [(d, a) for d, a in payments if 365 < (as_of - d).days <= 730]
+    ttm_sum = sum(a for _, a in ttm)
+    prior_sum = sum(a for _, a in prior)
+    if not ttm or not prior or ttm_sum <= 0 or prior_sum <= 0:
+        return 0.0
+    mid_ttm = date.fromordinal(sum(d.toordinal() for d, _ in ttm) // len(ttm))
+    mid_prior = date.fromordinal(sum(d.toordinal() for d, _ in prior) // len(prior))
+    elapsed_months = (mid_ttm - mid_prior).days / 30.4375
+    if elapsed_months <= 0:
+        return 0.0
+    growth = (ttm_sum / prior_sum) ** (12.0 / elapsed_months) - 1
+    return round(max(-0.50, min(growth, 0.50)) * 100, 1)
+
+
 def _get_dividend_data(ticker: str) -> dict:
-    """Dividend history from Polygon → annual yield, growth, streak."""
+    """Dividend history from Polygon: trailing-12-month yield, growth, streak."""
     try:
         from services.polygon_client import _client
         c = _client()
-        ex_from = (date.today() - timedelta(days=400)).isoformat()
+        # 800 days so both the trailing-12-month window and the prior 12 months
+        # are covered for the growth comparison.
+        ex_from = (date.today() - timedelta(days=800)).isoformat()
         items = list(c.list_dividends(
             ticker=ticker,
             ex_dividend_date_gte=ex_from,
-            limit=50,
+            limit=100,
             order="desc",
         ))
         if not items:
@@ -125,21 +156,32 @@ def _get_dividend_data(ticker: str) -> dict:
             for d in items
         ]
 
+        today = date.today()
+        dated: list[tuple[date, float]] = []
+        for d in divs:
+            try:
+                parsed = date.fromisoformat(d["ex_date"]) if d["ex_date"] else None
+            except ValueError:
+                parsed = None
+            if parsed is not None and d["amount"] > 0:
+                dated.append((parsed, d["amount"]))
+
         recent = divs[0]
         frequency = recent["frequency"] or 4
-        annual_div = recent["amount"] * frequency
 
-        # Streak: consecutive non-zero payments
-        streak = sum(1 for d in divs if d["amount"] > 0)
-
-        # Div growth: compare recent annual rate vs ~12 payments ago
-        older = divs[min(11, len(divs) - 1)]
-        older_annual = older["amount"] * (older["frequency"] or 4)
-        if older_annual > 0 and annual_div > 0:
-            div_growth_pct = ((annual_div / older_annual) ** (12 / max(streak, 1)) - 1) * 100
-            div_growth_pct = round(max(-50, min(div_growth_pct, 50)), 1)
+        # Annual dividend is the trailing-12-month sum, not one payment times
+        # frequency, so monthly and quarterly payers are measured the same way.
+        ttm_sum = sum(a for d, a in dated if 0 <= (today - d).days <= 365)
+        if ttm_sum > 0:
+            annual_div = ttm_sum
         else:
-            div_growth_pct = 0.0
+            annual_div = recent["amount"] * frequency
+
+        # Streak: non-zero payments in the last 400 days (unchanged window,
+        # so the income-coverage scoring bands keep their meaning).
+        streak = sum(1 for d, a in dated if 0 <= (today - d).days <= 400)
+
+        div_growth_pct = _compute_ttm_div_growth(dated, today)
 
         return {
             "recent_div": recent["amount"],
@@ -165,7 +207,7 @@ def _score_ticker(ticker: str, meta: dict, snap: dict, div: dict) -> dict | None
     score = 0
     breakdown = {}
 
-    # 1. Yield Safety (30 pts) — too low = not enough income, too high = danger
+    # 1. Yield Safety (30 pts) - too low = not enough income, too high = danger
     if 3.5 <= annual_yield_pct < 6.0:
         ys = 30   # Sweet spot
     elif 2.5 <= annual_yield_pct < 3.5:
@@ -173,7 +215,7 @@ def _score_ticker(ticker: str, meta: dict, snap: dict, div: dict) -> dict | None
     elif 6.0 <= annual_yield_pct < 9.0:
         ys = 18   # High yield, monitor for safety
     elif annual_yield_pct >= 9.0:
-        ys = 8    # Very high — probable risk
+        ys = 8    # Very high - probable risk
     elif annual_yield_pct >= 1.5:
         ys = 10   # Low but growing
     else:
@@ -192,11 +234,11 @@ def _score_ticker(ticker: str, meta: dict, snap: dict, div: dict) -> dict | None
     elif dg >= 0:
         dgp = 8
     else:
-        dgp = 2   # Dividend cut — penalize
+        dgp = 2   # Dividend cut - penalize
     score += dgp
     breakdown["div_growth"] = dgp
 
-    # 3. Price Stability (20 pts) — how far from 52W high (drawdown proxy)
+    # 3. Price Stability (20 pts) - how far from 52W high (drawdown proxy)
     high_52w = snap.get("high_52w", price)
     if high_52w > 0:
         drawdown_pct = (high_52w - price) / high_52w * 100
@@ -215,7 +257,7 @@ def _score_ticker(ticker: str, meta: dict, snap: dict, div: dict) -> dict | None
     score += ps
     breakdown["price_stability"] = ps
 
-    # 4. Income Coverage (15 pts) — number of consecutive dividend payments
+    # 4. Income Coverage (15 pts) - number of consecutive dividend payments
     streak = div.get("streak_payments", 0)
     if streak >= 20:
         ic = 15
@@ -321,59 +363,115 @@ def _run_projection(
     weekly_dca: float,
     blended_yield: float,
     avg_div_growth_pct: float,
-    months: int = 360,
+    months: int = 120,
 ) -> tuple[list[dict], dict | None]:
-    """Core DRIP + DCA compound projection. blended_yield is a decimal (e.g. 0.04)."""
-    annual_div_growth = max(0.02, min(avg_div_growth_pct / 100, 0.08))
-    annual_total_return = 0.05 + blended_yield  # 5% price appreciation + yield
-    monthly_total_return = annual_total_return / 12
-    monthly_div_growth = (1 + annual_div_growth) ** (1 / 12) - 1
+    """DRIP + DCA projection, capped at 10 years (120 months).
+
+    Total-return-consistent share model: price and the dividend per share both
+    grow at the dividend-growth rate, so the yield stays flat and the total
+    return is dividend growth plus yield. Dividends are reinvested (DRIP) and
+    the weekly DCA buys shares at the current price. Negative dividend growth
+    is allowed through: no floor, so a shrinking dividend projects a shrinking
+    income. Growth is clamped to -50%..+8% a year to bound absurd inputs.
+    blended_yield is a decimal (e.g. 0.04). Price is normalized to $1, so the
+    starting share count equals the starting capital.
+    """
+    months = max(1, min(int(months), 120))
+    annual_div_growth = max(-0.50, min(avg_div_growth_pct / 100, 0.08))
+    monthly_growth = (1 + annual_div_growth) ** (1 / 12) - 1
     monthly_contribution = weekly_dca * 52 / 12
 
-    portfolio_value = starting_capital
-    current_yield = blended_yield
+    price = 1.0
+    dps = blended_yield  # annual dividend per share on a $1 starting price
+    shares = float(starting_capital)
     goal_monthly_income = 1000.0
     snapshots = []
     reached_goal_at = None
 
     for month in range(1, months + 1):
-        portfolio_value = portfolio_value * (1 + monthly_total_return) + monthly_contribution
-        current_yield = current_yield * (1 + monthly_div_growth)
-        monthly_income_after = portfolio_value * current_yield / 12
+        price = price * (1 + monthly_growth)
+        dps = dps * (1 + monthly_growth)
+        shares += monthly_contribution / price  # DCA buys at the current price
+        monthly_income = shares * dps / 12  # dividends on shares held
+        shares += monthly_income / price  # DRIP reinvests the dividend
+        portfolio_value = shares * price
+        total_contributed = starting_capital + monthly_contribution * month
 
         year = (month - 1) // 12 + 1
         mo = (month - 1) % 12 + 1
 
-        if month % 6 == 0 or month == 1 or monthly_income_after >= goal_monthly_income:
+        if month % 6 == 0 or month == 1 or monthly_income >= goal_monthly_income:
             snapshots.append({
                 "month": month,
                 "year": year,
                 "month_of_year": mo,
                 "portfolio_value": round(portfolio_value, 2),
-                "monthly_income": round(monthly_income_after, 2),
-                "annual_income": round(monthly_income_after * 12, 2),
-                "total_contributed": round(starting_capital + monthly_contribution * month, 2),
-                "growth": round(portfolio_value - (starting_capital + monthly_contribution * month), 2),
-                "yield_on_cost": round(current_yield * 100, 3),
+                "monthly_income": round(monthly_income, 2),
+                "annual_income": round(monthly_income * 12, 2),
+                "total_contributed": round(total_contributed, 2),
+                "growth": round(portfolio_value - total_contributed, 2),
+                "yield_on_cost": round(monthly_income * 12 / total_contributed * 100, 3) if total_contributed > 0 else 0.0,
             })
 
-        if monthly_income_after >= goal_monthly_income and reached_goal_at is None:
+        if monthly_income >= goal_monthly_income and reached_goal_at is None:
             reached_goal_at = {"month": month, "year": year, "month_label": f"Month {month}"}
 
     return snapshots, reached_goal_at
+
+
+def _project_with_scenarios(
+    starting_capital: float,
+    weekly_dca: float,
+    blended_yield: float,
+    avg_div_growth_pct: float,
+    months: int = 120,
+) -> dict:
+    """Base and bear-case projections with the assumptions labeled.
+
+    Bear case: dividend and price growth 3 points lower than base. Both cases
+    cap at 10 years and let negative growth through. The assumptions block is
+    part of the output so the numbers are never shown without their limits:
+    no bear market, no dividend cut beyond the growth rate shown, no fees,
+    no taxes.
+    """
+    months = max(1, min(int(months), 120))
+    base_snaps, base_goal = _run_projection(
+        starting_capital, weekly_dca, blended_yield, avg_div_growth_pct, months
+    )
+    bear_growth_pct = avg_div_growth_pct - 3.0
+    bear_snaps, bear_goal = _run_projection(
+        starting_capital, weekly_dca, blended_yield, bear_growth_pct, months
+    )
+    return {
+        "projection": base_snaps,
+        "reached_goal_at": base_goal,
+        "projection_bear": bear_snaps,
+        "reached_goal_at_bear": bear_goal,
+        "projection_assumptions": {
+            "horizon_months": months,
+            "horizon_years": round(months / 12, 1),
+            "starting_yield_pct": round(blended_yield * 100, 2),
+            "base_dividend_growth_pct": round(avg_div_growth_pct, 1),
+            "bear_dividend_growth_pct": round(bear_growth_pct, 1),
+            "monthly_contribution": round(weekly_dca * 52 / 12, 2),
+            "price_growth_note": "Price grows at the dividend-growth rate, so yield stays flat; total return is dividend growth plus yield.",
+            "bear_case_note": "Bear case is dividend and price growth 3 points lower than base.",
+            "excluded_note": "Assumes no bear market, no dividend cut beyond the growth rate shown, no fees, no taxes.",
+        },
+    }
 
 
 def _build_projection(
     portfolio: list[dict],
     starting_capital: float,
     weekly_dca: float,
-    months: int = 360,
-) -> tuple[list[dict], dict | None]:
-    """Build projection from a portfolio list weighted by allocation_pct."""
+    months: int = 120,
+) -> dict:
+    """Build base and bear-case projections from a portfolio list weighted by allocation_pct."""
     total_alloc = sum(s["allocation_pct"] for s in portfolio) or 100
     blended_yield = sum(s["annual_yield_pct"] * s["allocation_pct"] / total_alloc for s in portfolio) / 100
     avg_div_growth = sum(s.get("div_growth_pct", 0) * s["allocation_pct"] / total_alloc for s in portfolio)
-    return _run_projection(starting_capital, weekly_dca, blended_yield, avg_div_growth, months)
+    return _project_with_scenarios(starting_capital, weekly_dca, blended_yield, avg_div_growth, months)
 
 
 def run_custom_portfolio(
@@ -443,7 +541,7 @@ def run_custom_portfolio(
         for r in results
     )
 
-    snapshots, reached_goal_at = _run_projection(starting_capital, weekly_dca, blended_yield, avg_div_growth)
+    scenarios = _project_with_scenarios(starting_capital, weekly_dca, blended_yield, avg_div_growth)
 
     return {
         "scanned_at": datetime.now(tz=timezone.utc).isoformat(),
@@ -457,8 +555,11 @@ def run_custom_portfolio(
         "blended_yield_pct": round(blended_yield * 100, 2),
         "starting_monthly_income": round(starting_capital * blended_yield / 12, 2),
         "goal_monthly_income": 1000.0,
-        "reached_goal_at": reached_goal_at,
-        "projection": snapshots,
+        "reached_goal_at": scenarios["reached_goal_at"],
+        "projection": scenarios["projection"],
+        "reached_goal_at_bear": scenarios["reached_goal_at_bear"],
+        "projection_bear": scenarios["projection_bear"],
+        "projection_assumptions": scenarios["projection_assumptions"],
     }
 
 
@@ -545,12 +646,12 @@ def build_dividend_path(
         time.sleep(0.2)
 
     if not scored_all:
-        raise RuntimeError("No dividend data available — check API keys")
+        raise RuntimeError("No dividend data available - check API keys")
 
     scored_all.sort(key=lambda x: x["score"], reverse=True)
     portfolio = _select_portfolio(scored_all)
 
-    snapshots, reached_goal_at = _build_projection(portfolio, starting_capital, weekly_dca)
+    scenarios = _build_projection(portfolio, starting_capital, weekly_dca)
 
     # Blended stats
     total_alloc = sum(s["allocation_pct"] for s in portfolio) or 100
@@ -571,8 +672,11 @@ def build_dividend_path(
         "blended_yield_pct": round(blended_yield, 2),
         "starting_monthly_income": round(starting_monthly_income, 2),
         "goal_monthly_income": 1000.0,
-        "reached_goal_at": reached_goal_at,
-        "projection": snapshots,
+        "reached_goal_at": scenarios["reached_goal_at"],
+        "projection": scenarios["projection"],
+        "reached_goal_at_bear": scenarios["reached_goal_at_bear"],
+        "projection_bear": scenarios["projection_bear"],
+        "projection_assumptions": scenarios["projection_assumptions"],
         "top_candidates": scored_all[:15],
     }
     _cache_write(output)

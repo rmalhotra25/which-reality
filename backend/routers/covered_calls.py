@@ -14,6 +14,113 @@ class CoveredCallRequest(BaseModel):
     cost_basis: float | None = None
 
 
+def _evaluate_covered_call_tiers(call_tiers: dict, current_price: float, ticker: str) -> dict:
+    """Deterministic tier checks (review M39, M43) for the covered-call router.
+
+    Runs the 0.3%-per-week premium test and the earnings/ex-div calendar
+    check from services.covered_call_service over each named tier. A tier
+    whose threshold cannot be verified (no live bid/ask on this data plan)
+    is flagged threshold_unverified, not abstained: an unverifiable
+    threshold must not disable the analyzer, but it must be labeled. A tier
+    that fails a verifiable threshold, or is calendar-blocked, abstains.
+    """
+    from services.covered_call_service import evaluate_tier, get_earnings_and_exdiv_dates
+
+    try:
+        dates = get_earnings_and_exdiv_dates(ticker)
+    except Exception:
+        dates = {"earnings_date": None, "next_ex_div_date": None}
+    earnings_date = dates.get("earnings_date")
+    next_ex_div_date = dates.get("next_ex_div_date")
+
+    evaluations = {}
+    blocked_all = True
+    block_reasons: list[str] = []
+    for name in ("aggressive", "balanced", "conservative"):
+        tier = (call_tiers or {}).get(name)
+        if tier is None:
+            evaluations[name] = {
+                "strike": None,
+                "abstain": True,
+                "threshold_unverified": False,
+                "abstain_reasons": ["No suitable option found for this tier."],
+                "notes": [],
+                "warnings": [],
+                "threshold": None,
+                "calendar": None,
+            }
+            continue
+        ev = evaluate_tier(tier, current_price, earnings_date, next_ex_div_date)
+        threshold = ev.get("threshold") or {}
+        calendar = ev.get("calendar") or {}
+        threshold_unverified = bool(threshold.get("spread_unknown"))
+        if threshold_unverified:
+            # The threshold reason explains why it cannot be verified; it is
+            # a note, not a block reason.
+            notes = [threshold["reason"]] if threshold.get("reason") else []
+            abstain = bool(calendar.get("blocked"))
+            reasons = list(calendar.get("reasons") or [])
+        else:
+            notes = []
+            abstain = bool(ev.get("abstain"))
+            reasons = list(ev.get("abstain_reasons") or [])
+        evaluations[name] = {
+            "strike": tier.get("strike"),
+            "abstain": abstain,
+            "threshold_unverified": threshold_unverified,
+            "abstain_reasons": reasons,
+            "notes": notes,
+            "warnings": ev.get("warnings") or [],
+            "threshold": threshold,
+            "calendar": calendar,
+        }
+        if not abstain:
+            blocked_all = False
+        else:
+            block_reasons.extend(reasons)
+    return {
+        "evaluations": evaluations,
+        "blocked_all": blocked_all,
+        "block_reasons": block_reasons,
+        "earnings_date": earnings_date.isoformat() if earnings_date else None,
+        "next_ex_div_date": next_ex_div_date.isoformat() if next_ex_div_date else None,
+    }
+
+
+def _annotate_recommendations(claude_tiers: list, evaluations: dict) -> list:
+    """Mark Claude's recommended tiers against the deterministic evaluations.
+
+    A recommendation whose strike matches an abstained tier is marked
+    abstained with reasons. A recommendation whose strike matches no listed
+    tier is marked strike_unverified and abstained: the strike was not on
+    the chain the analyzer fetched, so it cannot be validated.
+    """
+    by_strike = {}
+    for ev in (evaluations or {}).values():
+        strike = ev.get("strike")
+        if strike is not None:
+            by_strike[float(strike)] = ev
+    annotated = []
+    for rec in (claude_tiers or []):
+        rec = dict(rec)
+        strike = rec.get("strike")
+        ev = by_strike.get(float(strike)) if strike is not None else None
+        if ev is None:
+            rec["abstain"] = True
+            rec["strike_unverified"] = True
+            rec["abstain_reasons"] = ["Strike not found on the listed chain: cannot validate this recommendation."]
+        elif ev.get("abstain"):
+            rec["abstain"] = True
+            rec["abstain_reasons"] = ev.get("abstain_reasons") or []
+        else:
+            rec["abstain"] = False
+            rec["abstain_reasons"] = []
+            if ev.get("threshold_unverified"):
+                rec["threshold_unverified"] = True
+        annotated.append(rec)
+    return annotated
+
+
 @router.post("/analyze")
 def analyze_covered_calls(req: CoveredCallRequest):
     """
@@ -52,6 +159,29 @@ def analyze_covered_calls(req: CoveredCallRequest):
     # Prefer the live price from call_tiers (fast_info / Polygon) over the daily-close from history
     current_price = call_tiers.get("current_price") or tech_price
 
+    # Deterministic checks first: threshold and calendar. When the calendar
+    # blocks every tier (shared expiry), there is nothing to recommend, so
+    # return the blocked state without asking Claude.
+    tier_check = _evaluate_covered_call_tiers(call_tiers, current_price, ticker)
+    if tier_check["blocked_all"]:
+        return {
+            "ticker": ticker,
+            "current_price": current_price,
+            "data_source": call_tiers.get("data_source", "last_trade"),
+            "expiry": call_tiers.get("expiry"),
+            "dte": call_tiers.get("dte"),
+            "atm_iv_pct": call_tiers.get("atm_iv_pct"),
+            "options_type": call_tiers.get("options_type", "weekly"),
+            "iv_rank": get_iv_rank(ticker),
+            "call_tiers": call_tiers,
+            "tiers": [],
+            "covered_call_blocked": True,
+            "block_reasons": tier_check["block_reasons"],
+            "tier_evaluations": tier_check["evaluations"],
+            "earnings_date": tier_check["earnings_date"],
+            "next_ex_div_date": tier_check["next_ex_div_date"],
+        }
+
     try:
         from services.claude_analyst import ClaudeAnalyst
         analyst = ClaudeAnalyst()
@@ -65,6 +195,11 @@ def analyze_covered_calls(req: CoveredCallRequest):
         logger.warning("Claude unavailable for %s covered calls: %s", ticker, e)
         result = {"tiers": [], "iv_environment": None, "ai_unavailable": True}
 
+    result["tiers"] = _annotate_recommendations(result.get("tiers"), tier_check["evaluations"])
+    result["covered_call_blocked"] = False
+    result["tier_evaluations"] = tier_check["evaluations"]
+    result["earnings_date"] = tier_check["earnings_date"]
+    result["next_ex_div_date"] = tier_check["next_ex_div_date"]
     result["ticker"] = ticker
     result["current_price"] = current_price
     result["data_source"] = call_tiers.get("data_source", "last_trade")
@@ -109,6 +244,27 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
 
     iv_rank = get_iv_rank(ticker)
 
+    # Deterministic checks first: threshold and calendar. When the calendar
+    # blocks every tier (shared expiry), there is nothing to recommend, so
+    # return the blocked state without asking Claude.
+    tier_check = _evaluate_covered_call_tiers(weekly_tiers, current_price, ticker)
+    if tier_check["blocked_all"]:
+        return {
+            "ticker": ticker,
+            "current_price": current_price,
+            "expiry": weekly_tiers.get("expiry"),
+            "dte": weekly_tiers.get("dte"),
+            "atm_iv_pct": weekly_tiers.get("atm_iv_pct"),
+            "iv_rank": iv_rank,
+            "data_source": weekly_tiers.get("data_source", "last_trade"),
+            "call_tiers": weekly_tiers,
+            "covered_call_blocked": True,
+            "block_reasons": tier_check["block_reasons"],
+            "tier_evaluations": tier_check["evaluations"],
+            "earnings_date": tier_check["earnings_date"],
+            "next_ex_div_date": tier_check["next_ex_div_date"],
+        }
+
     try:
         from services.claude_analyst import ClaudeAnalyst
         analyst = ClaudeAnalyst()
@@ -123,6 +279,18 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
         logger.warning("Claude unavailable for %s weekly covered calls: %s", ticker, e)
         result = {"ai_unavailable": True}
 
+    if result.get("strike") is not None:
+        annotated = _annotate_recommendations([{"strike": result["strike"]}], tier_check["evaluations"])
+        result["abstain"] = annotated[0].get("abstain", False)
+        result["abstain_reasons"] = annotated[0].get("abstain_reasons", [])
+        if annotated[0].get("threshold_unverified"):
+            result["threshold_unverified"] = True
+        if annotated[0].get("strike_unverified"):
+            result["strike_unverified"] = True
+    result["covered_call_blocked"] = False
+    result["tier_evaluations"] = tier_check["evaluations"]
+    result["earnings_date"] = tier_check["earnings_date"]
+    result["next_ex_div_date"] = tier_check["next_ex_div_date"]
     result["ticker"] = ticker
     result["current_price"] = current_price
     result["expiry"] = weekly_tiers.get("expiry")

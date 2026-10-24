@@ -168,6 +168,25 @@ _SETUPS = [
         "backtest_file": "backtests/volume_breakout.md",
     },
     {
+        "setup_key": "directional_puts",
+        "name": "Directional Puts (Down-Market)",
+        "job": "directional",
+        "recipe": (
+            "Universe: app directional universe (DEFAULT_UNIVERSE in stock_data.py).\n"
+            "Signal (evaluated at close of day T, in a down or volatile regime):\n"
+            "  - Long puts or defined-risk bear spreads on names in a confirmed "
+            "downtrend (price below a falling 50-day MA)\n"
+            "  - Entry sized from the contract's own IV, with real P(profit) and "
+            "dollar expectancy computed the same way as Directional calls\n"
+            "  - No earnings within 5 days\n"
+            "Entry: next session open.\n"
+            "Exit: defined-risk spread exits at max loss or at the target; "
+            "long puts exit at the target or on a trend reversal; 21-day time stop.\n"
+            "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
+        ),
+        "backtest_file": "backtests/directional_puts.md",
+    },
+    {
         "setup_key": "oversold_bounce",
         "name": "Oversold Bounce in a Quality Name",
         "job": "buy_and_hold",
@@ -227,15 +246,61 @@ _SETUPS = [
 ]
 
 
+def reenforce_statuses(db) -> list:
+    """
+    Re-check every registry row against its backtest file on disk and
+    correct any row whose stored status no longer matches what the file
+    supports (review M31: a row that is LIVE stays LIVE even if its
+    backtest later fails).
+
+    Rules:
+      - RETIRED rows are never touched (a manual decision, not a file verdict).
+      - Any other row is set to LIVE only when its file currently qualifies
+        (real-data PASSES); otherwise it is set to SHADOW.
+      - The stored verdict and data source stamp are refreshed from the
+        file at the same time, so a later set_setup_status call enforces
+        against current evidence, not a stale stamp.
+    Returns the list of setup keys whose status changed.
+    """
+    from models.setup_registry import SetupRegistry
+
+    changed = []
+    dirty = False
+    for row in db.query(SetupRegistry).all():
+        status, verdict, data_source = resolve_status_from_file(row.backtest_file)
+        if row.status == "RETIRED":
+            if row.backtest_verdict != verdict or row.backtest_data_source != data_source:
+                row.backtest_verdict = verdict
+                row.backtest_data_source = data_source
+                dirty = True
+            continue
+        if row.status != status or row.backtest_verdict != verdict \
+                or row.backtest_data_source != data_source:
+            logger.info(
+                "setup_registry: re-enforcing '%s' %s -> %s (verdict=%s, data_source=%s)",
+                row.setup_key, row.status, status, verdict, data_source,
+            )
+            row.status = status
+            row.backtest_verdict = verdict
+            row.backtest_data_source = data_source
+            changed.append(row.setup_key)
+            dirty = True
+    if dirty:
+        db.commit()
+    return changed
+
+
 # ---------------------------------------------------------------------------
 # Seed function
 # ---------------------------------------------------------------------------
 
 def seed_registry(db) -> None:
     """
-    Insert all six setups into the database if they are not already there.
+    Insert all seven setups into the database if they are not already there.
     Status is derived from the backtest file on disk using the enforcement rule.
-    Safe to call on every startup; already-existing rows are not modified.
+    Safe to call on every startup; already-existing rows are re-enforced
+    against their current backtest file (see reenforce_statuses), so a row
+    never keeps a LIVE status its backtest no longer supports.
     """
     from models.setup_registry import SetupRegistry
 
@@ -271,6 +336,10 @@ def seed_registry(db) -> None:
         logger.error("setup_registry: seed commit failed: %s", e)
         db.rollback()
 
+    # Re-enforce existing rows: a backtest file may have changed since the
+    # row was seeded (new run, failed verdict, or a file removed).
+    reenforce_statuses(db)
+
 
 # ---------------------------------------------------------------------------
 # Utility read functions
@@ -278,11 +347,17 @@ def seed_registry(db) -> None:
 
 def get_all_setups(db) -> list:
     from models.setup_registry import SetupRegistry
+    # Re-enforce on every load (review M31): a backtest file may have
+    # changed since the row was seeded, and a LIVE row must not survive
+    # a backtest that later fails.
+    reenforce_statuses(db)
     return db.query(SetupRegistry).order_by(SetupRegistry.id).all()
 
 
 def get_setup(db, setup_key: str):
     from models.setup_registry import SetupRegistry
+    # Re-enforce on every load (review M31); see get_all_setups.
+    reenforce_statuses(db)
     return (
         db.query(SetupRegistry)
         .filter(SetupRegistry.setup_key == setup_key)
@@ -292,7 +367,9 @@ def get_setup(db, setup_key: str):
 
 def set_setup_status(db, setup_key: str, new_status: str) -> dict:
     """
-    Update a setup's status. Enforces the LIVE rule.
+    Update a setup's status. Enforces the LIVE rule against the CURRENT
+    backtest file on disk (re-read here, not the stored stamp, so a stale
+    verdict cannot authorize a promotion).
     Returns {"ok": True, "status": "LIVE"} or raises ValueError.
     """
     from models.setup_registry import SetupRegistry
@@ -301,10 +378,13 @@ def set_setup_status(db, setup_key: str, new_status: str) -> dict:
     if row is None:
         raise ValueError(f"Setup '{setup_key}' not found in registry.")
 
+    _, verdict, data_source = resolve_status_from_file(row.backtest_file)
+    row.backtest_verdict = verdict
+    row.backtest_data_source = data_source
     allowed = enforce_status(
         new_status,
-        row.backtest_verdict,
-        row.backtest_data_source,
+        verdict,
+        data_source,
         setup_name=row.name,
     )
     row.status = allowed

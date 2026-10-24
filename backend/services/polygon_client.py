@@ -128,7 +128,11 @@ def get_options_chain_snapshot(
     strike_pct_range: float = 0.20,
     dte_min: int = 0,
 ) -> list:
-    """Real-time options chain snapshot with Greeks via Polygon (requires Options plan).
+    """15-minute delayed options chain snapshot with Greeks via Polygon (requires Options plan).
+
+    Massive Options Starter plan: no live quotes, options data is 15 minutes
+    delayed, bid/ask are 0.0, and mids come from last trade or fair value.
+    Nothing returned here is a live quote.
 
     near_price: if provided, restricts strikes to ±strike_pct_range of that price
                 so we fetch active ATM/near-OTM contracts instead of deep ITM junk.

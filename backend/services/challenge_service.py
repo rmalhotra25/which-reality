@@ -30,6 +30,29 @@ FLOW_TYPES = ("initial_funding",) + EXTERNAL_FLOW_TYPES + ("dividend", "interest
 ASSET_KINDS = ("stock", "call", "put", "spread")
 SIDES = ("long", "short")
 
+# Never put more than 10% of starting capital in a single position. This
+# mirrors MAX_POSITION_PCT in routers/account.py, which previously was
+# read only by GET responses and enforced nowhere.
+MAX_POSITION_PCT = 0.10
+
+
+def _per_trade_cap_cents(account: ChallengeAccount) -> int:
+    """Per-trade risk cap, pinned to starting capital (review M27).
+
+    The cap must not float with equity: a losing account would get a
+    smaller cap and a winning account a larger one, with no floor.
+    """
+    return int(round(account.starting_capital_cents * account.risk_per_trade_pct / 100))
+
+
+def _max_position_cents(account: ChallengeAccount) -> int:
+    """Max cost of one position, pinned to starting capital."""
+    return int(round(account.starting_capital_cents * MAX_POSITION_PCT))
+
+
+def _open_risk_cap_cents(trading_equity_cents: int, account: ChallengeAccount) -> int:
+    return int(round(trading_equity_cents * account.max_open_risk_pct / 100))
+
 
 def _cents(dollars: float) -> int:
     return int(round(float(dollars) * 100))
@@ -289,8 +312,11 @@ def compute_state(db: Session) -> dict:
         "risk_per_trade_pct": account.risk_per_trade_pct,
         "max_open_risk_pct": account.max_open_risk_pct,
         "pause_drawdown_pct": account.pause_drawdown_pct,
-        "per_trade_cap": _dollars(int(round(trading_equity_cents * account.risk_per_trade_pct / 100))),
-        "open_risk_cap": _dollars(int(round(trading_equity_cents * account.max_open_risk_pct / 100))),
+        # Pinned to starting capital, not floating with equity (review M27).
+        "per_trade_cap": _dollars(_per_trade_cap_cents(account)),
+        "open_risk_cap": _dollars(_open_risk_cap_cents(trading_equity_cents, account)),
+        "max_position_pct": MAX_POSITION_PCT * 100,
+        "max_single_position": _dollars(_max_position_cents(account)),
         "paused": drawdown_pct >= account.pause_drawdown_pct if account.pause_drawdown_pct else False,
     }
 
@@ -452,6 +478,15 @@ def _gen_eligible_setups(db: Session, account, state, existing) -> int:
     cash = state["cash"] or 0
     if cap <= 0 or cash <= 0:
         return 0
+    # Stop alerting once the open-risk cap is reached, and keep a running
+    # total across this run so several ideas cannot be alerted at once
+    # for more risk than the cap allows (review C15).
+    open_risk = state["open_risk"] or 0
+    open_cap = state["risk_caps"]["open_risk_cap"] or 0
+    if open_cap > 0 and open_risk >= open_cap:
+        return 0
+    position_cap = state["risk_caps"]["max_single_position"] or 0
+    running_risk = open_risk
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     rows = (
         db.query(SetupAlert)
@@ -479,10 +514,19 @@ def _gen_eligible_setups(db: Session, account, state, existing) -> int:
         shares = math.floor(cap / risk_per_share)
         if shares < 1:
             continue
+        # Size the position so it fits the max single position as well as
+        # the per-trade risk cap, or the alert would suggest a trade the
+        # write path must refuse.
+        if position_cap > 0:
+            shares = min(shares, math.floor(position_cap / entry))
+            if shares < 1:
+                continue
         required = shares * entry
         if required > cash:
             continue
         risk_dollars = round(shares * risk_per_share, 2)
+        if open_cap > 0 and running_risk + risk_dollars > open_cap:
+            continue
         payload = {
             "asset_kind": "stock", "side": "long", "symbol": r.ticker,
             "setup_key": r.setup_key, "quantity": shares,
@@ -497,7 +541,7 @@ def _gen_eligible_setups(db: Session, account, state, existing) -> int:
             body += f" Target ${target:.2f}."
         if r.action_summary:
             body += f" {r.action_summary}"
-        created += _create_alert(
+        made = _create_alert(
             db, existing, account.id,
             alert_type="eligible_setup", source_type="setup_alert", source_id=r.id,
             ticker=r.ticker, severity="opportunity",
@@ -505,6 +549,9 @@ def _gen_eligible_setups(db: Session, account, state, existing) -> int:
             title=f"{r.ticker}: {r.setup_name} fits your risk budget",
             body=body, data=payload,
         )
+        created += made
+        if made:
+            running_risk += risk_dollars
     return created
 
 
@@ -515,6 +562,14 @@ def _gen_eligible_directional(db: Session, account, state, existing) -> int:
     cash = state["cash"] or 0
     if cap <= 0 or cash <= 0:
         return 0
+    # Stop alerting once the open-risk cap is reached, and keep a running
+    # total across this run so several ideas cannot be alerted at once
+    # for more risk than the cap allows (review C15).
+    open_risk = state["open_risk"] or 0
+    open_cap = state["risk_caps"]["open_risk_cap"] or 0
+    if open_cap > 0 and open_risk >= open_cap:
+        return 0
+    running_risk = open_risk
     rows = (
         db.query(DirectionalCandidate)
         .filter(DirectionalCandidate.is_suppressed == False)  # noqa: E712
@@ -536,6 +591,8 @@ def _gen_eligible_directional(db: Session, account, state, existing) -> int:
             continue
         premium_cost = round(r.entry_premium * 100, 2)
         if r.max_loss_per_contract > cap or premium_cost > cash:
+            continue
+        if open_cap > 0 and running_risk + r.max_loss_per_contract > open_cap:
             continue
         legs = None
         if r.strike is not None:
@@ -559,7 +616,7 @@ def _gen_eligible_directional(db: Session, account, state, existing) -> int:
             body += f" Underlying target ${r.underlying_target:.2f}."
         if r.earnings_in_window:
             body += " Earnings fall inside the window."
-        created += _create_alert(
+        made = _create_alert(
             db, existing, account.id,
             alert_type="eligible_directional", source_type="directional_candidate",
             source_id=r.id, ticker=r.ticker, severity="opportunity",
@@ -567,6 +624,9 @@ def _gen_eligible_directional(db: Session, account, state, existing) -> int:
             title=f"{r.ticker} {r.option_type} {r.strike}: one contract fits",
             body=body, data=payload,
         )
+        created += made
+        if made:
+            running_risk += r.max_loss_per_contract
     return created
 
 
@@ -820,6 +880,12 @@ def add_cash_flow(db: Session, flow_type: str, amount_dollars: float,
 
 
 def add_trade(db: Session, data: dict) -> dict:
+    """Open a trade, enforcing the risk caps at the write path (review C15).
+
+    Every rejection names the violated rule. Nothing is silently accepted:
+    a trade that breaks a cap, would take cash negative, or is entered
+    while the account is paused is refused with a ValueError.
+    """
     account = get_account(db)
     if account is None:
         raise ValueError("Challenge account not initialized")
@@ -829,15 +895,94 @@ def add_trade(db: Session, data: dict) -> dict:
         raise ValueError(f"Invalid asset_kind: {asset_kind}")
     if side not in SIDES:
         raise ValueError(f"Invalid side: {side}")
+    try:
+        quantity = float(data["quantity"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("quantity is required and must be a number above 0")
+    if quantity <= 0:
+        raise ValueError(f"quantity must be above 0 (got {quantity})")
+    try:
+        entry_price = float(data["entry_price"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("entry_price is required and must be a number above 0")
+    if entry_price <= 0:
+        raise ValueError(f"entry_price must be above 0 (got {entry_price})")
     multiplier = data.get("multiplier")
     if multiplier is None:
         multiplier = 1 if asset_kind == "stock" else 100
+    try:
+        multiplier = float(multiplier)
+    except (TypeError, ValueError):
+        raise ValueError("multiplier must be a number above 0")
+    if multiplier <= 0:
+        raise ValueError(f"multiplier must be above 0 (got {multiplier})")
+
+    # Planned max loss is required for every trade. A short position with
+    # no planned max loss has theoretically uncapped loss, so a missing
+    # value blocks the trade and is never counted as zero risk.
+    planned = data.get("planned_max_loss")
+    if planned is None:
+        if side == "short":
+            raise ValueError(
+                "planned_max_loss is required for a short trade: a short "
+                "position has uncapped loss without one, so it cannot be "
+                "recorded as zero risk"
+            )
+        raise ValueError(
+            "planned_max_loss is required: every trade must state its "
+            "planned max loss"
+        )
+    try:
+        planned_cents = _cents(planned)
+    except (TypeError, ValueError):
+        raise ValueError("planned_max_loss must be a number above 0")
+    if planned_cents <= 0:
+        raise ValueError(f"planned_max_loss must be above 0 (got {planned})")
+
+    # Caps and current state, all read before the trade is recorded.
+    state = compute_state(db)
+    per_trade_cap_cents = _per_trade_cap_cents(account)
+    if planned_cents > per_trade_cap_cents:
+        raise ValueError(
+            f"planned_max_loss ${_dollars(planned_cents):.2f} exceeds the "
+            f"per-trade cap of ${_dollars(per_trade_cap_cents):.2f} "
+            f"({account.risk_per_trade_pct:g}% of starting capital "
+            f"${_dollars(account.starting_capital_cents):.2f})"
+        )
+    if state["risk_caps"]["paused"]:
+        raise ValueError(
+            f"account is paused at {state['drawdown_pct']}% drawdown "
+            f"(pause line {account.pause_drawdown_pct:g}%): no new trades"
+        )
+    open_risk_cents = _cents(state["open_risk"])
+    open_risk_cap_cents = _cents(state["risk_caps"]["open_risk_cap"])
+    if open_risk_cents + planned_cents > open_risk_cap_cents:
+        raise ValueError(
+            f"open risk after this trade would be "
+            f"${_dollars(open_risk_cents + planned_cents):.2f}, above the "
+            f"open-risk cap of ${_dollars(open_risk_cap_cents):.2f} "
+            f"({account.max_open_risk_pct:g}% of trading equity)"
+        )
+    position_cents = int(round(quantity * entry_price * multiplier * 100))
+    max_position_cents = _max_position_cents(account)
+    if position_cents > max_position_cents:
+        raise ValueError(
+            f"position cost ${_dollars(position_cents):.2f} exceeds the max "
+            f"single position of ${_dollars(max_position_cents):.2f} "
+            f"({MAX_POSITION_PCT * 100:g}% of starting capital "
+            f"${_dollars(account.starting_capital_cents):.2f})"
+        )
     fees_open_cents = _cents(data.get("fees_open") or 0)
     effect = open_cash_effect_cents(
-        side, float(data["quantity"]), float(data["entry_price"]),
-        float(multiplier), fees_open_cents,
+        side, quantity, entry_price, multiplier, fees_open_cents,
     )
-    planned = data.get("planned_max_loss")
+    cash_cents = _cents(state["cash"])
+    if cash_cents + effect < 0:
+        raise ValueError(
+            f"required cash ${_dollars(-effect):.2f} exceeds available cash "
+            f"${_dollars(cash_cents):.2f}: this trade would take cash negative"
+        )
+
     trade = ChallengeTrade(
         account_id=account.id,
         opened_at=data.get("opened_at") or datetime.now(timezone.utc),
@@ -846,14 +991,14 @@ def add_trade(db: Session, data: dict) -> dict:
         side=side,
         symbol=str(data["symbol"]).upper(),
         underlying=(str(data["underlying"]).upper() if data.get("underlying") else str(data["symbol"]).upper()),
-        quantity=float(data["quantity"]),
-        multiplier=float(multiplier),
-        entry_price=float(data["entry_price"]),
+        quantity=quantity,
+        multiplier=multiplier,
+        entry_price=entry_price,
         current_price=data.get("current_price"),
         fees_open_cents=fees_open_cents,
         fees_close_cents=0,
         open_cash_effect_cents=effect,
-        planned_max_loss_cents=_cents(planned) if planned is not None else None,
+        planned_max_loss_cents=planned_cents,
         target_price=data.get("target_price"),
         stop_price=data.get("stop_price"),
         expiry_date=data.get("expiry_date"),

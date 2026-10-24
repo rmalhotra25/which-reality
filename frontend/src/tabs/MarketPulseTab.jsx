@@ -143,25 +143,29 @@ function PlayCard({ play, shortData }) {
               {play.option_play.dte != null && ` (${play.option_play.dte}d)`}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '6px' }}>
-              {[['Buy for', `$${play.option_play.entry_premium ?? '—'}`, '#90cdf4'], ['Target', play.option_play.target_premium != null ? `$${play.option_play.target_premium}` : '—', '#68d391'], ['Stop', play.option_play.stop_premium != null ? `$${play.option_play.stop_premium}` : '—', '#fc8181'], ['BE Stock', `$${play.option_play.breakeven_stock ?? '—'}`, '#f6e05e']].map(([lbl, val, color]) => (
+              {[['Buy for', play.option_play.premium_source === 'estimated' ? 'estimated' : `$${play.option_play.entry_premium ?? '-'}`, '#90cdf4'], ['Target', play.option_play.target_premium != null ? `$${play.option_play.target_premium}` : '-', '#68d391'], ['Stop (50% conv.)', play.option_play.stop_premium != null ? `$${play.option_play.stop_premium}` : '-', '#fc8181'], ['BE Stock', `$${play.option_play.breakeven_stock ?? '-'}`, '#f6e05e']].map(([lbl, val, color]) => (
                 <div key={lbl} style={{ background: 'rgba(0,0,0,0.25)', borderRadius: '5px', padding: '5px 8px' }}>
                   <div style={{ fontSize: '9px', color: '#4a5568', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>{lbl}</div>
                   <div style={{ fontSize: '13px', fontWeight: 700, marginTop: '1px', color }}>{val}</div>
                 </div>
               ))}
             </div>
-            {play.option_play.likelihood && (() => {
-              const cfg = { likely: { bg: 'rgba(104,211,145,0.1)', border: 'rgba(39,103,73,0.5)', color: '#68d391', icon: '✅' }, possible: { bg: 'rgba(246,224,94,0.08)', border: 'rgba(183,121,31,0.4)', color: '#f6e05e', icon: '⚠️' }, speculative: { bg: 'rgba(252,129,129,0.08)', border: 'rgba(116,42,42,0.4)', color: '#fc8181', icon: '🎲' } }[play.option_play.likelihood] ?? {}
-              return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '6px', background: cfg.bg, border: `1px solid ${cfg.border}` }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color }}>{play.option_play.likelihood.toUpperCase()}</span>
-                  <span style={{ fontSize: '11px', color: '#718096', marginLeft: 'auto' }}>
-                    {play.option_play.delta != null && `Δ${Math.abs(play.option_play.delta)}`}
-                    {play.option_play.move_feasibility != null && ` · ${play.option_play.move_feasibility}× ATR needed`}
-                  </span>
-                </div>
-              )
-            })()}
+            {play.option_play.premium_source === 'estimated' && (
+              <div style={{ fontSize: '11px', color: '#f6e05e' }}>Estimated premium, not snapped to the chain. No Buy-for price is shown.</div>
+            )}
+            <div style={{ fontSize: '11px', color: '#718096' }}>
+              15-min delayed, last trade, no live quote. Target is a Claude estimate. Stop is a 50% of entry convention, not a computed market level.
+            </div>
+            {play.option_play.p_above_breakeven != null && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '6px', background: 'rgba(43,108,176,0.07)', border: '1px solid rgba(43,108,176,0.25)' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#90cdf4' }}>P(above breakeven) {(play.option_play.p_above_breakeven * 100).toFixed(1)}%</span>
+                <span style={{ fontSize: '11px', color: '#718096', marginLeft: 'auto' }}>
+                  from the contract's own IV
+                  {play.option_play.delta != null && ` · Δ${Math.abs(play.option_play.delta)} (delta is not a win probability)`}
+                  {play.option_play.move_feasibility != null && ` · ${play.option_play.move_feasibility}× ATR needed`}
+                </span>
+              </div>
+            )}
             {(play.option_play.theta != null || play.option_play.vega != null || play.option_play.iv_pct != null) && (
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {play.option_play.theta != null && <span style={{ padding: '2px 8px', fontSize: '10px', fontWeight: 600, borderRadius: '4px', background: 'rgba(116,42,42,0.2)', color: '#fc8181' }}>Θ {play.option_play.theta}/d</span>}
@@ -370,7 +374,7 @@ export default function MarketPulseTab() {
       <div style={{ marginBottom: '20px' }}>
         <div style={{ fontSize: '20px', fontWeight: 700, color: '#e2e8f0', marginBottom: '4px' }}>⚡ Market Pulse</div>
         <div style={{ fontSize: '13px', color: '#718096' }}>
-          Day trade plays · Unusual options flow · Polygon real-time data
+          Day trade plays · Unusual options flow · 15-min delayed options data, last trade, no live quote
         </div>
       </div>
 
@@ -418,11 +422,11 @@ export default function MarketPulseTab() {
           {anyLoading ? '⏳ Running…' : '▶ Run Both'}
         </button>
         <div style={{ fontSize: '12px', color: '#718096', lineHeight: 1.5 }}>
-          {scanAt && <div>Plays: {scanAt.toLocaleTimeString()}{scanResult?.candidates_scanned != null && ` · ${scanResult.candidates_scanned} movers`}</div>}
+          {scanAt && <div>Plays: {scanAt.toLocaleTimeString()} · 15-min delayed, last trade, no live quote{scanResult?.candidates_scanned != null && ` · ${scanResult.candidates_scanned} movers`}</div>}
           {flowAt && <div>Flow: {flowAt.toLocaleTimeString()}{flowResult?.total_alerts_found != null && ` · ${flowResult.total_alerts_found} unusual contracts`}</div>}
         </div>
         <div style={{ fontSize: '11px', color: '#4a5568', fontStyle: 'italic', marginLeft: 'auto' }}>
-          Polygon real-time · Finnhub earnings · Best during market hours
+          Polygon 15-min delayed · Finnhub earnings · Best during market hours
         </div>
       </div>
 
@@ -430,7 +434,7 @@ export default function MarketPulseTab() {
       <SectionHeader
         icon="⚡"
         title="Day Trade Plays"
-        subtitle="Polygon batch snapshots · RSI-14 · ATR-14 · Claude play selection"
+        subtitle="Polygon batch snapshots · RSI-14 · ATR-14 · Claude play selection · Options prices 15-min delayed, last trade, no live quote"
         rightContent={scanResult?.data_note && <span style={{ fontSize: '11px', color: '#4a5568', fontStyle: 'italic' }}>{scanResult.data_note}</span>}
       />
 
@@ -450,11 +454,12 @@ export default function MarketPulseTab() {
 
       {plays.length === 0 && scanResult && !scanLoading && (
         <div style={{ ...emptyState, margin: '16px 0' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 600, color: '#a0aec0' }}>No plays returned.</div>
+          <div style={{ marginBottom: '8px', fontWeight: 600, color: '#a0aec0' }}>No qualifying play today.</div>
           <div style={{ fontSize: '12px', color: '#4a5568', lineHeight: 1.6 }}>
+            That is a normal outcome: no setup met the bar, and no play was invented to fill the list.
             {scanResult.candidates_scanned > 0
-              ? `Screened ${scanResult.candidates_scanned} movers — Claude found no high-confidence setups.`
-              : 'No movers met the thresholds. Market may be quiet or closed.'}
+              ? ` Screened ${scanResult.candidates_scanned} movers.`
+              : ' No movers met the thresholds. Market may be quiet or closed.'}
           </div>
         </div>
       )}

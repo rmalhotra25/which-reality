@@ -268,6 +268,32 @@ def _norm_cdf(x: float) -> float:
     return (1.0 + math.erf(x / math.sqrt(2))) / 2
 
 
+def prob_above_breakeven(
+    price: float, breakeven: float, dte: int, iv_pct: float | None, option_type: str, r: float = 0.05
+) -> float | None:
+    """Real probability the stock ends above (CALL) or below (PUT) breakeven.
+
+    Black-Scholes d2 probability at the contract's own IV, NOT delta.
+    Delta overstates the chance of profit by about 2x (review C10/C21:
+    delta 0.30 versus a true breakeven probability near 0.10 in the
+    worked example). Returns None when IV is missing or inputs are invalid.
+    """
+    if not price or price <= 0 or not breakeven or breakeven <= 0:
+        return None
+    if iv_pct is None or iv_pct <= 0 or dte is None or dte <= 0:
+        return None
+    try:
+        sigma = float(iv_pct) / 100
+        T = max(dte, 1) / 365
+        d2 = (math.log(price / breakeven) + (r - 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        p = _norm_cdf(d2)
+        if option_type.upper() == "PUT":
+            p = 1.0 - p
+        return round(p, 3)
+    except Exception:
+        return None
+
+
 def _bs_delta(S: float, K: float, T_years: float, sigma: float, option_type: str, r: float = 0.05) -> float | None:
     """Black-Scholes delta (≈ probability of expiring ITM)."""
     if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
@@ -280,7 +306,12 @@ def _bs_delta(S: float, K: float, T_years: float, sigma: float, option_type: str
 
 
 def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggested_expiry: str) -> dict | None:
-    """Fetch real-time quote + Greeks from Polygon for the closest available strike/expiry."""
+    """Fetch a 15-min delayed options quote + Greeks from Polygon for the closest available strike/expiry.
+
+    Massive Options Starter plan: no live quotes, options data is 15 minutes
+    delayed, bid/ask are 0.0, and mids come from last trade or fair value.
+    Nothing returned here is a live quote.
+    """
     try:
         from services.polygon_client import get_options_chain_snapshot
         snapshots = get_options_chain_snapshot(
@@ -376,10 +407,75 @@ def _snap_option(ticker: str, option_type: str, suggested_strike: float, suggest
             "theta": theta,
             "vega": vega,
             "iv_pct": iv_pct,
+            "underlying_price": round(price, 2),
+            "premium_source": "snapped_15min_delayed",
+            "price_note": "15-min delayed, last trade, no live quote",
         }
     except Exception as e:
         logger.debug("snap_option failed for %s: %s", ticker, e)
         return None
+
+
+def apply_snaps(plays: list[dict], top: list[dict], snap_fn=None) -> tuple[list[dict], int]:
+    """Snap each play's option to the real chain; drop any play whose snap fails.
+
+    A snap-failed play used to keep Claude's invented entry premium and
+    still get a likelihood label. Now it is dropped outright, so no
+    "Buy for" line can ever show a language-model guess as a market
+    price. The likelihood label (delta relabelled as win probability)
+    is gone: each kept play carries p_above_breakeven, the real
+    Black-Scholes probability of ending above (CALL) or below (PUT)
+    breakeven at the contract's own IV. The 50% stop is kept only as
+    a labelled convention, never as a computed market level.
+    Returns (kept_plays, dropped_count).
+    """
+    snap_fn = snap_fn or _snap_option
+    kept: list[dict] = []
+    dropped = 0
+    for play in plays or []:
+        op = play.get("option_play")
+        if not op or not op.get("option_type") or not op.get("strike"):
+            dropped += 1
+            logger.debug("dropping play %s: no option_play to snap", play.get("ticker"))
+            continue
+        try:
+            snapped = snap_fn(
+                play.get("ticker", ""),
+                op["option_type"],
+                float(op["strike"]),
+                op.get("expiry", ""),
+            )
+        except Exception as e:
+            logger.debug("snap_option error for %s: %s", play.get("ticker"), e)
+            snapped = None
+        if not snapped:
+            dropped += 1
+            logger.debug("dropping play %s: chain snap failed, no invented premium kept", play.get("ticker"))
+            continue
+        # Claude's target/stop are estimates, labelled as such. The stop
+        # is a 50% of entry convention, not a market level.
+        snapped["target_premium"] = op.get("target_premium")
+        snapped["target_premium_source"] = "claude_estimate"
+        snapped["stop_premium"] = op.get("stop_premium")
+        snapped["stop_note"] = "50% of entry, hardcoded convention, not a computed market level"
+        snapped.pop("likelihood", None)
+        # Move feasibility: pct move needed divided by ATR% (how many typical daily ranges)
+        mover = next((m for m in top if m["ticker"] == play.get("ticker")), None)
+        if mover and mover.get("atr") and mover.get("price") and snapped.get("pct_move_needed"):
+            atr_pct = mover["atr"] / mover["price"] * 100
+            if atr_pct > 0:
+                snapped["move_feasibility"] = round(snapped["pct_move_needed"] / atr_pct, 1)
+        # Real breakeven probability from the contract's own IV.
+        snapped["p_above_breakeven"] = prob_above_breakeven(
+            snapped.get("underlying_price") or (mover.get("price") if mover else None),
+            snapped.get("breakeven_stock"),
+            snapped.get("dte"),
+            snapped.get("iv_pct"),
+            snapped.get("option_type", "CALL"),
+        )
+        play["option_play"] = snapped
+        kept.append(play)
+    return kept, dropped
 
 
 def run_scan() -> dict:
@@ -420,111 +516,12 @@ def run_scan() -> dict:
     analyst = ClaudeAnalyst()
     plays = analyst.scan_day_trades(top, spy_change=spy_change)
 
-    # Snap each option suggestion to real chain data
-    for play in plays:
-        op = play.get("option_play")
-        if not op or not op.get("option_type") or not op.get("strike"):
-            continue
-        try:
-            snapped = _snap_option(
-                play.get("ticker", ""),
-                op["option_type"],
-                float(op["strike"]),
-                op.get("expiry", ""),
-            )
-        except Exception as e:
-            logger.debug("snap_option error for %s: %s", play.get("ticker"), e)
-            snapped = None
-
-        if snapped:
-            # Preserve Claude's target/stop estimates; replace entry with real market data
-            snapped["target_premium"] = op.get("target_premium")
-            snapped["stop_premium"] = op.get("stop_premium")
-
-            # Move feasibility: pct move needed ÷ ATR% (how many typical daily ranges)
-            mover = next((m for m in top if m["ticker"] == play.get("ticker")), None)
-            if mover and mover.get("atr") and mover.get("price") and snapped.get("pct_move_needed"):
-                atr_pct = mover["atr"] / mover["price"] * 100
-                if atr_pct > 0:
-                    feasibility = round(snapped["pct_move_needed"] / atr_pct, 1)
-                    snapped["move_feasibility"] = feasibility
-
-            # Combined likelihood label from delta + feasibility
-            delta = snapped.get("delta")
-            feas = snapped.get("move_feasibility")
-            abs_delta = abs(delta) if delta is not None else None
-
-            if abs_delta is not None and feas is not None:
-                if abs_delta >= 0.45 and feas <= 1.0:
-                    label = "likely"
-                elif abs_delta >= 0.30 and feas <= 1.8:
-                    label = "possible"
-                else:
-                    label = "speculative"
-            elif abs_delta is not None:
-                label = "likely" if abs_delta >= 0.45 else ("possible" if abs_delta >= 0.30 else "speculative")
-            elif feas is not None:
-                label = "likely" if feas <= 1.0 else ("possible" if feas <= 1.8 else "speculative")
-            else:
-                label = None
-            snapped["likelihood"] = label
-            play["option_play"] = snapped
-        else:
-            # Snap failed — compute likelihood from Claude's estimates + mover ATR/price
-            mover = next((m for m in top if m["ticker"] == play.get("ticker")), None)
-            strike = float(op.get("strike") or 0)
-            expiry_str = op.get("expiry", "")
-            opt_type = (op.get("option_type") or "CALL").upper()
-
-            dte = 7
-            try:
-                dte = max(1, (date.fromisoformat(expiry_str) - date.today()).days)
-            except Exception:
-                pass
-            op["dte"] = dte
-
-            delta = None
-            feas = None
-            if mover and mover.get("atr") and mover.get("price") and strike > 0:
-                price = mover["price"]
-                atr_daily = mover["atr"] / price
-                # Rough annualised vol from ATR (ATR ≈ 1.25× daily std for many stocks)
-                iv_est = atr_daily * (252 ** 0.5) * 0.8
-                delta = _bs_delta(price, strike, dte / 365, iv_est, opt_type)
-
-                entry = float(op.get("entry_premium") or 0)
-                if entry > 0:
-                    if opt_type == "CALL":
-                        breakeven = round(strike + entry, 2)
-                        pct_move = round((breakeven - price) / price * 100, 1)
-                    else:
-                        breakeven = round(strike - entry, 2)
-                        pct_move = round((price - breakeven) / price * 100, 1)
-                    op.setdefault("breakeven_stock", breakeven)
-                    op.setdefault("pct_move_needed", pct_move)
-                    atr_pct = atr_daily * 100
-                    if atr_pct > 0:
-                        feas = round(pct_move / atr_pct, 1)
-                        op["move_feasibility"] = feas
-
-                op["delta"] = delta
-
-            abs_delta = abs(delta) if delta is not None else None
-            if abs_delta is not None and feas is not None:
-                if abs_delta >= 0.45 and feas <= 1.0:
-                    label = "likely"
-                elif abs_delta >= 0.30 and feas <= 1.8:
-                    label = "possible"
-                else:
-                    label = "speculative"
-            elif abs_delta is not None:
-                label = "likely" if abs_delta >= 0.45 else ("possible" if abs_delta >= 0.30 else "speculative")
-            elif feas is not None:
-                label = "likely" if feas <= 1.0 else ("possible" if feas <= 1.8 else "speculative")
-            else:
-                label = "speculative"
-            op["likelihood"] = label
-            play["option_play"] = op
+    # Snap each option suggestion to the real chain. Plays whose snap
+    # fails are dropped, never shown with an invented premium.
+    # An empty kept list is a valid result: no qualifying play today.
+    plays, dropped = apply_snaps(plays, top)
+    if dropped:
+        logger.info("day scan dropped %d play(s) with no chain snap", dropped)
 
     return {
         "plays": plays,
@@ -532,5 +529,6 @@ def run_scan() -> dict:
         "top_movers": top,
         "market_status": market_status,
         "spy_change": spy_change,
-        "data_note": f"Scanned {len(SCAN_UNIVERSE)}-stock universe · polygon_live · RSI + ATR enriched",
+        "data_note": f"Scanned {len(SCAN_UNIVERSE)}-stock universe · 15-min delayed options data, last trade, no live quote · RSI + ATR enriched",
+        "plays_dropped_no_snap": dropped,
     }

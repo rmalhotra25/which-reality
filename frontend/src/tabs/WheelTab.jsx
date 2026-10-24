@@ -6,6 +6,7 @@ import AccountWidget from '../components/AccountWidget'
 import WheelCard from '../wheel/WheelCard'
 import PositionTracker from '../wheel/PositionTracker'
 import WheelCustomAnalysis from '../wheel/WheelCustomAnalysis'
+import { evNote, harvestThinScanNote, isThinHarvestScan, plainExclusionReason, exclusionSummary } from '../wheel/wheelCopy'
 
 const s = {
   header: {
@@ -104,6 +105,7 @@ const scannerStyles = {
     border: `1px solid ${color === 'red' ? '#742a2a' : color === 'yellow' ? '#744210' : color === 'green' ? '#276749' : '#2d3748'}`,
   }),
   formula: { fontSize: '10px', color: '#4a5568', marginTop: '6px', fontFamily: 'monospace', wordBreak: 'break-all' },
+  evNote: { fontSize: '12px', color: '#a0aec0', marginTop: '6px', lineHeight: 1.5 },
   excludedRow: { fontSize: '12px', color: '#718096', padding: '6px 0', borderBottom: '1px solid #1a1f2e', display: 'flex', justifyContent: 'space-between' },
   emptyNote: { color: '#4a5568', fontSize: '13px', padding: '24px 0', textAlign: 'center' },
   showMoreBtn: { padding: '6px 14px', background: 'transparent', border: '1px solid #2d3748', borderRadius: '6px', color: '#718096', cursor: 'pointer', fontSize: '12px', marginTop: '8px' },
@@ -173,6 +175,7 @@ function PutCandidateCard({ c, rank, mode }) {
         {c.data_source && <span style={scannerStyles.flag('neutral')}>{c.data_source}</span>}
       </div>
       <div style={scannerStyles.formula}>formula: {c.ranking_formula}</div>
+      <div style={scannerStyles.evNote}>{evNote(mode, c.ev_per_contract)}</div>
     </div>
   )
 }
@@ -222,6 +225,7 @@ function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidat
 
   const excluded = showCallCandidates ? callExcluded : putExcluded
   const excVisible = showAllExcluded ? excluded : excluded.slice(0, 10)
+  const excSummary = exclusionSummary(excluded)
 
   const runAt = puts?.run_at || calls?.run_at
   const universeSize = puts?.universe_size || calls?.universe_size
@@ -267,8 +271,13 @@ function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidat
 
           {!showCallCandidates && (
             putCandidates.length === 0
-              ? <div style={scannerStyles.emptyNote}>No put candidates passed all filters{mode === 'harvest' ? ' in harvest mode (low delta, above 200MA, IV percentile 50+, no earnings)' : ''}.</div>
-              : putCandidates.map((c, i) => <PutCandidateCard key={c.ticker} c={c} rank={i + 1} mode={mode} />)
+              ? <div style={scannerStyles.emptyNote}>{mode === 'harvest' ? harvestThinScanNote(0) : 'No put candidates passed all filters.'}</div>
+              : <>
+                  {isThinHarvestScan(mode, putCandidates.length) && (
+                    <div style={scannerStyles.emptyNote}>{harvestThinScanNote(putCandidates.length)}</div>
+                  )}
+                  {putCandidates.map((c, i) => <PutCandidateCard key={c.ticker} c={c} rank={i + 1} mode={mode} />)}
+                </>
           )}
 
           {showCallCandidates && (
@@ -283,10 +292,15 @@ function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidat
 
           {showExcluded && (
             <div style={{ marginTop: '8px' }}>
+              {excSummary.length > 0 && (
+                <div style={{ fontSize: '12px', color: '#a0aec0', padding: '6px 0' }}>
+                  Skipped: {excSummary.map((s) => `${s.label} (${s.count})`).join(', ')}
+                </div>
+              )}
               {excVisible.map((e) => (
                 <div key={e.ticker} style={scannerStyles.excludedRow}>
                   <span style={{ fontWeight: 600, color: '#a0aec0' }}>{e.ticker}</span>
-                  <span>{e.reason}{e.spread_pct != null ? ` (spread ${e.spread_pct}%)` : ''}{e.open_interest != null ? ` (OI ${e.open_interest})` : ''}</span>
+                  <span>{plainExclusionReason(e.reason)}{e.spread_pct != null ? ` (buy-sell gap ${e.spread_pct}%)` : ''}{e.open_interest != null ? ` (only ${e.open_interest} open contracts)` : ''}</span>
                 </div>
               ))}
               {excluded.length > 10 && (

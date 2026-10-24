@@ -63,6 +63,113 @@ def _valid_expiry_dates(n: int = 6) -> list[str]:
     return fridays
 
 
+# ------------------------------------------------------------------
+# Roll net math (review C3). A roll's net is (new premium received)
+# MINUS (cost to buy back the old put). The premium originally
+# received is sunk money already in the account and must never be
+# subtracted here. Both legs must be tradable prices: the new put's
+# bid (what a seller collects) and the open put's ask (what a buyer
+# pays to close). On the Massive Options Starter plan bid/ask are
+# 0.0, so when either leg has no live bid/ask the net is unknown
+# and must not be presented at all.
+# ------------------------------------------------------------------
+def compute_roll_net(new_bid: float | None, buyback_ask: float | None) -> float | None:
+    """Net per share of rolling into a new put: new bid minus buyback ask.
+
+    Positive is a credit, negative is a debit. Returns None when
+    either leg is missing or not a positive tradable price.
+    """
+    if new_bid is None or buyback_ask is None:
+        return None
+    try:
+        bid = float(new_bid)
+        ask = float(buyback_ask)
+    except (TypeError, ValueError):
+        return None
+    if bid <= 0 or ask <= 0:
+        return None
+    return round(bid - ask, 2)
+
+
+def validate_roll_net(claude_net: float | None, computed_net: float | None, tol: float = 0.01) -> tuple[float | None, bool]:
+    """Trust the computed roll net over Claude's estimated_net.
+
+    Returns (trusted_net, agrees): the computed net when one exists,
+    otherwise None with agrees False (no net can be trusted). When
+    Claude's figure disagrees with the computed net by more than tol,
+    the computed net wins and agrees is False.
+    """
+    if computed_net is None:
+        return None, False
+    if claude_net is None:
+        return computed_net, False
+    try:
+        agrees = abs(float(claude_net) - float(computed_net)) <= tol
+    except (TypeError, ValueError):
+        agrees = False
+    return computed_net, agrees
+
+
+def fetch_open_put_buyback(ticker: str, put_strike: float, put_expiry: str) -> dict | None:
+    """Fetch the open put's current buyback price from the chain.
+
+    Returns {"ask": float | None, "mid": float | None, "source": str}
+    for the exact strike and expiry, or None when the contract is
+    not found on any source. ask is None when the chain carries no
+    live ask (the normal state on the Starter plan, where ask is
+    0.0); mid is the last-trade or fair-value price, which is not a
+    tradable buyback price and must never be used as the ask.
+    """
+    from datetime import date as _date
+
+    try:
+        dte = (_date.fromisoformat(str(put_expiry)) - _date.today()).days
+    except Exception:
+        return None
+    if dte < 0:
+        return None
+    dte_min = max(0, dte - 1)
+    dte_max = dte + 1
+
+    from services.chain_provider import ChainProvider
+
+    provider = ChainProvider()
+    rows: list[dict] = []
+    source = ""
+    try:
+        rows, _price = provider._fetch_polygon_rows(
+            ticker, "put", dte_min, dte_max, near_price=float(put_strike)
+        )
+        source = "polygon_live"
+    except Exception as e:
+        logger.debug("fetch_open_put_buyback polygon failed for %s: %s", ticker, e)
+    if not rows:
+        try:
+            rows, _price, _src = provider._fetch_yfinance_rows(
+                ticker, "put", dte_min, dte_max, live_price=None
+            )
+            source = "yfinance_last_trade"
+        except Exception as e:
+            logger.debug("fetch_open_put_buyback yfinance failed for %s: %s", ticker, e)
+    for row in rows or []:
+        try:
+            if float(row.get("strike") or 0) != float(put_strike):
+                continue
+            if str(row.get("expiry")) != str(put_expiry):
+                continue
+        except (TypeError, ValueError):
+            continue
+        ask = float(row.get("ask") or 0)
+        mid = float(row.get("mid") or 0)
+        return {
+            "ask": round(ask, 2) if ask > 0 else None,
+            "mid": round(mid, 2) if mid > 0 else None,
+            "source": source,
+        }
+    return None
+
+
+
 class ClaudeAnalyst:
     def __init__(self):
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -789,18 +896,92 @@ class ClaudeAnalyst:
         put_expiry: str,
         premium_received: float | None,
         put_tiers: dict,
+        buyback_ask: float | None = None,
     ) -> dict:
+        """Roll suggestion with correct roll net math (review C3).
+
+        Net per share = new put bid - open put ask. The premium
+        originally received is sunk and never enters the net. When
+        buyback_ask is not passed in, it is fetched from the chain
+        for the exact open strike and expiry. When the buyback ask
+        cannot be fetched (no live ask on this plan), no net is
+        presented at all and the result says the roll cannot be
+        priced. Claude's estimated_net is validated against the
+        computed net in code; the computed net always wins.
+        """
         pct_from_strike = round((current_price - put_strike) / put_strike * 100, 1)
         premium_str = f"${premium_received:.2f}/share (${premium_received*100:.0f}/contract)" if premium_received else "unknown"
+
+        # Buyback cost: caller-supplied ask wins, else the tiers dict,
+        # else a live chain fetch for the exact open contract.
+        buyback = None
+        buyback_source = None
+        if buyback_ask is not None and float(buyback_ask) > 0:
+            buyback = round(float(buyback_ask), 2)
+            buyback_source = "caller"
+        else:
+            for key in ("buyback_ask", "open_put_ask", "current_put_ask"):
+                val = (put_tiers or {}).get(key)
+                if val is not None and float(val) > 0:
+                    buyback = round(float(val), 2)
+                    buyback_source = "put_tiers"
+                    break
+        if buyback is None:
+            try:
+                fetched = fetch_open_put_buyback(ticker, put_strike, put_expiry)
+            except Exception as e:
+                logger.debug("buyback fetch failed for %s: %s", ticker, e)
+                fetched = None
+            if fetched and fetched.get("ask"):
+                buyback = fetched["ask"]
+                buyback_source = fetched.get("source", "chain")
+        buyback_known = buyback is not None and buyback > 0
+
+        # Computed net per tier, keyed by tier name. A tier has a net
+        # only when its bid is a positive tradable price and the
+        # buyback ask is known.
+        computed_nets: dict[str, float | None] = {}
+        for name in ("likely", "moderate", "unlikely"):
+            t = (put_tiers or {}).get(name)
+            if not t:
+                computed_nets[name] = None
+                continue
+            bid = t.get("bid")
+            computed_nets[name] = compute_roll_net(bid, buyback) if buyback_known else None
 
         def _fmt_tier(t: dict | None, label: str) -> str:
             if not t:
                 return f"  {label}: not available\n"
-            net = round(t["mid_premium"] - (premium_received or 0), 2) if premium_received else None
-            net_str = f" | net credit vs current: ${net:.2f}" if net and net > 0 else (f" | net debit: ${abs(net):.2f}" if net else "")
+            if buyback_known:
+                buyback_str = f"Buy back the open ${put_strike} put expiring {put_expiry}: ask ${buyback:.2f}/share (${buyback*100:.0f}/contract).\n"
+            else:
+                buyback_str = (
+                    "Buy back the open put: buyback ask is UNKNOWN, so this roll "
+                    "cannot be priced. Do not state a net credit or debit.\n"
+                )
+            tier_name = label.split(" ")[0].lower() if label else ""
+            net = None
+            if "Higher" in label:
+                net = computed_nets.get("likely")
+            elif "Balanced" in label:
+                net = computed_nets.get("moderate")
+            elif "Conservative" in label:
+                net = computed_nets.get("unlikely")
+            bid = t.get("bid")
+            bid_str = f"${bid:.2f}" if bid else "unknown (no live bid)"
+            if net is not None:
+                if net > 0:
+                    net_str = f" | ROLL NET: ${net:.2f}/share credit (${net*100:.0f}/contract)"
+                elif net < 0:
+                    net_str = f" | ROLL NET: ${abs(net):.2f}/share debit (${abs(net)*100:.0f}/contract)"
+                else:
+                    net_str = " | ROLL NET: $0.00 (even)"
+            else:
+                net_str = " | ROLL NET: cannot be priced (buyback ask or new bid unknown)"
             return (
                 f"  {label}: Strike=${t['strike']} Expiry={t['expiry']} ({t['dte']} DTE)\n"
-                f"    Premium mid=${t['mid_premium']} (collect ${t['premium_per_contract']}/contract){net_str}\n"
+                f"    {buyback_str}"
+                f"    Sell the new put: bid {bid_str} | mid=${t['mid_premium']} (mid is last trade, not what you collect){net_str}\n"
                 f"    Assignment chance ~{t['assignment_chance_pct']}% | Breakeven=${t['breakeven']}\n"
             )
 
@@ -816,10 +997,21 @@ class ClaudeAnalyst:
             "Explain everything in plain English — no jargon. "
             "Respond ONLY with a valid JSON object — no prose, no markdown."
         )
+        roll_rule = (
+            "A roll's net is: (new put bid) MINUS (buyback ask of the open put). "
+            "The premium I originally collected is already in my account, it is sunk money, "
+            "and it is NOT part of the net. A roll is a credit only when the new bid is "
+            "greater than the buyback ask. If the buyback ask is unknown, say the roll "
+            "cannot be priced and do not give a net figure at all.\n"
+            f"Buyback ask for my open put: ${buyback:.2f}/share" if buyback_known else
+            "Buyback ask for my open put: UNKNOWN. The roll cannot be priced. "
+            "Do not invent a buyback price and do not give a net credit or debit figure."
+        )
         user = (
             f"My open position: I sold a ${put_strike} put on {ticker} expiring {put_expiry}. "
-            f"I collected {premium_str} in premium.\n"
+            f"I collected {premium_str} in premium when I opened it. That money is already in my account.\n"
             f"Today {ticker} is trading at ${current_price} — that's {pct_from_strike}% above my strike.\n\n"
+            f"{roll_rule}\n\n"
             f"{tiers_str}\n"
             "Should I roll this put? If yes, tell me exactly what to do in plain English.\n"
             "A roll means: buy back my current put (to close it), then sell a new put at a lower strike "
@@ -838,7 +1030,66 @@ class ClaudeAnalyst:
             '"if_no_action": "1 sentence: what happens if you do nothing"}'
         )
         raw = self._call(system, user, max_tokens=600)
-        return self._parse(raw)
+        result = self._parse(raw)
+
+        # Validate Claude's estimated_net against the computed net in
+        # code. The computed net always wins. When no net can be
+        # computed, Claude's figure is dropped, never shown.
+        computed_for_choice = None
+        choice_key = None
+        try:
+            new_strike = float(result.get("new_strike")) if result.get("new_strike") is not None else None
+            new_expiry = str(result.get("new_expiry")) if result.get("new_expiry") else None
+        except (TypeError, ValueError):
+            new_strike = None
+            new_expiry = None
+        for name in ("likely", "moderate", "unlikely"):
+            t = (put_tiers or {}).get(name)
+            if not t:
+                continue
+            try:
+                if new_strike is not None and float(t.get("strike")) == new_strike and (
+                    new_expiry is None or str(t.get("expiry")) == new_expiry
+                ):
+                    choice_key = name
+                    computed_for_choice = computed_nets.get(name)
+                    break
+            except (TypeError, ValueError):
+                continue
+        if computed_for_choice is None and choice_key is None:
+            # Claude picked no matching tier: use the moderate tier net
+            # when there is exactly one priced tier, else no net.
+            priced = {k: v for k, v in computed_nets.items() if v is not None}
+            if len(priced) == 1:
+                choice_key, computed_for_choice = next(iter(priced.items()))
+        trusted_net, agrees = validate_roll_net(result.get("estimated_net"), computed_for_choice)
+        result["roll_net"] = trusted_net
+        result["roll_net_known"] = trusted_net is not None
+        result["roll_net_validated"] = agrees
+        result["buyback_ask"] = buyback
+        result["buyback_source"] = buyback_source
+        result["computed_roll_nets"] = computed_nets
+        if trusted_net is not None:
+            result["estimated_net"] = trusted_net
+            if trusted_net > 0:
+                result["net_description"] = (
+                    f"You collect an extra ${trusted_net*100:.0f} per contract by rolling "
+                    f"(new bid minus buyback ask)."
+                )
+            elif trusted_net < 0:
+                result["net_description"] = (
+                    f"You pay ${abs(trusted_net)*100:.0f} per contract to roll "
+                    f"(a debit: the buyback costs more than the new premium)."
+                )
+            else:
+                result["net_description"] = "The roll is even: the new premium covers the buyback exactly."
+        else:
+            result["estimated_net"] = None
+            result["net_description"] = (
+                "Buyback price unknown, so this roll cannot be priced. "
+                "Check the live ask on the open put before rolling."
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Covered calls — weekly income from 100 shares already owned
@@ -1078,6 +1329,9 @@ class ClaudeAnalyst:
     def scan_day_trades(self, candidates: list[dict], spy_change: float | None = None) -> list[dict]:
         import concurrent.futures as _cf
         from datetime import datetime, timezone
+        if not candidates:
+            # No movers, no plays. An empty list is a valid result.
+            return []
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         spy_ctx = f"SPY is {'+' if (spy_change or 0) >= 0 else ''}{spy_change}% today." if spy_change is not None else ""
 
@@ -1139,7 +1393,9 @@ class ClaudeAnalyst:
         system = (
             "You are an elite day trader and options analyst at a prop trading firm. "
             "Analyze the provided movers and identify the best trade setups. "
-            "You MUST always return between 3 and 5 plays — never return an empty list. "
+            "Return only plays that genuinely qualify, up to 5. Fewer is fine, "
+            "and an empty list is a valid result when no setup qualifies: "
+            "return {\"plays\": []} in that case. Never invent a play to fill a quota. "
             "For each play, suggest a specific options entry: strike, expiry, estimated entry premium, "
             "target premium, and stock break-even. Use ATM or slightly OTM strikes for momentum plays. "
             "Use RSI to avoid chasing overbought entries; use ATR for stop sizing. "
@@ -1151,10 +1407,10 @@ class ClaudeAnalyst:
             f"Near-term option expiries available: {expiry_list}\n\n"
             f"Top movers (yfinance daily data, RSI-14 + ATR-14 enriched):\n\n"
             f"{stocks_block}\n\n"
-            "Select the 3–5 best setups. Prioritize:\n"
+            "Select only the setups that genuinely qualify, up to 5. Fewer is fine, zero is fine. Prioritize:\n"
             "1. Momentum continuation: vol_ratio ≥ 2x + clear direction + catalyst\n"
             "2. VWAP reclaim/hold: price above VWAP with volume\n"
-            "3. Oversold bounce: RSI < 35 + down on volume — reversal near low\n"
+            "3. Oversold bounce: RSI < 35 + down on volume, reversal near low\n"
             "4. Breakout: stock breaking prior high with vol surge\n"
             "5. Short squeeze: high DTC + stock ripping — shorts trapped\n\n"
             "Use ATR for stop sizing (1–1.5× ATR below entry for longs). "
@@ -1162,8 +1418,11 @@ class ClaudeAnalyst:
             "For option_play: use CALL for long, PUT for short. "
             "Pick the nearest ATM or 1-strike OTM. "
             "For intraday, use the nearest expiry. For swing (2-3d), use the second expiry. "
-            "entry_premium = your estimated mid price. target_premium = estimated value if stock hits target. "
-            "stop_premium = 50% of entry (e.g. entry $2.00 → stop $1.00). "
+            "entry_premium = your rough estimate only. It is NOT a market price: it will be replaced "
+            "by a real chain snapshot, or the play will be dropped if no snapshot is available. "
+            "target_premium = estimated value if stock hits target. "
+            "stop_premium = 50% of entry (e.g. entry $2.00, stop $1.00). "
+            "That stop is a hardcoded convention, not a computed market level, and it is labeled as such. "
             "breakeven_stock = strike + entry_premium for calls, strike - entry_premium for puts.\n\n"
             "Return JSON only:\n"
             '{"plays": ['
@@ -1191,7 +1450,9 @@ class ClaudeAnalyst:
         )
         raw = self._call(system, user, max_tokens=2500)
         result = self._parse(raw)
-        return result.get("plays", [])
+        plays = result.get("plays", []) if isinstance(result, dict) else []
+        # An empty list is a valid result: no forced minimum, no invented plays.
+        return plays if isinstance(plays, list) else []
 
     def interpret_options_flow(
         self, alerts: list[dict], sentiment_ratio: int, overall: str

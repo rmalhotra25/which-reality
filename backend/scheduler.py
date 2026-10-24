@@ -224,6 +224,30 @@ def run_alert_outcome_job() -> None:
         db.close()
 
 
+def run_champion_outcome_job() -> None:
+    """Settle open champion picks that have reached their horizon."""
+    import datetime as _dt
+    from database import SessionLocal
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping champion outcome job -- not a trading day")
+        return
+
+    logger.info("Scheduler: running champion outcome job")
+    db = SessionLocal()
+    try:
+        from services.champion_journal_service import run_outcome_job
+        result = run_outcome_job(db)
+        logger.info("Scheduler: champion outcome job complete: %s", result)
+    except Exception as e:
+        logger.error("Champion outcome job failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("champion_journal", str(e))
+    finally:
+        db.close()
+
+
 def run_wheel_scanner_job() -> None:
     """Run the wheel put + call scanner after market open and mid-afternoon."""
     import datetime as _dt
@@ -334,6 +358,17 @@ def start_scheduler() -> BackgroundScheduler:
         run_alert_outcome_job,
         CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone=EASTERN),
         id="alert_outcome_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 8:15 AM ET -- champion outcome job (after the alert outcome job,
+    # settles champion picks that reached their horizon, so the Book
+    # scoreboard stops reading 0 settled forever)
+    scheduler.add_job(
+        run_champion_outcome_job,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=15, timezone=EASTERN),
+        id="champion_outcome_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )

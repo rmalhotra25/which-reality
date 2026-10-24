@@ -15,15 +15,31 @@ from database import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/book", tags=["Book"])
 
-MIN_SETTLED = 5  # minimum settled outcomes before printing confident stats
+MIN_SETTLED = 5  # minimum settled outcomes before printing stats at all.
+# Stats at this minimum are preliminary, never confident: a 4-of-5 win
+# rate of 80% has a standard error of about 18 points (review M53).
+PRELIMINARY_MIN = 30  # settled outcomes before stats stop being preliminary
+
+PRELIMINARY_NOTE = (
+    "Preliminary: fewer than 30 settled outcomes. A 4-of-5 win rate of 80% "
+    "has a standard error of about 18 points, so 5 settled outcomes is not "
+    "a confident read."
+)
 
 
 def _not_enough(count: int) -> dict:
     return {"not_enough": True, "settled_count": count}
 
 
+def _preliminary(n: int) -> dict:
+    """Preliminary flag and note for a settled count below PRELIMINARY_MIN."""
+    if n < PRELIMINARY_MIN:
+        return {"preliminary": True, "confidence_note": PRELIMINARY_NOTE}
+    return {"preliminary": False}
+
+
 def _wheel_tile(db: Session) -> dict:
-    """Stats from closed WheelPosition rows."""
+    """Stats from closed WheelPosition rows, in dollars throughout (review M51)."""
     from models.wheel import WheelPosition, WheelStatus
 
     positions = db.query(WheelPosition).all()
@@ -35,41 +51,55 @@ def _wheel_tile(db: Session) -> dict:
     n = len(closed)
 
     if n < MIN_SETTLED:
-        return {
+        result = {
             "source": "Wheel Strategy",
             "recs_made": total,
             "not_enough": True,
             "settled_count": n,
         }
+        result.update(_preliminary(n))
+        return result
 
     wins = [p for p in closed if p.total_pnl > 0]
     losses = [p for p in closed if p.total_pnl <= 0]
     win_rate = round(len(wins) / n * 100, 1)
 
-    returnable = [
-        p for p in closed
-        if p.cost_basis and p.cost_basis > 0 and p.total_pnl is not None
-    ]
-    return_pcts = [p.total_pnl / (p.cost_basis * (p.shares or 100)) * 100 for p in returnable]
-    expectancy = round(sum(return_pcts) / len(return_pcts), 3) if return_pcts else None
+    # Expectancy in dollars over ALL closed positions, premium wins
+    # included: a put expired worthless is a win of the premium received,
+    # and it used to be dropped by the cost-basis filter. One unit
+    # (dollars) for expectancy and profit factor alike; no percent mixed in.
+    pnls = [p.total_pnl for p in closed]
+    expectancy_dollars = round(sum(pnls) / len(pnls), 2)
 
     gross_win = sum(p.total_pnl for p in wins)
     gross_loss = abs(sum(p.total_pnl for p in losses))
     profit_factor = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
 
-    return {
+    result = {
         "source": "Wheel Strategy",
         "recs_made": total,
         "settled_count": n,
         "win_rate_pct": win_rate,
-        "expectancy_pct": expectancy,
+        "expectancy_dollars": expectancy_dollars,
+        "expectancy_unit": "dollars",
         "profit_factor": profit_factor,
+        "premium_wins_included": True,
+        "outcome_basis": "option_pnl_dollars",
+        "pnl_source": "recorded_position_pnl",
     }
+    result.update(_preliminary(n))
+    return result
 
 
 def _directional_tile(db: Session) -> dict:
-    """Stats from SetupAlert rows with setup_key='directional_options'."""
+    """Stats from SetupAlert rows with setup_key='directional_options'.
+
+    Graded on option P&L (premium paid, intrinsic value at close), never
+    on the underlying stock move (review C13). Rows settled by the old
+    stock-basis job are excluded and counted, not mixed in.
+    """
     from models.setup_alert import SetupAlert
+    from services.alert_journal_service import graded_outcome
 
     rows = (
         db.query(SetupAlert)
@@ -79,18 +109,32 @@ def _directional_tile(db: Session) -> dict:
         )
         .all()
     )
-    closed = [r for r in rows if not r.is_open and r.outcome_pct is not None]
-    n = len(closed)
+    graded = []
+    legacy_excluded = 0
+    for r in rows:
+        if r.is_open:
+            continue
+        g = graded_outcome(r)
+        if g is None or g["basis"] != "option" or g["pct"] is None:
+            legacy_excluded += 1
+            continue
+        graded.append(g)
+    n = len(graded)
 
     if n < MIN_SETTLED:
-        return {
+        result = {
             "source": "Directional Options",
             "recs_made": len(rows),
             "not_enough": True,
             "settled_count": n,
+            "status_label": "SHADOW",
+            "outcome_basis": "option_pnl",
+            "legacy_stock_basis_excluded": legacy_excluded,
         }
+        result.update(_preliminary(n))
+        return result
 
-    outcomes = [r.outcome_pct for r in closed]
+    outcomes = [g["pct"] for g in graded]
     wins = [v for v in outcomes if v > 0]
     losses = [v for v in outcomes if v <= 0]
     win_rate = round(len(wins) / n * 100, 1)
@@ -98,15 +142,23 @@ def _directional_tile(db: Session) -> dict:
     gross_win = sum(v for v in outcomes if v > 0)
     gross_loss = abs(sum(v for v in outcomes if v <= 0))
     profit_factor = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+    dollars = [g["pnl_dollars"] for g in graded if g.get("pnl_dollars") is not None]
+    option_pnl_total = round(sum(dollars), 2) if dollars else None
 
-    return {
+    result = {
         "source": "Directional Options",
         "recs_made": len(rows),
         "settled_count": n,
         "win_rate_pct": win_rate,
         "expectancy_pct": expectancy,
         "profit_factor": profit_factor,
+        "status_label": "SHADOW",
+        "outcome_basis": "option_pnl",
+        "option_pnl_dollars_total": option_pnl_total,
+        "legacy_stock_basis_excluded": legacy_excluded,
     }
+    result.update(_preliminary(n))
+    return result
 
 
 def _alerts_tile(db: Session) -> list[dict]:
@@ -132,6 +184,9 @@ def _alerts_tile(db: Session) -> list[dict]:
                 "expectancy_pct": row["expectancy_pct"],
                 "profit_factor": row["profit_factor"],
             })
+        base["outcome_basis"] = row["outcome_basis"]
+        base["legacy_stock_basis_excluded"] = row["legacy_stock_basis_excluded"]
+        base.update(_preliminary(n))
         tiles.append(base)
     return tiles
 
@@ -148,7 +203,13 @@ def _champions_tile(db: Session) -> dict:
         "recs_made": combined["picks_made"],
         "settled_count": n,
         "by_strategy": stats["by_strategy"],
+        "last_settled_at": stats.get("last_settled_at"),
+        "outcome_basis": stats.get("outcome_basis"),
+        "outcome_note": stats.get("outcome_note"),
+        "preliminary": combined.get("preliminary", True),
     }
+    if combined.get("confidence_note"):
+        base["confidence_note"] = combined["confidence_note"]
     if n < MIN_SETTLED:
         base["not_enough"] = True
     else:

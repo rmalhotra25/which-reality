@@ -253,6 +253,22 @@ export default function IncomeTab() {
         </div>
       )}
 
+      {/* Path to $1,000/month projection */}
+      {divData.projection_assumptions && (
+        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '20px' }}>
+          <h2 style={{ fontSize: '17px', fontWeight: 800, color: C.text, margin: '0 0 12px' }}>Path to $1,000/month</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(165px, 1fr))', gap: '12px' }}>
+            <StatBox label="Base case goal" value={divData.reached_goal_at ? `${divData.reached_goal_at.month_label} (${divData.reached_goal_at.year})` : 'Not in 10 years'} color={C.green} />
+            <StatBox label="Bear case goal" value={divData.reached_goal_at_bear ? `${divData.reached_goal_at_bear.month_label} (${divData.reached_goal_at_bear.year})` : 'Not in 10 years'} color={C.yellow} />
+            <StatBox label="Mo. income at 10y (base)" value={fmt$d(divData.projection?.[divData.projection.length - 1]?.monthly_income)} color={C.green} />
+            <StatBox label="Mo. income at 10y (bear)" value={fmt$d(divData.projection_bear?.[divData.projection_bear.length - 1]?.monthly_income)} color={C.yellow} />
+          </div>
+          <p style={{ fontSize: '12px', color: C.muted, margin: '12px 0 0', lineHeight: 1.5 }}>
+            10-year projection. Starting yield {divData.projection_assumptions.starting_yield_pct}%, dividend growth {divData.projection_assumptions.base_dividend_growth_pct}% base / {divData.projection_assumptions.bear_dividend_growth_pct}% bear, ${divData.projection_assumptions.monthly_contribution}/month added. {divData.projection_assumptions.excluded_note}
+          </p>
+        </div>
+      )}
+
       {/* Dividend holdings */}
       {portfolio.length > 0 && (
         <div>

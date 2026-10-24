@@ -11,6 +11,7 @@ const C = {
 const fmt$ = v => `$${Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
 const fmtP = v => v != null ? `${Number(v).toFixed(1)}%` : '—'
 const fmtPSign = v => v != null ? `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}%` : '—'
+const fmtDollarsSigned = v => v != null ? `${v >= 0 ? '+' : '-'}$${Math.abs(Number(v)).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'
 
 // ── Scoreboard ────────────────────────────────────────────────────────────────
 
@@ -20,8 +21,18 @@ function ScoreboardTile({ tile }) {
 
   return (
     <div style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: '12px', padding: '18px 20px' }}>
-      <div style={{ fontSize: '14px', fontWeight: 700, color: C.text, marginBottom: '12px' }}>
+      <div style={{ fontSize: '14px', fontWeight: 700, color: C.text, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
         {tile.source}
+        {tile.status_label && (
+          <span style={{
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em',
+            color: tile.status_label === 'LIVE' ? C.green : C.yellow,
+            border: `1px solid ${tile.status_label === 'LIVE' ? C.green : C.yellow}`,
+            borderRadius: '4px', padding: '1px 6px',
+          }}>
+            {tile.status_label}
+          </span>
+        )}
       </div>
 
       {notEnough ? (
@@ -33,10 +44,26 @@ function ScoreboardTile({ tile }) {
           <Stat label="Recs Made"     value={tile.recs_made} />
           <Stat label="Settled"       value={tile.settled_count} />
           <Stat label="Win Rate"      value={fmtP(tile.win_rate_pct)}    color={tile.win_rate_pct >= 50 ? C.green : C.red} />
-          <Stat label="Expectancy"    value={fmtPSign(tile.expectancy_pct)} color={statColor(tile.expectancy_pct)} />
+          <Stat label="Expectancy"    value={tile.expectancy_pct != null ? fmtPSign(tile.expectancy_pct) : fmtDollarsSigned(tile.expectancy_dollars)} color={tile.expectancy_pct != null ? statColor(tile.expectancy_pct) : statColor(tile.expectancy_dollars)} />
           <Stat label="Profit Factor" value={tile.profit_factor != null ? tile.profit_factor.toFixed(2) : '—'} color={tile.profit_factor >= 1 ? C.green : C.red} />
         </div>
       )}
+
+      {tile.preliminary && (
+        <div style={{ fontSize: '11px', color: C.muted, fontStyle: 'italic', marginTop: '10px' }}>
+          Preliminary: {tile.confidence_note || 'based on few settled outcomes, treat these stats as early evidence.'}
+        </div>
+      )}
+
+      {tile.last_settled_at ? (
+        <div style={{ fontSize: '11px', color: C.faint, marginTop: '10px' }}>
+          Last settlement: {new Date(tile.last_settled_at).toLocaleString()}
+        </div>
+      ) : tile.source === 'Champions Daily Picks' ? (
+        <div style={{ fontSize: '11px', color: C.faint, marginTop: '10px' }}>
+          Last settlement: none yet
+        </div>
+      ) : null}
 
       {tile.by_strategy && (
         <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: `1px solid ${C.bdr}` }}>
@@ -73,7 +100,7 @@ function Stat({ label, value, color }) {
 function Scoreboard({ data }) {
   if (!data) return null
 
-  const alertTiles = data.alerts || []
+  const alertTiles = (data.alerts || []).filter(t => t.setup_key !== 'directional_options')
   const directional = data.directional
   const champions = data.champions
   const wheel = data.wheel

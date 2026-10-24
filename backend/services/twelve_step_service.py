@@ -100,7 +100,10 @@ def get_twelve_step_data(ticker: str) -> dict:
                     pass
         return None
 
-    current_price = snapshot.get("price") or _m("52WeekLow") or None
+    # No price fallback: if the live snapshot has no price, report None and let
+    # the wizard block the DCF and verdict as "price unavailable". The 52-week
+    # low must never stand in as the current price.
+    current_price = snapshot.get("price") or None
     market_cap_millions = _m("marketCapitalization") or profile.get("marketCapitalization")
 
     return {

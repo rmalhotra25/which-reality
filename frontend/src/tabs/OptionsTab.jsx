@@ -40,7 +40,7 @@ function RegimeBanner({ verdict, dataComplete, suppressedReason }) {
       )}
       {verdict === 'YELLOW' && (
         <div style={{ color: '#f6e05e', fontSize: 12, paddingLeft: 20 }}>
-          Recommendations shown but flagged as against-regime. Elevated risk.
+          Recommendations shown with a caution flag. In a downtrend, puts are favoured and calls are against-regime.
         </div>
       )}
     </div>
@@ -116,6 +116,39 @@ function FitsChallengeBadge() {
       FITS CHALLENGE
     </span>
   )
+}
+
+function FavoursPutBadge() {
+  return (
+    <span style={{
+      background: '#1a3a2a', color: '#68d391', border: '1px solid #2f855a',
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700,
+      letterSpacing: '0.03em',
+    }}>
+      FAVOURS PUTS
+    </span>
+  )
+}
+
+function PutSpreadBadge() {
+  return (
+    <span style={{
+      background: '#2a1a3a', color: '#d6bcfa', border: '1px solid #6b46c1',
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700,
+      letterSpacing: '0.03em',
+    }}>
+      BEAR SPREAD
+    </span>
+  )
+}
+
+// Premium source label: a last-trade or fair-value premium is never
+// presented as a live quote.
+function premiumSourceLabel(source) {
+  if (source === 'ask') return 'Ask (buy price)'
+  if (source === 'last trade') return 'Last trade, 15-min delayed, not a live quote'
+  if (source === 'fair value') return 'Fair value estimate, not a live quote'
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +305,18 @@ function CandidateCard({ c, isYellow }) {
   const callStyle = { background: '#1a3a2a', color: '#68d391', border: '1px solid #2f855a' }
   const putStyle  = { background: '#3a1a1a', color: '#fc8181', border: '1px solid #c53030' }
   const optStyle  = c.option_type === 'CALL' ? callStyle : putStyle
+  const comps = c.ranking_components || {}
+  // In a BEAR regime puts are favoured, not against-regime, so the
+  // badge is suppressed for them.
+  const favoursPut = c.option_type === 'PUT' && comps.regime_favours_put
+  const showAgainst = isYellow && !favoursPut
+  const isSpread = comps.put_variant === 'bear_spread'
+  const spread = comps.spread || null
+  const plainCopy = comps.put_plain_copy || null
+  const premiumLabel = premiumSourceLabel(comps.premium_source)
+  const invalidation = c.underlying_stop != null
+    ? `Exit if the stock closes ${c.option_type === 'PUT' ? 'above' : 'below'} $${c.underlying_stop.toFixed(2)}`
+    : null
 
   return (
     <div style={{
@@ -299,8 +344,10 @@ function CandidateCard({ c, isYellow }) {
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {c.risk_tier && <TierBadge tier={c.risk_tier} />}
           {c.fits_challenge && <FitsChallengeBadge />}
+          {favoursPut && <FavoursPutBadge />}
+          {isSpread && <PutSpreadBadge />}
           {c.iv_crush_risk && <IVCrushBadge earningsDays={c.earnings_days_away} />}
-          {isYellow && <AgainstRegimeBadge />}
+          {showAgainst && <AgainstRegimeBadge />}
           {c.ai_available === false && <AiUnavailableBadge />}
         </div>
       </div>
@@ -309,6 +356,9 @@ function CandidateCard({ c, isYellow }) {
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {[
           { label: 'Price', val: c.current_price?.toFixed(2) },
+          { label: 'Expiry', val: c.expiry },
+          { label: 'DTE', val: c.dte != null ? `${c.dte}` : null },
+          { label: 'Premium source', val: premiumLabel },
           { label: 'Entry', val: c.underlying_entry?.toFixed(2) },
           { label: 'Target', val: c.underlying_target?.toFixed(2) },
           { label: 'Stop', val: c.underlying_stop?.toFixed(2) },
@@ -335,6 +385,44 @@ function CandidateCard({ c, isYellow }) {
 
       {/* Four numbers */}
       <FourNumbers c={c} />
+
+      {/* Invalidation: puts fail when the stock closes ABOVE the stop */}
+      {invalidation && (
+        <div style={{ color: '#f6ad55', fontSize: 12 }}>
+          {invalidation}
+        </div>
+      )}
+
+      {/* Bear spread detail and plain-language put copy */}
+      {isSpread && spread && (
+        <div style={{ background: '#111827', border: '1px solid #2d3748', borderRadius: 8, padding: '10px 14px' }}>
+          <div style={{ color: '#a0aec0', fontSize: 12, lineHeight: 1.6 }}>
+            Bear spread: buy the ${spread.long_strike} put, sell the ${spread.short_strike} put.
+            Net cost ${spread.net_debit.toFixed(2)} per share.
+            Most you can lose: ${spread.max_loss.toFixed(0)} per contract.
+            Most you can gain: ${spread.max_gain.toFixed(0)} per contract.
+            Break-even: stock below ${spread.breakeven.toFixed(2)} at expiry.
+          </div>
+          {comps.put_iv_route && (
+            <div style={{ color: '#718096', fontSize: 11, marginTop: 4 }}>{comps.put_iv_route}</div>
+          )}
+        </div>
+      )}
+      {plainCopy && Array.isArray(plainCopy) && (
+        <div style={{ background: '#0f1623', border: '1px solid #2d3748', borderRadius: 8, padding: '10px 14px' }}>
+          <div style={{ color: '#718096', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+            What this means for your money
+          </div>
+          {plainCopy.map((line, i) => (
+            <div key={i} style={{ color: '#cbd5e0', fontSize: 13, lineHeight: 1.6, marginBottom: 4 }}>{line}</div>
+          ))}
+        </div>
+      )}
+      {comps.red_regime_put_allowed && (
+        <div style={{ color: '#f6e05e', fontSize: 12 }}>
+          Volatile market: puts allowed only as a hedge or speculation, calls are suppressed.
+        </div>
+      )}
 
       {/* AI explanation */}
       {c.ai_available !== false && c.ai_explanation && (

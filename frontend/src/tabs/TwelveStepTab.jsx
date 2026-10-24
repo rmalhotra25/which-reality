@@ -66,9 +66,9 @@ const STEPS = [
   },
   {
     num: 9, title: 'Revenue vs Expense Growth', icon: '📉',
-    brief: 'Is revenue growing faster than costs? (Operating leverage)',
-    detail: 'When revenue grows faster than costs, margins expand — that\'s the sign of a scalable business. The opposite means margin compression.',
-    metric: 'Revenue growth % vs cost growth %',
+    brief: 'Is revenue growing faster than expenses? (Operating leverage)',
+    detail: 'When revenue grows faster than operating expenses, margins expand, the sign of a scalable business. The opposite means margin compression.',
+    metric: 'Revenue growth % vs operating expense growth %',
   },
   {
     num: 10, title: 'PEG Ratio', icon: '🎯',
@@ -109,8 +109,12 @@ const SECTORS = [
 
 const STORAGE_KEY = 'twelve_step_analyses_v1'
 
-// ─── DCF Math ─────────────────────────────────────────────────────────────────
-function computeDCFPerShare(avgRevenue, fwdGrowthRate, fcfMarginPct, discountRate, shares, netCash) {
+// ─── Units ──────────────────────────────────────────────────────────────────
+// Finnhub growth and margin fields arrive as PERCENT (12 means 12%), the same
+// convention discovery_engine.py and dcf_service.py use (they divide by 100).
+// Never multiply a Finnhub ttm field by 100 here. The screener table below is
+// different: FMP returns decimals, so its * 100 stays.
+export function computeDCFPerShare(avgRevenue, fwdGrowthRate, fcfMarginPct, discountRate, shares, netCash) {
   if (!avgRevenue || !fcfMarginPct || !discountRate || !shares || shares <= 0) return null
   if (discountRate <= 4) return null
   const g = fwdGrowthRate / 100
@@ -139,8 +143,32 @@ function computeImpliedGrowth(targetPrice, avgRevenue, fcfMarginPct, discountRat
   return (lo + hi) / 2
 }
 
+// Step 12 DCF growth input, in percent. Finnhub revenue_growth_yoy is already
+// percent, so it is clamped, not multiplied: a 12% grower seeds 12, not 50.
+export function dcfGrowthRate(ttm) {
+  const g = ttm?.revenue_growth_yoy
+  return g != null ? Math.max(Math.min(g, 50), -10) : 10
+}
+
+// Step 12 DCF shares input, as an absolute share count. Returns null when the
+// share count is unknown: no invented default, the per-share valuation blocks.
+export function dcfShares(data) {
+  const annual = (data.annual || [])[0] || {}
+  if (data.shares_outstanding) return data.shares_outstanding * 1e6
+  return annual.shares || null
+}
+
+// Verdict decision, pure so it is testable. BUY needs a real margin of
+// safety: a missing valuation never passes, so a ticker with no DCF behind
+// it cannot earn BUY on step passes alone.
+export function decideVerdict(passes, fails, mos, moatStrong) {
+  if (passes >= 9 && mos != null && mos >= 20 && moatStrong) return 'BUY'
+  if (passes >= 7 && fails <= 2) return 'WATCH'
+  return 'AVOID'
+}
+
 // ─── Auto-evaluation logic ────────────────────────────────────────────────────
-function evaluateStep(num, data) {
+export function evaluateStep(num, data) {
   const annual = data.annual || []
   const ttm = data.ttm || {}
 
@@ -160,7 +188,7 @@ function evaluateStep(num, data) {
   if (num === 2) {
     const g = ttm.revenue_growth_yoy
     if (g == null) return { status: 'warn', reason: 'Revenue growth data unavailable', details: {} }
-    const pct = g * 100
+    const pct = g // Finnhub percent, not a decimal
     if (pct >= 10) return { status: 'pass', reason: `Strong growth: +${pct.toFixed(1)}% YoY`, details: { pct } }
     if (pct >= 0) return { status: 'warn', reason: `Slow growth: +${pct.toFixed(1)}% YoY`, details: { pct } }
     return { status: 'fail', reason: `Revenue declining: ${pct.toFixed(1)}% YoY`, details: { pct } }
@@ -242,7 +270,7 @@ function evaluateStep(num, data) {
 
   if (num === 9) {
     const rows = annual.filter(r =>
-      r.revenue != null && r.cost_of_revenue != null
+      r.revenue != null && r.operating_expenses != null
     ).slice(0, 3)
     if (rows.length < 2) {
       const revG = ttm.revenue_growth_yoy
@@ -254,14 +282,14 @@ function evaluateStep(num, data) {
         if (om > prevOm) return { status: 'pass', reason: `Margins expanding — operating leverage at work`, details: {} }
         return { status: 'warn', reason: `Margins compressing — expenses outpacing revenue`, details: {} }
       }
-      return { status: 'warn', reason: 'Insufficient data to compare revenue vs cost growth', details: {} }
+      return { status: 'warn', reason: 'Insufficient data to compare revenue vs expense growth', details: {} }
     }
     const newest = rows[0], oldest = rows[rows.length - 1]
     const revGrowth = (newest.revenue - oldest.revenue) / oldest.revenue
-    const costGrowth = ((newest.cost_of_revenue) - (oldest.cost_of_revenue)) / (oldest.cost_of_revenue)
-    if (revGrowth > costGrowth + 0.01) return { status: 'pass', reason: `Revenue +${(revGrowth * 100).toFixed(0)}% vs costs +${(costGrowth * 100).toFixed(0)}% — expanding margins`, details: {} }
-    if (revGrowth >= costGrowth - 0.01) return { status: 'warn', reason: `Revenue and costs growing at similar rate`, details: {} }
-    return { status: 'fail', reason: `Costs +${(costGrowth * 100).toFixed(0)}% outpacing revenue +${(revGrowth * 100).toFixed(0)}%`, details: {} }
+    const expenseGrowth = (newest.operating_expenses - oldest.operating_expenses) / oldest.operating_expenses
+    if (revGrowth > expenseGrowth + 0.01) return { status: 'pass', reason: `Revenue +${(revGrowth * 100).toFixed(0)}% vs expenses +${(expenseGrowth * 100).toFixed(0)}%, expanding margins`, details: {} }
+    if (revGrowth >= expenseGrowth - 0.01) return { status: 'warn', reason: `Revenue and expenses growing at similar rate`, details: {} }
+    return { status: 'fail', reason: `Expenses +${(expenseGrowth * 100).toFixed(0)}% outpacing revenue +${(revGrowth * 100).toFixed(0)}%`, details: {} }
   }
 
   if (num === 10) {
@@ -269,7 +297,7 @@ function evaluateStep(num, data) {
     const growthRaw = ttm.revenue_growth_yoy ?? ttm.revenue_growth_5y
     if (!pe || pe <= 0) return { status: 'warn', reason: 'No positive P/E — cannot compute PEG', details: {} }
     if (!growthRaw) return { status: 'warn', reason: 'Growth rate unavailable for PEG', details: {} }
-    const growth = Math.abs(growthRaw * 100)
+    const growth = Math.abs(growthRaw) // Finnhub percent, not a decimal
     if (growth < 1) return { status: 'warn', reason: 'Near-zero growth makes PEG unreliable', details: {} }
     const peg = pe / growth
     if (peg < 1.5) return { status: 'pass', reason: `PEG ${peg.toFixed(2)} — attractive price for the growth`, details: { peg, pe, growth } }
@@ -422,8 +450,8 @@ function Step2Data({ data }) {
   const g5 = data.ttm?.revenue_growth_5y
   return (
     <div>
-      {g != null && <MetricRow label="TTM Revenue Growth YoY" value={`${(g * 100).toFixed(1)}%`} highlight={g >= 0.10 ? C.green : g >= 0 ? C.yellow : C.red} />}
-      {g5 != null && <MetricRow label="5-Year Revenue CAGR" value={`${(g5 * 100).toFixed(1)}%`} />}
+      {g != null && <MetricRow label="TTM Revenue Growth YoY" value={`${g.toFixed(1)}%`} highlight={g >= 10 ? C.green : g >= 0 ? C.yellow : C.red} />}
+      {g5 != null && <MetricRow label="5-Year Revenue CAGR" value={`${g5.toFixed(1)}%`} />}
       <AnnualTable
         annual={data.annual}
         keys={['revenue']}
@@ -535,8 +563,8 @@ function Step9Data({ data }) {
     <div>
       <AnnualTable
         annual={data.annual}
-        keys={['revenue', 'cost_of_revenue']}
-        labels={['Revenue', 'Cost of Revenue']}
+        keys={['revenue', 'operating_expenses']}
+        labels={['Revenue', 'Operating Expenses']}
         formatter={(k, v) => `$${fmtNum(v)}`}
       />
     </div>
@@ -546,13 +574,13 @@ function Step9Data({ data }) {
 function Step10Data({ data }) {
   const pe = data.ttm?.pe
   const g = data.ttm?.revenue_growth_yoy ?? data.ttm?.revenue_growth_5y
-  const peg = pe && g && Math.abs(g * 100) > 0.5 ? pe / Math.abs(g * 100) : null
+  const peg = pe && g && Math.abs(g) > 0.5 ? pe / Math.abs(g) : null
   const eps5y = data.ttm?.eps_growth_5y
   return (
     <div>
       {pe != null && <MetricRow label="P/E Ratio (TTM)" value={pe > 0 ? pe.toFixed(1) : 'N/A (negative earnings)'} highlight={pe > 0 && pe < 30 ? C.green : pe > 0 ? C.yellow : C.red} />}
-      {g != null && <MetricRow label="Revenue Growth YoY" value={`${(g * 100).toFixed(1)}%`} />}
-      {eps5y != null && <MetricRow label="EPS Growth 5Y" value={`${(eps5y * 100).toFixed(1)}%`} />}
+      {g != null && <MetricRow label="Revenue Growth YoY" value={`${g.toFixed(1)}%`} />}
+      {eps5y != null && <MetricRow label="EPS Growth 5Y" value={`${eps5y.toFixed(1)}%`} />}
       {peg != null && <MetricRow label="PEG Ratio" value={peg.toFixed(2)} highlight={peg < 1.5 ? C.green : peg < 3 ? C.yellow : C.red} />}
     </div>
   )
@@ -611,6 +639,16 @@ function Step12Data({ data, dcfInputs, setDcfInputs, dcfResult }) {
       <p style={{ color: C.muted, fontSize: '12px', marginBottom: '12px' }}>
         Adjust the inputs below. Pre-filled from fetched data — modify to match your conviction.
       </p>
+      {price == null && (
+        <div style={{ padding: '10px 14px', background: C.redDim, border: `1px solid ${C.redBorder}`, borderRadius: '8px', color: C.red, fontSize: '12px', marginBottom: '12px' }}>
+          Price unavailable: no live price could be fetched. Margin of safety, implied growth, and the final verdict are blocked. The 52-week low is never used as a substitute price.
+        </div>
+      )}
+      {dcfInputs.shares == null && (
+        <div style={{ padding: '10px 14px', background: C.yellowDim, border: `1px solid ${C.yellowBorder}`, borderRadius: '8px', color: C.yellow, fontSize: '12px', marginBottom: '12px' }}>
+          Shares outstanding unknown: per-share valuation is blocked until a real share count is available. No default share count is assumed.
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '16px' }}>
         {[
           { key: 'avgRevenue', label: 'Last Annual Revenue ($)', step: 1e8, hint: 'Use the most recent annual revenue' },
@@ -761,11 +799,11 @@ export default function TwelveStepTab({ initialTicker = null, onBack = null }) {
     const ttm = data.ttm || {}
     const rev = annual.revenue || 0
     const fcfM = ttm.fcf_margin != null ? ttm.fcf_margin : (annual.free_cash_flow && annual.revenue ? (annual.free_cash_flow / annual.revenue) * 100 : 15)
-    const shares = data.shares_outstanding ? data.shares_outstanding * 1e6 : (annual.shares || 1e9)
+    const shares = dcfShares(data)
     const cash = annual.cash || 0
     const debt = annual.total_debt || 0
     const netCash = cash - debt
-    const growthRate = ttm.revenue_growth_yoy != null ? Math.max(Math.min(ttm.revenue_growth_yoy * 100, 50), -10) : 10
+    const growthRate = dcfGrowthRate(ttm)
     setDcfInputs({
       avgRevenue: rev,
       fcfMarginPct: Math.max(fcfM, 1),
@@ -847,6 +885,9 @@ export default function TwelveStepTab({ initialTicker = null, onBack = null }) {
   }
 
   function computeVerdict() {
+    // No live price means no verdict: a missing price must never read as a
+    // passing margin of safety, and the 52-week low is never substituted.
+    if (tickerData && tickerData.current_price == null) return 'BLOCKED'
     let passes = 0, warns = 0, fails = 0
     for (let i = 1; i <= 12; i++) {
       const s = getEffectiveStatus(i)
@@ -856,9 +897,7 @@ export default function TwelveStepTab({ initialTicker = null, onBack = null }) {
     }
     const mos = dcfResult?.mos
     const moatStrong = moatFactors.length >= 3
-    if (passes >= 9 && (mos == null || mos >= 20) && moatStrong) return 'BUY'
-    if (passes >= 7 && fails <= 2) return 'WATCH'
-    return 'AVOID'
+    return decideVerdict(passes, fails, mos, moatStrong)
   }
 
   const step = STEPS[currentStep - 1]
@@ -1203,7 +1242,18 @@ export default function TwelveStepTab({ initialTicker = null, onBack = null }) {
         <div>
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
             <h2 style={{ color: C.text, fontSize: '18px', fontWeight: 700, margin: '0 0 16px' }}>Final Verdict: {ticker}</h2>
-            {verdict && (
+            {verdict === 'BLOCKED' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px', background: C.redDim, borderRadius: '10px', border: `1px solid ${C.redBorder}`, marginBottom: '20px' }}>
+                <div style={{ fontSize: '40px', lineHeight: 1 }}>⛔</div>
+                <div>
+                  <div style={{ color: C.red, fontSize: '24px', fontWeight: 800 }}>Verdict blocked</div>
+                  <div style={{ color: C.muted, fontSize: '12px', marginTop: '2px' }}>
+                    Price unavailable: no live price could be fetched, so margin of safety and the verdict are blocked. The 52-week low is never used as a substitute price.
+                  </div>
+                </div>
+              </div>
+            )}
+            {verdict && verdict !== 'BLOCKED' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px', background: verdictBg, borderRadius: '10px', border: `1px solid ${statusBorder(verdict === 'BUY' ? 'pass' : verdict === 'WATCH' ? 'warn' : 'fail')}`, marginBottom: '20px' }}>
                 <div style={{ fontSize: '40px', lineHeight: 1 }}>
                   {verdict === 'BUY' ? '🟢' : verdict === 'WATCH' ? '🟡' : '🔴'}

@@ -46,6 +46,8 @@ class WheelPositionSchema(BaseModel):
     recommendation_id: int
     ticker: str
     status: str
+    mode: str = "wheel"
+    guidance: Optional[dict] = None
     put_strike: float
     put_expiry: str
     put_premium_rcvd: Optional[float] = None
@@ -71,6 +73,7 @@ class AcceptWheelBody(BaseModel):
     put_strike: Optional[float] = None
     put_expiry: Optional[str] = None
     put_premium_rcvd: Optional[float] = None
+    mode: Optional[str] = None
 
 
 class UpdateStatusBody(BaseModel):

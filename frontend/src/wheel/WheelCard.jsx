@@ -138,7 +138,7 @@ function AssignmentBadge({ chance, risk }) {
   )
 }
 
-export default function WheelCard({ rec, account, onAccepted }) {
+export default function WheelCard({ rec, account, mode, onAccepted }) {
   const [showModal, setShowModal] = useState(false)
 
   const capitalRequired = rec.put_strike ? rec.put_strike * 100 : null
@@ -257,6 +257,7 @@ export default function WheelCard({ rec, account, onAccepted }) {
       {showModal && (
         <AcceptModal
           rec={rec}
+          mode={mode || 'wheel'}
           onClose={() => setShowModal(false)}
           onAccepted={(pos) => {
             setShowModal(false)

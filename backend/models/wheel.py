@@ -57,6 +57,10 @@ class WheelPosition(Base):
     status = Column(
         Enum(WheelStatus), default=WheelStatus.put_active, nullable=False, index=True
     )
+    # Strategy mode this position is managed under: "wheel" (classic,
+    # assignment is fine) or "harvest" (premium harvesting, assignment
+    # is the failure case). Drives management guidance.
+    mode = Column(String(10), nullable=False, default="wheel", server_default="wheel")
 
     # Put leg
     put_strike = Column(Float, nullable=False)

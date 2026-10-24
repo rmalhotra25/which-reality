@@ -40,12 +40,13 @@ const confirmBtn = {
   color: '#c6f6d5', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
 }
 
-export default function AcceptModal({ rec, onClose, onAccepted }) {
+export default function AcceptModal({ rec, mode, onClose, onAccepted }) {
   const [putStrike, setPutStrike] = useState(rec.put_strike ?? '')
   const [putExpiry, setPutExpiry] = useState(rec.put_expiry ?? '')
   const [putPremium, setPutPremium] = useState(rec.put_premium ?? '')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const modeLabel = mode === 'harvest' ? 'Premium Harvesting' : 'Wheel'
 
   const handleConfirm = async () => {
     if (!putStrike) { setError('Put strike is required'); return }
@@ -56,6 +57,7 @@ export default function AcceptModal({ rec, onClose, onAccepted }) {
         put_strike: parseFloat(putStrike),
         put_expiry: putExpiry || null,
         put_premium_rcvd: putPremium ? parseFloat(putPremium) : null,
+        mode: mode || 'wheel',
       })
       onAccepted(pos)
     } catch (e) {
@@ -73,6 +75,7 @@ export default function AcceptModal({ rec, onClose, onAccepted }) {
         </div>
         <div style={{ fontSize: '13px', color: '#a0aec0' }}>
           Confirm the details below. You can adjust from the suggested values.
+          This position will be managed as <strong style={{ color: '#e2e8f0' }}>{modeLabel}</strong>.
         </div>
 
         <div>

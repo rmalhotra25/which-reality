@@ -89,6 +89,8 @@ def _migrate_add_columns():
     additions = [
         ("wheel_recommendations", "assignment_chance_pct",    "FLOAT"),
         ("wheel_recommendations", "assignment_risk",          "VARCHAR(10)"),
+        # Dual wheel modes: strategy mode per position (wheel vs harvest)
+        ("wheel_positions", "mode", "VARCHAR(10) DEFAULT 'wheel'"),
         # Leveraged MA confirmation state machine (added after initial deploy)
         ("leveraged_ma_signal_state", "confirmed_position",  "VARCHAR(5)"),
         ("leveraged_ma_signal_state", "pending_signal",      "VARCHAR(5)"),

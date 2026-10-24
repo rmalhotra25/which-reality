@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -19,10 +19,111 @@ from schemas.wheel import (
     AcceptWheelBody,
     UpdateStatusBody,
 )
+from services.wheel_modes import (
+    WHEEL_MODE,
+    VALID_MODES,
+    MANAGEMENT_RULES_TEXT,
+    get_management_guidance,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _TICKER_RE = re.compile(r'^[A-Z]{1,5}$')
+
+
+def _parse_mode(mode: str | None) -> str:
+    return mode if mode in VALID_MODES else WHEEL_MODE
+
+
+def _dte_for(expiry: str | None):
+    """Days from today to the expiry date, or None if unparseable."""
+    if not expiry:
+        return None
+    try:
+        from datetime import date
+        return (date.fromisoformat(str(expiry)) - date.today()).days
+    except Exception:
+        return None
+
+
+def _current_put_mark(ticker: str, put_strike: float, put_expiry: str | None):
+    """
+    Best-effort live mark for the position's put: the mid premium of the
+    chain tier whose strike is nearest the position strike, used only
+    when the chain expiry matches the position expiry. Returns None
+    when no matching mark exists. Never fabricates a mark.
+    """
+    try:
+        from services.stock_data import StockDataService
+        tiers = StockDataService().get_put_tiers(ticker)
+        if not tiers or tiers.get("expiry") != put_expiry:
+            return None
+        best = None
+        best_gap = None
+        for tier in (tiers.get("likely"), tiers.get("moderate"), tiers.get("unlikely")):
+            if not isinstance(tier, dict):
+                continue
+            strike = tier.get("strike")
+            mid = tier.get("mid_premium")
+            if strike is None or not mid:
+                continue
+            gap = abs(strike - put_strike)
+            if best_gap is None or gap < best_gap:
+                best = mid
+                best_gap = gap
+        return best
+    except Exception:
+        return None
+
+
+def _position_guidance(pos: WheelPosition) -> dict:
+    """Compute management guidance for one position, failure-isolated."""
+    mode = (getattr(pos, "mode", None) or WHEEL_MODE)
+    if mode not in VALID_MODES:
+        mode = WHEEL_MODE
+    dte = _dte_for(pos.put_expiry)
+    current_price = None
+    current_mark = None
+    try:
+        if pos.status == WheelStatus.put_active:
+            from services.finnhub_client import get_quote
+            q = get_quote(pos.ticker)
+            current_price = q.get("c") or q.get("pc")
+            if current_price:
+                current_price = float(current_price)
+            current_mark = _current_put_mark(pos.ticker, pos.put_strike, pos.put_expiry)
+    except Exception:
+        current_price = None
+        current_mark = None
+    guidance = get_management_guidance(
+        mode, pos.status.value, pos.put_premium_rcvd, dte, current_mark
+    )
+    guidance["dte"] = dte
+    guidance["current_price"] = current_price
+    guidance["current_mark"] = current_mark
+    guidance["mode"] = mode
+    return guidance
+
+
+def _position_with_guidance(pos: WheelPosition) -> dict:
+    d = WheelPositionSchema.model_validate(pos).model_dump()
+    d["mode"] = getattr(pos, "mode", None) or WHEEL_MODE
+    try:
+        d["guidance"] = _position_guidance(pos)
+    except Exception as e:
+        logger.debug("guidance failed for position %d: %s", pos.id, e)
+        d["guidance"] = {
+            "action": "hold",
+            "title": "Hold and monitor",
+            "reason": "Live guidance unavailable right now.",
+            "detail": MANAGEMENT_RULES_TEXT.get(d["mode"], MANAGEMENT_RULES_TEXT[WHEEL_MODE]),
+            "mark_known": False,
+            "dte": _dte_for(pos.put_expiry),
+            "current_price": None,
+            "current_mark": None,
+            "mode": d["mode"],
+        }
+    return d
 
 
 class CustomAnalyzeRequest(BaseModel):
@@ -97,10 +198,13 @@ def accept_wheel_recommendation(
     if not put_strike:
         raise HTTPException(status_code=400, detail="put_strike is required")
 
+    mode = _parse_mode(body.mode)
+
     position = WheelPosition(
         recommendation_id=rec.id,
         ticker=rec.ticker,
         status=WheelStatus.put_active,
+        mode=mode,
         put_strike=put_strike,
         put_expiry=put_expiry,
         put_premium_rcvd=body.put_premium_rcvd or rec.put_premium,
@@ -114,31 +218,32 @@ def accept_wheel_recommendation(
         position_id=position.id,
         from_status=None,
         to_status=WheelStatus.put_active,
-        note="Position opened via Accept",
+        note=f"Position opened via Accept (mode={mode})",
     )
     db.add(history)
     db.commit()
     db.refresh(position)
-    return position
+    return _position_with_guidance(position)
 
 
-@router.get("/positions", response_model=List[WheelPositionSchema])
+@router.get("/positions")
 def get_wheel_positions(include_closed: bool = False, db: Session = Depends(get_db)):
     q = db.query(WheelPosition)
     if not include_closed:
         q = q.filter(WheelPosition.status != WheelStatus.closed)
-    return q.order_by(desc(WheelPosition.put_opened_at)).all()
+    positions = q.order_by(desc(WheelPosition.put_opened_at)).all()
+    return [_position_with_guidance(p) for p in positions]
 
 
-@router.get("/positions/{pos_id}", response_model=WheelPositionSchema)
+@router.get("/positions/{pos_id}")
 def get_wheel_position(pos_id: int, db: Session = Depends(get_db)):
     pos = db.get(WheelPosition, pos_id)
     if not pos:
         raise HTTPException(status_code=404, detail="Position not found")
-    return pos
+    return _position_with_guidance(pos)
 
 
-@router.patch("/positions/{pos_id}/status", response_model=WheelPositionSchema)
+@router.patch("/positions/{pos_id}/status")
 def update_position_status(
     pos_id: int, body: UpdateStatusBody, db: Session = Depends(get_db)
 ):
@@ -201,7 +306,7 @@ def update_position_status(
     db.add(history)
     db.commit()
     db.refresh(pos)
-    return pos
+    return _position_with_guidance(pos)
 
 
 @router.get("/positions/{pos_id}/call-suggestion")
@@ -236,6 +341,7 @@ def export_positions(db: Session = Depends(get_db)):
             "id": pos.id,
             "ticker": pos.ticker,
             "status": pos.status.value,
+            "mode": getattr(pos, "mode", None) or WHEEL_MODE,
             "put_strike": pos.put_strike,
             "put_expiry": pos.put_expiry,
             "put_premium_rcvd": pos.put_premium_rcvd,
@@ -460,33 +566,37 @@ def refresh_wheel():
 
 
 @router.get("/scanner/candidates")
-def get_scanner_candidates():
+def get_scanner_candidates(mode: str = Query(WHEEL_MODE)):
     """
-    Return the cached wheel scanner results (put + call candidates).
-    This endpoint never triggers a scan -- consistent with the Phase 1 rule
-    that page loads must not trigger analysis runs.
+    Return the cached wheel scanner results (put + call candidates)
+    for the requested mode. This endpoint never triggers a scan --
+    consistent with the Phase 1 rule that page loads must not trigger
+    analysis runs.
     """
     from services.wheel_scanner_service import get_put_cache, get_call_cache
-    put_cache = get_put_cache()
+    put_cache = get_put_cache(_parse_mode(mode))
     call_cache = get_call_cache()
     return {
         "puts": put_cache,
         "calls": call_cache,
         "has_data": put_cache is not None or call_cache is not None,
+        "mode": _parse_mode(mode),
     }
 
 
 @router.post("/scanner/refresh")
-def refresh_scanner():
-    """Trigger a full wheel scanner run in the background."""
+def refresh_scanner(mode: str = Query(WHEEL_MODE)):
+    """Trigger a full wheel scanner run in the background for the mode."""
     import threading
+
+    mode = _parse_mode(mode)
 
     def _run():
         from database import SessionLocal
         from services.wheel_scanner_service import run_put_scanner, run_call_scanner
         db = SessionLocal()
         try:
-            run_put_scanner(db)
+            run_put_scanner(db, mode=mode)
             run_call_scanner(db)
         except Exception as e:
             logger.error("Wheel scanner run failed: %s", e, exc_info=True)
@@ -496,7 +606,7 @@ def refresh_scanner():
             db.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return {"status": "queued", "message": "Wheel scanner started in background"}
+    return {"status": "queued", "message": f"Wheel scanner started in background (mode={mode})"}
 
 
 @router.get("/scanner/status")

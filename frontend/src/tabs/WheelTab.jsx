@@ -109,10 +109,26 @@ const scannerStyles = {
   showMoreBtn: { padding: '6px 14px', background: 'transparent', border: '1px solid #2d3748', borderRadius: '6px', color: '#718096', cursor: 'pointer', fontSize: '12px', marginTop: '8px' },
 }
 
-function PutCandidateCard({ c, rank }) {
+const MODE_KEY = 'wheel_mode_v1'
+
+const MODE_INFO = {
+  wheel: {
+    label: 'Wheel',
+    tagline: 'Classic wheel: sell ~30 delta puts, accept assignment, then sell covered calls.',
+    rules: 'Wheel rules: close at 50% of premium collected. Roll for a credit if the put doubles in value. Never hold into expiry week, close or roll at 7 days out. If assigned, sell covered calls.',
+  },
+  harvest: {
+    label: 'Premium Harvesting',
+    tagline: 'Harvest premiums: sell low delta puts (near 0.13), almost never assigned, close at 50% or roll to defend.',
+    rules: 'Harvest rules: close at 50% of premium collected. Roll down and out for a credit if the put doubles in value. Never hold into expiry week, close or roll at 7 days out. Assignment is the failure case, defend the strike early.',
+  },
+}
+
+function PutCandidateCard({ c, rank, mode }) {
   const pct = (v, d = 2) => v != null ? `${(v * 100).toFixed(d)}%` : 'n/a'
   const fmt = (v, d = 2) => v != null ? v.toFixed(d) : 'n/a'
   const penalties = c.penalties || []
+  const isHarvest = mode === 'harvest'
   return (
     <div style={scannerStyles.card}>
       <div style={scannerStyles.cardHeader}>
@@ -122,27 +138,37 @@ function PutCandidateCard({ c, rank }) {
             ${c.current_price?.toFixed(2)} &middot; {c.trend_state === 'above_200ma' ? '▲ above 200MA' : c.trend_state === 'below_200ma' ? '▼ below 200MA' : ''}
           </span>
         </div>
-        <span style={scannerStyles.score}>score: {c.rank_score?.toFixed(7)}</span>
+        <span style={scannerStyles.score}>EV: ${c.ev_per_contract?.toFixed(2) ?? 'n/a'}/contract</span>
       </div>
+
+      {isHarvest && (
+        <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px', color: c.assignment_chance_pct >= 20 ? '#fc8181' : '#68d391' }}>
+          Assignment chance: {c.assignment_chance_pct}% &middot; {c.assignment_chance_pct >= 20 ? 'high for harvest mode' : 'low, fits harvesting'}
+        </div>
+      )}
 
       <div style={scannerStyles.grid2}>
         <span><span style={scannerStyles.label}>Strike: </span>${c.strike}</span>
         <span><span style={scannerStyles.label}>Expiry: </span>{c.expiry} ({c.dte}d)</span>
         <span><span style={scannerStyles.label}>Mid: </span>${fmt(c.mid_premium)} ({c.bid}/{c.ask})</span>
         <span><span style={scannerStyles.label}>$/day on capital: </span>{pct(c.raw_pppd, 4)}</span>
+        <span><span style={scannerStyles.label}>EV / $ capital: </span>{c.ev_per_capital != null ? `${(c.ev_per_capital * 100).toFixed(3)}%` : 'n/a'}</span>
+        <span><span style={scannerStyles.label}>Delta: </span>{fmt(c.delta_abs)} ({c.assignment_chance_pct}% asgn)</span>
         <span><span style={scannerStyles.label}>IV: </span>{c.iv_pct?.toFixed(1)}%
           {c.iv_percentile != null && <span style={{ color: '#718096' }}> (p{c.iv_percentile?.toFixed(0)}{c.iv_pct_source === 'historical' ? ' approx' : ''})</span>}
         </span>
-        <span><span style={scannerStyles.label}>Delta: </span>{fmt(c.delta_abs)} ({c.assignment_chance_pct}% asgn)</span>
         <span><span style={scannerStyles.label}>OI / Vol: </span>{c.open_interest} / {c.volume}</span>
-        <span><span style={scannerStyles.label}>Spread: </span>{c.spread_pct?.toFixed(1)}% of mid</span>
+        <span><span style={scannerStyles.label}>Spread: </span>{c.spread_known ? `${c.spread_pct?.toFixed(1)}% of mid` : 'unknown (no live quotes)'}</span>
+        {isHarvest && (
+          <span><span style={scannerStyles.label}>If assigned after a 10% drop: </span>{c.assignment_loss != null ? `-$${c.assignment_loss.toFixed(2)}` : 'n/a'}</span>
+        )}
       </div>
 
       <div style={scannerStyles.flagRow}>
         {c.earnings_in_window && <span style={scannerStyles.flag('red')}>earnings in window</span>}
         {penalties.map((p, i) => <span key={i} style={scannerStyles.flag('yellow')}>{p.reason} x{p.multiplier}</span>)}
         <span style={scannerStyles.flag(c.quality_verdict === 'PASS' ? 'green' : c.quality_verdict === 'FAIL' ? 'red' : 'neutral')}>
-          {c.quality_verdict}{c.quant_score != null ? ` (${c.quant_score})` : ''}
+          {mode === 'wheel' ? `Own it? ${c.quality_verdict}` : c.quality_verdict}{c.quant_score != null ? ` (${c.quant_score})` : ''}
         </span>
         {c.data_source && <span style={scannerStyles.flag('neutral')}>{c.data_source}</span>}
       </div>
@@ -172,7 +198,7 @@ function CallCandidateCard({ c, rank }) {
         <span><span style={{ color: '#718096' }}>IV: </span>{c.iv_pct?.toFixed(1)}%</span>
         <span><span style={{ color: '#718096' }}>Delta: </span>{fmt(c.delta)} ({c.call_away_chance_pct}% call-away)</span>
         <span><span style={{ color: '#718096' }}>OI / Vol: </span>{c.open_interest} / {c.volume}</span>
-        <span><span style={{ color: '#718096' }}>Spread: </span>{c.spread_pct?.toFixed(1)}% of mid</span>
+        <span><span style={{ color: '#718096' }}>Spread: </span>{c.spread_known ? `${c.spread_pct?.toFixed(1)}% of mid` : 'unknown (no live quotes)'}</span>
       </div>
       <div style={scannerStyles.flagRow}>
         {c.early_assignment_risk && (
@@ -184,7 +210,7 @@ function CallCandidateCard({ c, rank }) {
   )
 }
 
-function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidates, setShowCallCandidates, showExcluded, setShowExcluded }) {
+function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidates, setShowCallCandidates, showExcluded, setShowExcluded, mode }) {
   const [showAllExcluded, setShowAllExcluded] = useState(false)
   const puts = data?.puts
   const calls = data?.calls
@@ -241,8 +267,8 @@ function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidat
 
           {!showCallCandidates && (
             putCandidates.length === 0
-              ? <div style={scannerStyles.emptyNote}>No put candidates passed all filters.</div>
-              : putCandidates.map((c, i) => <PutCandidateCard key={c.ticker} c={c} rank={i + 1} />)
+              ? <div style={scannerStyles.emptyNote}>No put candidates passed all filters{mode === 'harvest' ? ' in harvest mode (low delta, above 200MA, IV percentile 50+, no earnings)' : ''}.</div>
+              : putCandidates.map((c, i) => <PutCandidateCard key={c.ticker} c={c} rank={i + 1} mode={mode} />)
           )}
 
           {showCallCandidates && (
@@ -1024,6 +1050,14 @@ export default function WheelTab() {
   const [scannerRefreshing, setScannerRefreshing] = useState(false)
   const [showCallCandidates, setShowCallCandidates] = useState(false)
   const [showExcluded, setShowExcluded] = useState(false)
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem(MODE_KEY) || 'wheel' } catch { return 'wheel' }
+  })
+
+  const changeMode = (m) => {
+    setMode(m)
+    try { localStorage.setItem(MODE_KEY, m) } catch {}
+  }
 
   const loadRecs = async () => {
     setLoading(true)
@@ -1037,29 +1071,29 @@ export default function WheelTab() {
     }
   }
 
-  const loadScanner = async () => {
+  const loadScanner = useCallback(async (m) => {
     setScannerLoading(true)
     try {
-      const data = await api.wheel.getScannerCandidates()
+      const data = await api.wheel.getScannerCandidates(m)
       setScannerData(data)
     } catch (e) {
       // scanner cache miss is non-fatal
     } finally {
       setScannerLoading(false)
     }
-  }
+  }, [])
 
   const handleScannerRefresh = async () => {
     setScannerRefreshing(true)
     try {
-      await api.wheel.refreshScanner()
+      await api.wheel.refreshScanner(mode)
       // Poll until results appear
       const poll = setInterval(async () => {
         const status = await api.wheel.getScannerStatus().catch(() => null)
         if (status && status.state !== 'running') {
           clearInterval(poll)
           setScannerRefreshing(false)
-          loadScanner()
+          loadScanner(mode)
         }
       }, 3000)
       setTimeout(() => { clearInterval(poll); setScannerRefreshing(false) }, 120000)
@@ -1083,7 +1117,7 @@ export default function WheelTab() {
   useEffect(() => { loadRecs() }, [])
   useEffect(() => { loadPositions() }, [loadPositions])
   useEffect(() => { api.account.getBalance().then(setAccount).catch(() => {}) }, [])
-  useEffect(() => { loadScanner() }, [])
+  useEffect(() => { loadScanner(mode) }, [mode, loadScanner])
 
   const wheelFetchFn = useCallback(() => api.wheel.getRecommendations(), [])
   const { start: startPolling } = useRefreshPoller(
@@ -1156,6 +1190,20 @@ export default function WheelTab() {
 
       {error && <div style={s.error}>Error: {error}</div>}
 
+      {/* Mode toggle: classic wheel vs premium harvesting */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+        <button style={scannerStyles.tab(mode === 'wheel')} onClick={() => changeMode('wheel')}>
+          Wheel
+        </button>
+        <button style={scannerStyles.tab(mode === 'harvest')} onClick={() => changeMode('harvest')}>
+          Premium Harvesting
+        </button>
+        <span style={{ fontSize: '12px', color: '#718096' }}>{MODE_INFO[mode].tagline}</span>
+      </div>
+      <div style={{ fontSize: '12px', color: '#a0aec0', background: '#1a1f2e', border: '1px solid #2d3748', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', lineHeight: 1.6 }}>
+        {MODE_INFO[mode].rules}
+      </div>
+
       {/* Scanner candidates section */}
       <ScannerSection
         data={scannerData}
@@ -1166,6 +1214,7 @@ export default function WheelTab() {
         setShowCallCandidates={setShowCallCandidates}
         showExcluded={showExcluded}
         setShowExcluded={setShowExcluded}
+        mode={mode}
       />
 
       <hr style={s.divider} />
@@ -1187,7 +1236,7 @@ export default function WheelTab() {
 
       <div style={s.grid}>
         {recs.map((rec) => (
-          <WheelCard key={rec.id} rec={rec} account={account} onAccepted={handleAccepted} />
+          <WheelCard key={rec.id} rec={rec} account={account} mode={mode} onAccepted={handleAccepted} />
         ))}
       </div>
 

@@ -2,23 +2,42 @@
 Wheel scanner service.
 
 Runs the put and covered-call tiers across the universe in
-data/wheel_universe.json and ranks candidates by risk-adjusted
-premium per day on secured capital.
+data/wheel_universe.json and ranks put candidates by expected value
+per dollar of secured capital.
 
 Ranking formula (stated here and echoed in each result payload):
-  raw_pppd = mid_premium / (strike * 100) / dte
-  score = raw_pppd
-          * (0.50 if earnings_in_window else 1.0)
-          * (0.80 if iv_pct_bottom_third else 1.0)
-          * (0.90 if below_ma200 else 1.0)
-          * (0.85 if spread_pct > 10 else 1.0)
+  EV per contract = (1 - p) * premium - p * assignment_loss
+  p = assignment chance (delta_abs, or assignment_chance_pct / 100)
+  premium = mid_premium * 100
+  assignment_loss = max(0, strike - 0.9 * current_price) * 100
+  rank = EV / (strike * 100), times the mode penalties
 
-Filters that exclude before ranking:
-  - spread_pct > 15%       (spread_too_wide)
+Modes
+-----
+wheel:    classic wheel. Moderate (~0.30 delta) tier. Soft penalty
+          multipliers: 0.50 earnings in window, 0.80 IV in bottom
+          third, 0.90 below the 200-day MA, 0.85 spread over 10%.
+harvest:  premium harvesting. Low-delta tier nearest 0.13 (bounded
+          0.08-0.20). Hard gates instead of penalties: earnings in
+          window excludes, below the 200-day excludes, IV percentile
+          under 50 excludes.
+
+Dropped from the old formula: the old ranking was raw premium per day
+on secured capital (raw_pppd). It is kept in the payload for display
+only and no longer drives the order. The old spread penalty is kept
+only when the spread is known; when bid and ask are both 0 there is
+no live quote on this data plan, so no spread check runs at all and
+the result says spread_known=false instead of implying a check passed.
+
+Filters that exclude before ranking (both modes):
   - open_interest < 100    (insufficient_liquidity)
+  - spread_pct > 15%       (spread_too_wide, only when spread is known)
 
-Hard flags that do NOT auto-exclude but apply the 0.50 penalty:
+Hard gates in harvest mode only:
   - earnings inside the options window  (earnings_in_window)
+  - price below the 200-day MA         (below_ma200)
+  - IV percentile under 50, or unknown (iv_too_low)
+  - no tier with delta in 0.08-0.20    (no_low_delta_tier)
 """
 import json
 import logging
@@ -28,6 +47,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import services.run_status as run_status
+from services.wheel_modes import (
+    WHEEL_MODE,
+    HARVEST_MODE,
+    VALID_MODES,
+    RANKING_FORMULA_TEXT,
+    compute_assignment_loss,
+    compute_ev,
+    select_harvest_tier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +63,11 @@ _UNIVERSE_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "data", "wheel_universe.json"
 )
 
-# In-memory result cache
-_put_cache: Optional[dict] = None
+# In-memory result caches, one per mode
+_put_cache: dict = {}
 _call_cache: Optional[dict] = None
 
-RANKING_FORMULA = (
-    "raw_pppd = mid_premium / (strike * 100) / dte; "
-    "score = raw_pppd"
-    " * (0.50 if earnings_in_window else 1.0)"
-    " * (0.80 if iv_pct_bottom_third else 1.0)"
-    " * (0.90 if below_ma200 else 1.0)"
-    " * (0.85 if spread_pct > 10 else 1.0)"
-)
+RANKING_FORMULA = RANKING_FORMULA_TEXT
 
 
 def _load_universe() -> list[str]:
@@ -137,10 +158,15 @@ def _quality_gate(ticker: str) -> dict:
 
 
 def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[float],
-                          earnings_flag: bool, above200: Optional[bool]) -> float:
+                          earnings_flag: bool, above200: Optional[bool],
+                          current_price: Optional[float], mode: str = WHEEL_MODE) -> dict:
     """
-    Compute risk-adjusted score from the raw premium-per-day-on-capital.
-    Returns the score (higher = better candidate).
+    Compute expectancy-based score for a put candidate.
+    Returns a dict with ev_per_contract, ev_per_capital, assignment_loss,
+    p_assign and the final rank score (EV per capital times the mode
+    multipliers). Wheel mode keeps the soft penalty multipliers; harvest
+    mode has no multipliers because its gates are hard exclusions.
+    The spread multiplier applies only when the spread is known.
     """
     mid = tier.get("mid_premium", 0)
     strike = tier.get("strike", 0)
@@ -149,24 +175,76 @@ def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[
     ask = tier.get("ask", 0)
 
     if not strike or not dte or not mid:
-        return 0.0
+        return {
+            "ev_per_contract": 0.0,
+            "ev_per_capital": 0.0,
+            "assignment_loss": 0.0,
+            "p_assign": 0.0,
+            "rank_score": 0.0,
+            "spread_known": False,
+            "spread_pct": 0.0,
+            "penalties": [],
+        }
 
-    raw_pppd = mid / (strike * 100) / dte
+    premium = mid * 100
+    p_assign = tier.get("assignment_chance_pct")
+    if p_assign is not None:
+        p_assign = p_assign / 100.0
+    else:
+        p_assign = tier.get("delta_abs") or 0.0
+    assignment_loss = compute_assignment_loss(strike, current_price)
+    ev = compute_ev(premium, p_assign, assignment_loss)
+    ev_per_capital = ev / (strike * 100) if strike else 0.0
 
-    spread_pct = ((ask - bid) / mid * 100) if mid > 0 else 0.0
+    spread_known = not (bid == 0 and ask == 0)
+    spread_pct = ((ask - bid) / mid * 100) if (mid > 0 and spread_known) else 0.0
 
-    # Penalty multipliers
-    m_earnings = 0.50 if earnings_flag else 1.0
-    m_iv_low = 0.80 if (iv_percentile_val is not None and iv_percentile_val < 33.0) else 1.0
-    m_below200 = 0.90 if (above200 is False) else 1.0
-    m_spread = 0.85 if spread_pct > 10.0 else 1.0
+    penalties = []
+    multiplier = 1.0
+    if mode == WHEEL_MODE:
+        if earnings_flag:
+            multiplier *= 0.50
+            penalties.append({"reason": "earnings_in_window", "multiplier": 0.50})
+        if iv_percentile_val is not None and iv_percentile_val < 33.0:
+            multiplier *= 0.80
+            penalties.append({"reason": "iv_pct_bottom_third", "multiplier": 0.80})
+        if above200 is False:
+            multiplier *= 0.90
+            penalties.append({"reason": "below_ma200", "multiplier": 0.90})
+    if spread_known and spread_pct > 10.0:
+        multiplier *= 0.85
+        penalties.append({"reason": "wide_spread", "multiplier": 0.85})
 
-    return raw_pppd * m_earnings * m_iv_low * m_below200 * m_spread
+    return {
+        "ev_per_contract": round(ev, 2),
+        "ev_per_capital": round(ev_per_capital, 6),
+        "assignment_loss": round(assignment_loss, 2),
+        "p_assign": round(p_assign, 4),
+        "rank_score": ev_per_capital * multiplier,
+        "spread_known": spread_known,
+        "spread_pct": round(spread_pct, 1),
+        "penalties": penalties,
+    }
 
 
-def _evaluate_put_ticker(ticker: str, db) -> dict:
+def _select_tier(tiers: dict, mode: str) -> tuple:
+    """Return (tier, tier_name) for the mode, or (None, reason)."""
+    if mode == HARVEST_MODE:
+        tier = select_harvest_tier(tiers)
+        if not tier:
+            return None, "no_low_delta_tier"
+        return tier, "harvest"
+    tier = tiers.get("moderate")
+    if not tier:
+        tier = tiers.get("likely") or tiers.get("unlikely")
+    if not tier:
+        return None, "no_30delta_tier"
+    return tier, "moderate"
+
+
+def _evaluate_put_ticker(ticker: str, db, mode: str = WHEEL_MODE) -> dict:
     """
-    Evaluate a single ticker for put-selling candidacy.
+    Evaluate a single ticker for put-selling candidacy in the given mode.
     Returns a result dict with either candidate data or an exclusion reason.
     """
     try:
@@ -179,11 +257,9 @@ def _evaluate_put_ticker(ticker: str, db) -> dict:
     if not tiers:
         return {"ticker": ticker, "excluded": True, "reason": "no_options_data"}
 
-    tier = tiers.get("moderate")
+    tier, tier_name = _select_tier(tiers, mode)
     if not tier:
-        tier = tiers.get("likely") or tiers.get("unlikely")
-    if not tier:
-        return {"ticker": ticker, "excluded": True, "reason": "no_30delta_tier"}
+        return {"ticker": ticker, "excluded": True, "reason": tier_name}
 
     mid = tier.get("mid_premium", 0)
     strike = tier.get("strike", 0)
@@ -196,10 +272,11 @@ def _evaluate_put_ticker(ticker: str, db) -> dict:
     if not mid or not strike or not dte:
         return {"ticker": ticker, "excluded": True, "reason": "incomplete_tier_data"}
 
-    spread_pct = round(((ask - bid) / mid * 100) if mid > 0 else 0.0, 1)
-
-    # Spread quality gate: disqualify if spread_pct > 15%
-    if spread_pct > 15.0:
+    # Spread honesty: with no live quotes bid and ask are both 0, so no
+    # spread check runs at all. Only exclude on a measured wide spread.
+    spread_known = not (bid == 0 and ask == 0)
+    spread_pct = round(((ask - bid) / mid * 100) if (mid > 0 and spread_known) else 0.0, 1)
+    if spread_known and spread_pct > 15.0:
         return {
             "ticker": ticker,
             "excluded": True,
@@ -228,28 +305,34 @@ def _evaluate_put_ticker(ticker: str, db) -> dict:
     earnings_flag = _earnings_in_window(ticker, dte)
     quality = _quality_gate(ticker)
 
-    raw_pppd = round(mid / (strike * 100) / dte, 7)
-    score = _score_put_candidate(tier, iv_pct_val, iv_percentile, earnings_flag, above200)
+    # Harvest mode hard gates (wheel mode keeps soft penalties instead)
+    if mode == HARVEST_MODE:
+        if earnings_flag:
+            return {"ticker": ticker, "excluded": True, "reason": "earnings_in_window"}
+        if above200 is not True:
+            return {"ticker": ticker, "excluded": True, "reason": "below_ma200"}
+        if iv_percentile is None or iv_percentile < 50:
+            return {"ticker": ticker, "excluded": True, "reason": "iv_too_low"}
 
-    # Penalties applied (for display)
-    penalties = []
-    if earnings_flag:
-        penalties.append({"reason": "earnings_in_window", "multiplier": 0.50})
-    if iv_percentile is not None and iv_percentile < 33.0:
-        penalties.append({"reason": "iv_pct_bottom_third", "multiplier": 0.80})
-    if above200 is False:
-        penalties.append({"reason": "below_ma200", "multiplier": 0.90})
-    spread_pct_val = round(((ask - bid) / mid * 100) if mid > 0 else 0.0, 1)
-    if spread_pct_val > 10.0:
-        penalties.append({"reason": "wide_spread", "multiplier": 0.85})
+    raw_pppd = round(mid / (strike * 100) / dte, 7)
+    scored = _score_put_candidate(
+        tier, iv_pct_val, iv_percentile, earnings_flag, above200, current_price, mode
+    )
 
     return {
         "ticker": ticker,
         "excluded": False,
-        "rank_score": round(score, 9),
+        "mode": mode,
+        "tier_name": tier_name,
+        "rank_score": round(scored["rank_score"], 9),
         "ranking_formula": RANKING_FORMULA,
         "raw_pppd": raw_pppd,
-        "penalties": penalties,
+        "penalties": scored["penalties"],
+        # Expectancy
+        "ev_per_contract": scored["ev_per_contract"],
+        "ev_per_capital": scored["ev_per_capital"],
+        "assignment_loss": scored["assignment_loss"],
+        "p_assign": scored["p_assign"],
         # Option details
         "strike": strike,
         "expiry": tier.get("expiry"),
@@ -265,7 +348,8 @@ def _evaluate_put_ticker(ticker: str, db) -> dict:
         "assignment_chance_pct": tier.get("assignment_chance_pct"),
         "open_interest": oi,
         "volume": volume,
-        "spread_pct": spread_pct_val,
+        "spread_pct": scored["spread_pct"],
+        "spread_known": scored["spread_known"],
         # Underlying context
         "current_price": current_price,
         "above_ma200": above200,
@@ -316,8 +400,9 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
     if not mid or not strike or not dte or not current_price:
         return {"ticker": ticker, "excluded": True, "reason": "incomplete_tier_data"}
 
-    spread_pct = round(((ask - bid) / mid * 100) if mid > 0 else 0.0, 1)
-    if spread_pct > 15.0:
+    spread_known = not (bid == 0 and ask == 0)
+    spread_pct = round(((ask - bid) / mid * 100) if (mid > 0 and spread_known) else 0.0, 1)
+    if spread_known and spread_pct > 15.0:
         return {
             "ticker": ticker,
             "excluded": True,
@@ -358,6 +443,7 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
         "open_interest": oi,
         "volume": tier.get("volume", 0),
         "spread_pct": spread_pct,
+        "spread_known": spread_known,
         "upside_to_strike_pct": upside_pct,
         "current_price": current_price,
         "cost_basis": cost_basis,
@@ -367,27 +453,29 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
     }
 
 
-def run_put_scanner(db, max_workers: int = 8) -> dict:
+def run_put_scanner(db, max_workers: int = 8, mode: str = WHEEL_MODE) -> dict:
     """
-    Run the put-seller scanner across the full universe.
-    Updates run_status["wheel_scanner"] and populates _put_cache.
+    Run the put-seller scanner across the full universe in the given mode.
+    Updates run_status["wheel_scanner"] and populates the per-mode cache.
     """
     global _put_cache
+    if mode not in VALID_MODES:
+        mode = WHEEL_MODE
     run_status.set_running("wheel_scanner")
 
     universe = _load_universe()
     if not universe:
         run_status.set_error("wheel_scanner", "universe empty or failed to load")
-        return {"candidates": [], "excluded": [], "run_at": None}
+        return {"candidates": [], "excluded": [], "run_at": None, "mode": mode}
 
     candidates = []
     excluded = []
     errors = 0
 
-    logger.info("wheel_scanner: evaluating %d tickers for put-selling", len(universe))
+    logger.info("wheel_scanner: evaluating %d tickers for put-selling (mode=%s)", len(universe), mode)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_evaluate_put_ticker, t, db): t for t in universe}
+        futures = {pool.submit(_evaluate_put_ticker, t, db, mode): t for t in universe}
         for fut in as_completed(futures, timeout=300):
             ticker = futures[fut]
             try:
@@ -401,8 +489,7 @@ def run_put_scanner(db, max_workers: int = 8) -> dict:
                 excluded.append({"ticker": ticker, "excluded": True, "reason": f"exception: {e}"})
                 errors += 1
 
-    # Sort candidates by rank_score descending (raw_pppd is never the sort key directly;
-    # the score already incorporates the penalty multipliers)
+    # Sort candidates by EV-based rank_score descending
     candidates.sort(key=lambda c: c.get("rank_score", 0), reverse=True)
     excluded.sort(key=lambda e: e.get("ticker", ""))
 
@@ -412,19 +499,21 @@ def run_put_scanner(db, max_workers: int = 8) -> dict:
         "excluded": excluded,
         "run_at": run_at,
         "universe_size": len(universe),
+        "mode": mode,
         "ranking_formula": RANKING_FORMULA,
     }
 
-    _put_cache = result
+    _put_cache[mode] = result
     run_status.set_success_with_counts("wheel_scanner", {
         "candidates": len(candidates),
         "excluded": len(excluded),
         "errors": errors,
         "universe_size": len(universe),
+        "mode": mode,
     })
     logger.info(
-        "wheel_scanner: complete. candidates=%d excluded=%d errors=%d",
-        len(candidates), len(excluded), errors,
+        "wheel_scanner: complete. mode=%s candidates=%d excluded=%d errors=%d",
+        mode, len(candidates), len(excluded), errors,
     )
     return result
 
@@ -498,8 +587,8 @@ def run_call_scanner(db, max_workers: int = 8) -> dict:
     return result
 
 
-def get_put_cache() -> Optional[dict]:
-    return _put_cache
+def get_put_cache(mode: str = WHEEL_MODE) -> Optional[dict]:
+    return _put_cache.get(mode if mode in VALID_MODES else WHEEL_MODE)
 
 
 def get_call_cache() -> Optional[dict]:

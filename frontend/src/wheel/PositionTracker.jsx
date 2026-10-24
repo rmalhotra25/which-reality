@@ -64,6 +64,21 @@ const s = {
     background: '#1a1f2e', border: '1px solid #553c9a', borderRadius: '8px',
     padding: '14px', fontSize: '13px', color: '#e2e8f0', lineHeight: 1.7,
   },
+  guidanceBox: (action) => ({
+    display: 'flex', alignItems: 'flex-start', gap: '10px',
+    padding: '12px 14px', borderRadius: '8px',
+    background: action === 'close_50_profit' ? '#0a2218'
+      : action === 'roll_for_credit' || action === 'close_or_roll' ? '#3a3000'
+      : action === 'assigned_recover' ? '#3a1a1a' : '#1a2234',
+    border: `1px solid ${action === 'close_50_profit' ? '#276749'
+      : action === 'roll_for_credit' || action === 'close_or_roll' ? '#b7791f'
+      : action === 'assigned_recover' ? '#c53030' : '#2d3748'}`,
+  }),
+  modeBadge: {
+    padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700,
+    background: '#1a2234', color: '#90cdf4', border: '1px solid #2b6cb0',
+    textTransform: 'uppercase', letterSpacing: '0.05em',
+  },
 }
 
 function fmt(val, pre = '$') {
@@ -139,8 +154,40 @@ export default function PositionTracker({ position: initialPos, onUpdated }) {
     <div style={s.card}>
       <div style={s.topRow}>
         <span style={s.ticker}>{pos.ticker}</span>
-        <span style={s.statusBadge(pos.status)}>{cfg.label}</span>
+        <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={s.modeBadge}>{pos.mode === 'harvest' ? 'Harvest' : 'Wheel'}</span>
+          <span style={s.statusBadge(pos.status)}>{cfg.label}</span>
+        </span>
       </div>
+
+      {/* Management guidance */}
+      {pos.guidance && pos.status !== 'closed' && (
+        <div style={s.guidanceBox(pos.guidance.action)}>
+          <span style={{ fontSize: '20px', lineHeight: 1 }}>
+            {pos.guidance.action === 'close_50_profit' ? '🟢'
+              : pos.guidance.action === 'roll_for_credit' || pos.guidance.action === 'close_or_roll' ? '🟡'
+              : pos.guidance.action === 'assigned_recover' ? '🔴' : '🔵'}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '4px', color: '#e2e8f0' }}>
+              {pos.guidance.title}
+            </div>
+            <div style={{ fontSize: '12px', color: '#e2e8f0', marginBottom: '4px', lineHeight: 1.5 }}>
+              {pos.guidance.reason}
+            </div>
+            {pos.guidance.current_mark != null && pos.put_premium_rcvd != null && (
+              <div style={{ fontSize: '11px', color: '#a0aec0' }}>
+                Live mark ${Number(pos.guidance.current_mark).toFixed(2)} vs ${Number(pos.put_premium_rcvd).toFixed(2)} collected
+              </div>
+            )}
+            {pos.guidance.current_mark == null && (
+              <div style={{ fontSize: '11px', color: '#718096' }}>
+                No live mark available, guidance is based on time to expiry and the standing rules.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Put details */}
       <div style={s.section}>

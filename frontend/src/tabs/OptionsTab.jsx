@@ -179,7 +179,7 @@ function ScoreBar({ value, max = 100 }) {
 
 function RankingPanel({ c }) {
   const components = c.ranking_components || {}
-  const evPerDollar = c.ev_per_dollar_risked ?? c.score
+  const evPerDollar = c.ev_per_dollar_risked
   return (
     <div style={{ background: '#111827', border: '1px solid #2d3748', borderRadius: 8, padding: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
@@ -495,7 +495,7 @@ function SuppressedSection({ items }) {
                 }}>
                   {c.option_type}
                 </span>
-                <span style={{ color: '#4a5568', fontSize: 12 }}>EV/$: {c.score != null ? c.score.toFixed(2) : 'n/a'}</span>
+                <span style={{ color: '#4a5568', fontSize: 12 }}>EV/$: {c.ev_per_dollar_risked != null ? c.ev_per_dollar_risked.toFixed(2) : 'n/a'}</span>
               </div>
               <span style={{ color: '#4a5568', fontSize: 12, maxWidth: 400 }}>
                 Suppressed: {c.suppressed_reason || 'regime gate'}

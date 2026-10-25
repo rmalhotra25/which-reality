@@ -1,0 +1,28 @@
+ticker,reason
+AGI,no short interest data
+ALM,no short interest data
+AG,no short interest data
+AYA,no short interest data
+B,no short interest data
+BLLN,fewer than 4 reported quarters with estimates
+CAI,fewer than 4 reported quarters with estimates
+CCJ,no short interest data
+CGAU,no short interest data
+DMLP,fewer than 4 reported quarters with estimates
+DSGX,no short interest data
+FNV,no short interest data
+FSM,no short interest data
+GOOGN,no short interest data
+GOOGM,no short interest data
+HBM,no short interest data
+GOOG,no short interest data
+HL/PB,"info fetch failed: Failed to parse json response from Yahoo Finance: {'code': 'Not Found', 'description': 'HTTP 404 Not Found'}"
+HOS,no short interest data
+KGC,no short interest data
+OGC,no short interest data
+PAAS,no short interest data
+PTRN,fewer than 4 reported quarters with estimates
+SII,no short interest data
+STUB,fewer than 4 reported quarters with estimates
+TOP,fewer than 4 reported quarters with estimates
+WLTH,fewer than 4 reported quarters with estimates

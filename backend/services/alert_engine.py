@@ -15,6 +15,7 @@ No order execution. No brokerage integration. Alert/dashboard only.
 """
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone, date, timedelta
 from typing import Optional
@@ -22,6 +23,16 @@ from typing import Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Account-aware sizing (Priority 2)
+# ---------------------------------------------------------------------------
+# Risk budget per alert is 1% of account equity, matching the portfolio
+# simulator's fixed-fractional 1% risk per trade in backtest_harness.py.
+DEFAULT_ACCOUNT_EQUITY = 100000.0
+RISK_PCT_PER_TRADE = 1.0
+ACCOUNT_EQUITY_ENV_VAR = "TRADEIQ_ACCOUNT_EQUITY"
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +102,7 @@ def _indicators(df) -> Optional[dict]:
 
         ma20 = closes.rolling(20).mean()
         ma50 = closes.rolling(50).mean()
+        ma50_lag20 = ma50.shift(20)
         ma200 = closes.rolling(200).mean()
         ma200_lag20 = ma200.shift(20)
 
@@ -135,6 +147,7 @@ def _indicators(df) -> Optional[dict]:
             "open_today": float(opens.iloc[-1]),
             "ma20": float(ma20.iloc[-1]) if not np.isnan(ma20.iloc[-1]) else None,
             "ma50": float(ma50.iloc[-1]) if not np.isnan(ma50.iloc[-1]) else None,
+            "ma50_lag20": float(ma50_lag20.iloc[-1]) if not np.isnan(ma50_lag20.iloc[-1]) else None,
             "ma200": float(ma200.iloc[-1]) if not np.isnan(ma200.iloc[-1]) else None,
             "ma200_lag20": float(ma200_lag20.iloc[-1]) if not np.isnan(ma200_lag20.iloc[-1]) else None,
             "rsi": float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None,
@@ -171,13 +184,182 @@ def _iv_percentile(db, ticker: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# SPY above-200-day gate (Priority 2)
+# ---------------------------------------------------------------------------
+
+def _spy_gate_from_context(ctx: dict | None) -> tuple[bool | None, dict]:
+    """
+    SPY above-200-day gate, read from a market_context dict.
+
+    Returns (passes, detail). passes is True only when SPY is known to be
+    above its 200-day MA, False when known below it, and None when the
+    trend is unknown (missing, incomplete, or stale data). Unknown never
+    green-lights a trade: callers must block on None, same as the VIX rule.
+    """
+    detail = {"spy_price": None, "spy_vs_200ma_pct": None, "spy_gate": "unknown"}
+    if not ctx or ctx.get("available") is False or not ctx.get("data_complete"):
+        return None, detail
+    pct = ctx.get("spy_vs_200ma_pct")
+    detail["spy_price"] = ctx.get("spy_price")
+    detail["spy_vs_200ma_pct"] = pct
+    if pct is None:
+        return None, detail
+    passes = pct >= 0
+    detail["spy_gate"] = "above_200" if passes else "below_200"
+    return passes, detail
+
+
+def _spy_gate() -> tuple[bool | None, dict]:
+    """Fetch market context and evaluate the SPY gate. Any failure blocks."""
+    try:
+        from services.market_context import get_market_context
+        return _spy_gate_from_context(get_market_context())
+    except Exception as e:
+        logger.debug("SPY gate lookup failed, blocking: %s", e)
+        return None, {"spy_price": None, "spy_vs_200ma_pct": None, "spy_gate": "unknown"}
+
+
+# ---------------------------------------------------------------------------
+# Account-aware sizing (Priority 2)
+# ---------------------------------------------------------------------------
+
+def _resolve_account_equity(db) -> tuple[float, str]:
+    """
+    Account equity for sizing, in priority order:
+    1. Challenge account trading equity, when an initialized Challenge
+       account exists in this db.
+    2. Configurable account equity from TRADEIQ_ACCOUNT_EQUITY.
+    3. Default $100,000, matching the simulator.
+    Returns (equity_dollars, source) where source is one of
+    "challenge", "env", "default".
+    """
+    if db is not None:
+        try:
+            from services.challenge_service import compute_state
+            state = compute_state(db)
+            if state.get("initialized"):
+                equity = state.get("trading_equity")
+                if equity is not None and float(equity) > 0:
+                    return float(equity), "challenge"
+        except Exception as e:
+            logger.debug("challenge equity lookup failed, falling back: %s", e)
+    env_val = os.environ.get(ACCOUNT_EQUITY_ENV_VAR)
+    if env_val:
+        try:
+            parsed = float(env_val)
+            if parsed > 0:
+                return parsed, "env"
+        except ValueError:
+            logger.warning("ignoring invalid %s=%r", ACCOUNT_EQUITY_ENV_VAR, env_val)
+    return DEFAULT_ACCOUNT_EQUITY, "default"
+
+
+def _suggest_size(per_unit_risk: float | None, account_equity: float,
+                  unit: str = "shares",
+                  risk_pct: float = RISK_PCT_PER_TRADE) -> dict:
+    """
+    Fixed-fractional size: risk risk_pct% of account equity, sized by the
+    per-unit risk (stop distance per share, or max loss per contract).
+
+    Returns units, planned risk dollars, actual risk pct, and source.
+    Minimum 1 unit, flagged with at_minimum when even 1 unit exceeds the
+    risk budget. When no usable stop distance exists, returns the 1-unit
+    fallback with sizing_source "fallback" and no risk figures.
+    """
+    risk_budget = round(account_equity * risk_pct / 100.0, 2)
+    if per_unit_risk is None or per_unit_risk <= 0:
+        return {
+            "units": 1, "risk_dollars": None, "risk_pct_actual": None,
+            "sizing_source": "fallback", "at_minimum": False,
+            "risk_budget": risk_budget,
+        }
+    units = int(risk_budget // per_unit_risk)
+    at_minimum = False
+    if units < 1:
+        units = 1
+        at_minimum = True
+    risk_dollars = round(units * per_unit_risk, 2)
+    return {
+        "units": units, "risk_dollars": risk_dollars,
+        "risk_pct_actual": round(risk_dollars / account_equity * 100, 2),
+        "sizing_source": "computed", "at_minimum": at_minimum,
+        "risk_budget": risk_budget,
+    }
+
+
+def _apply_sizing(action_data: dict, setup_key: str,
+                  account_equity: float, equity_source: str) -> dict:
+    """
+    Attach account-aware sizing to a built action dict (mutates and returns
+    it). Stock setups size in shares by stop distance; the wheel setup
+    sizes in contracts by max loss per contract, overriding the old
+    hardcoded 1-contract default. The 1-unit default survives only as a
+    labeled fallback when no stop distance exists to size from.
+    """
+    if setup_key == "premium_at_support":
+        per_unit_risk = action_data.get("max_loss_per_contract")
+        unit = "contracts"
+    else:
+        entry = action_data.get("entry_price")
+        invalidation = action_data.get("invalidation_price")
+        per_unit_risk = (
+            (entry - invalidation)
+            if entry is not None and invalidation is not None else None
+        )
+        unit = "shares"
+
+    size = _suggest_size(per_unit_risk, account_equity, unit=unit)
+    units = size["units"]
+    singular = unit[:-1]
+    if setup_key == "premium_at_support":
+        action_data["position_size_contracts"] = units
+        if size["risk_dollars"] is not None:
+            action_data["max_loss_per_position"] = size["risk_dollars"]
+            action_data["max_loss"] = size["risk_dollars"]
+    else:
+        action_data["position_size_shares"] = units
+        if size["risk_dollars"] is not None:
+            # Planned position risk, not the per-share stop distance.
+            action_data["max_loss"] = size["risk_dollars"]
+
+    action_data["account_equity"] = round(account_equity, 2)
+    action_data["equity_source"] = equity_source
+    action_data["risk_dollars"] = size["risk_dollars"]
+    action_data["risk_pct_actual"] = size["risk_pct_actual"]
+    action_data["sizing_source"] = size["sizing_source"]
+
+    if size["sizing_source"] == "fallback":
+        note = (
+            f"Suggested 1 {singular} (fallback: no stop distance to size from). "
+            f"Account equity ${account_equity:,.0f} ({equity_source})."
+        )
+    else:
+        note = (
+            f"Suggested {units} {unit}. This trade risks "
+            f"{size['risk_pct_actual']:.2f}% of your ${account_equity:,.0f} account "
+            f"(${size['risk_dollars']:,.0f})."
+        )
+        if size["at_minimum"]:
+            note += (
+                f" One {singular} alone exceeds the {RISK_PCT_PER_TRADE:.0f}% risk "
+                f"budget, so this is the minimum size."
+            )
+    action_data["sizing_note"] = note
+    return action_data
+
+
+# ---------------------------------------------------------------------------
 # Setup signal evaluators
 # ---------------------------------------------------------------------------
 
-def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int]) -> tuple[bool, dict]:
+def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
+                           spy_gate: bool | None = None,
+                           spy_vs_200ma_pct: float | None = None) -> tuple[bool, dict]:
     """
     Returns (fires, conditions_dict).
-    All conditions must be true for the setup to fire.
+    All conditions must be true for the setup to fire, including the SPY
+    above-200-day market gate: spy_gate must be True. False (SPY below its
+    200-day MA) or None (trend unknown) blocks the alert.
     """
     cond = {}
     p = ind["price"]
@@ -223,7 +405,16 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int]) -> tuple
     cond["earnings_days"] = earnings_days_val
     cond["no_earnings_within_5d"] = no_earnings
 
-    fires = (
+    # SPY above-200-day market gate (fail-closed: unknown blocks)
+    spy_ok = (spy_gate is True)
+    cond["spy_above_200"] = spy_gate
+    cond["spy_vs_200ma_pct"] = spy_vs_200ma_pct
+    cond["spy_gate"] = (
+        "pass" if spy_ok
+        else ("block_below_200" if spy_gate is False else "block_unknown")
+    )
+
+    fires_without_gate = (
         near_ma
         and ma200_rising
         and cond["rsi_lt_55"]
@@ -231,6 +422,10 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int]) -> tuple
         and quiet_volume
         and no_earnings
     )
+    cond["would_fire_without_spy_gate"] = fires_without_gate
+    cond["spy_gate_blocked"] = bool(fires_without_gate and not spy_ok)
+
+    fires = fires_without_gate and spy_ok
     return fires, cond
 
 
@@ -284,12 +479,27 @@ def _eval_premium_at_support(ind: dict, earnings_days_val: Optional[int], iv_pct
     return fires, cond
 
 
-def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int]) -> tuple[bool, dict]:
+def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int],
+                          spy_gate: bool | None = None,
+                          spy_vs_200ma_pct: float | None = None) -> tuple[bool, dict]:
+    """
+    Returns (fires, conditions_dict).
+
+    ma50_rising is a real rising check, ma50 above its own value 20
+    sessions ago, the same ma50_lag20 comparison the backtest uses in
+    _signal_volume_breakout, and it is part of fires: the registry recipe
+    requires price above a rising 50-day MA. The old expression compared
+    the 50-day MA to itself (ma50 > ma50 * 0.998, always true) and was
+    never used in fires.
+
+    The SPY above-200-day market gate also applies: spy_gate must be True.
+    False (SPY below its 200-day MA, where the backtest loses money,
+    profit factor 0.87) or None (trend unknown) blocks the alert.
+    """
     cond = {}
     p = ind["price"]
     ma50 = ind.get("ma50")
-    ma200 = ind.get("ma200")
-    ma200_lag = ind.get("ma200_lag20")
+    ma50_lag20 = ind.get("ma50_lag20")
     prior_high = ind.get("prior_high_55")
     vol = ind.get("volume", 0)
     vol20 = ind.get("vol20")
@@ -306,18 +516,35 @@ def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int]) -> tuple[
     cond["vol20"] = int(vol20) if vol20 else None
     cond["vol_confirmed"] = vol_confirmed
 
-    # Price above rising 50-day MA
+    # Price above a rising 50-day MA (ma50 above its value 20 sessions ago)
     above_ma50 = (ma50 is not None and p > ma50)
-    ma50_rising = (ma50 is not None and ma200_lag is not None and ma50 > ind.get("ma50") * 0.998)
+    ma50_rising = (ma50 is not None and ma50_lag20 is not None and ma50 > ma50_lag20)
     cond["above_ma50"] = above_ma50
     cond["ma50"] = round(ma50, 2) if ma50 else None
+    cond["ma50_rising"] = ma50_rising
+    cond["ma50_lag20"] = round(ma50_lag20, 2) if ma50_lag20 else None
 
     # No earnings within 5 days
     no_earnings = (earnings_days_val is None or earnings_days_val > 5)
     cond["earnings_days"] = earnings_days_val
     cond["no_earnings_within_5d"] = no_earnings
 
-    fires = above_55d_high and vol_confirmed and above_ma50 and no_earnings
+    # SPY above-200-day market gate (fail-closed: unknown blocks)
+    spy_ok = (spy_gate is True)
+    cond["spy_above_200"] = spy_gate
+    cond["spy_vs_200ma_pct"] = spy_vs_200ma_pct
+    cond["spy_gate"] = (
+        "pass" if spy_ok
+        else ("block_below_200" if spy_gate is False else "block_unknown")
+    )
+
+    fires_without_gate = (
+        above_55d_high and vol_confirmed and above_ma50 and ma50_rising and no_earnings
+    )
+    cond["would_fire_without_spy_gate"] = fires_without_gate
+    cond["spy_gate_blocked"] = bool(fires_without_gate and not spy_ok)
+
+    fires = fires_without_gate and spy_ok
     return fires, cond
 
 
@@ -585,6 +812,8 @@ def _build_alert(
     db,
     is_suppressed: bool = False,
     suppressed_reason: str = None,
+    account_equity: float | None = None,
+    equity_source: str | None = None,
 ) -> dict:
     """Build the alert record dict (not yet a DB row)."""
     earnings_days_val = cond.get("earnings_days")
@@ -619,6 +848,12 @@ def _build_alert(
         action_data = _build_stock_action(ind, setup_key)
         iv_pct = cond.get("iv_percentile")
         fail_reason = None
+
+    if account_equity is None:
+        account_equity, equity_source = _resolve_account_equity(db)
+    action_data = _apply_sizing(
+        action_data, setup_key, account_equity, equity_source or "default"
+    )
 
     invalidation_text = (
         f"Invalidated if price closes below ${action_data.get('invalidation_price', '?')}. "
@@ -663,7 +898,8 @@ def _universe_for(job: str) -> list[str]:
     return _buy_hold_universe()
 
 
-def _evaluate_setup(setup_row, db) -> dict:
+def _evaluate_setup(setup_row, db, account_equity: float | None = None,
+                    equity_source: str | None = None) -> dict:
     """
     Evaluate one setup across its universe.
     Returns {"alerts": [...], "suppressed": [...], "tickers_evaluated": int, "errors": []}.
@@ -672,6 +908,15 @@ def _evaluate_setup(setup_row, db) -> dict:
     evaluator_fn, job = _SETUP_EVALUATORS.get(key, (None, None))
     if evaluator_fn is None:
         return {"alerts": [], "suppressed": [], "tickers_evaluated": 0, "errors": [f"{key}: no evaluator"]}
+
+    # SPY above-200-day gate, fetched once per setup run (market_context
+    # caches for 30 minutes). Applies to Quality Pullback and Volume
+    # Breakout only; other setups are ungated.
+    spy_gate = None
+    spy_vs_200ma_pct = None
+    if key in ("quality_pullback", "volume_breakout"):
+        spy_gate, spy_detail = _spy_gate()
+        spy_vs_200ma_pct = spy_detail.get("spy_vs_200ma_pct")
 
     universe = _universe_for(setup_row.job)
     alerts = []
@@ -693,18 +938,45 @@ def _evaluate_setup(setup_row, db) -> dict:
 
             if key == "premium_at_support":
                 fires, cond = evaluator_fn(ind, earnings_val, iv_pct)
-            elif key in ("quality_pullback", "volume_breakout", "oversold_bounce",
+            elif key in ("quality_pullback", "volume_breakout"):
+                fires, cond = evaluator_fn(
+                    ind, earnings_val,
+                    spy_gate=spy_gate, spy_vs_200ma_pct=spy_vs_200ma_pct,
+                )
+            elif key in ("oversold_bounce",
                          "trend_pullback_reversal", "post_earnings_drift"):
                 fires, cond = evaluator_fn(ind, earnings_val)
             else:
                 continue
 
             if not fires:
+                # A setup that would have fired but for the SPY gate is
+                # recorded as suppressed, so the block is visible instead
+                # of silently dropping the candidate.
+                if cond.get("spy_gate_blocked"):
+                    if spy_gate is False:
+                        pct = spy_vs_200ma_pct
+                        pct_txt = f" ({pct:.1f}% below)" if pct is not None else ""
+                        reason = (
+                            "SPY below its 200-day MA" + pct_txt +
+                            "; market gate blocks new longs"
+                        )
+                    else:
+                        reason = (
+                            "SPY trend unknown (market data missing or stale); "
+                            "market gate blocks new longs"
+                        )
+                    suppressed.append(_build_alert(
+                        key, setup_row.name, setup_row.status,
+                        ticker, ind, cond, db,
+                        is_suppressed=True, suppressed_reason=reason,
+                    ))
                 continue
 
             alert = _build_alert(
                 key, setup_row.name, setup_row.status,
                 ticker, ind, cond, db,
+                account_equity=account_equity, equity_source=equity_source,
             )
             if alert["is_suppressed"]:
                 suppressed.append(alert)
@@ -740,6 +1012,10 @@ def run_alert_engine(db) -> dict:
     run_status.set_running("alert_engine")
     start = time.time()
 
+    # Account equity resolved once per run so every alert in the run is
+    # sized from the same equity (Challenge trading equity when available).
+    account_equity, equity_source = _resolve_account_equity(db)
+
     setups = db.query(SetupRegistry).filter(
         SetupRegistry.status.in_(["LIVE", "SHADOW"])
     ).all()
@@ -752,7 +1028,10 @@ def run_alert_engine(db) -> dict:
     fired_at = datetime.now(timezone.utc)
 
     for setup in setups:
-        result = _evaluate_setup(setup, db)
+        result = _evaluate_setup(
+            setup, db,
+            account_equity=account_equity, equity_source=equity_source,
+        )
         total_tickers = max(total_tickers, result["tickers_evaluated"])
         all_errors.extend(result["errors"])
 
@@ -778,6 +1057,13 @@ def run_alert_engine(db) -> dict:
                 max_loss_per_contract=alert_dict.get("max_loss_per_contract"),
                 max_loss_per_position=alert_dict.get("max_loss_per_position"),
                 position_size_contracts=alert_dict.get("position_size_contracts"),
+                position_size_shares=alert_dict.get("position_size_shares"),
+                account_equity=alert_dict.get("account_equity"),
+                equity_source=alert_dict.get("equity_source"),
+                risk_dollars=alert_dict.get("risk_dollars"),
+                risk_pct_actual=alert_dict.get("risk_pct_actual"),
+                sizing_note=alert_dict.get("sizing_note"),
+                sizing_source=alert_dict.get("sizing_source"),
                 max_loss=alert_dict.get("max_loss"),
                 earnings_in_window=alert_dict.get("earnings_in_window"),
                 iv_percentile=alert_dict.get("iv_percentile"),

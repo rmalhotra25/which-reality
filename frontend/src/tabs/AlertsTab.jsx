@@ -93,6 +93,18 @@ function AlertCard({ alert }) {
   const bg = isShadow ? '#110d1f' : '#071a0a'
 
   const condEntries = Object.entries(alert.conditions || {})
+  const sizeLabel = alert.position_size_shares != null
+    ? `${alert.position_size_shares} shares`
+    : alert.position_size_contracts != null
+      ? `${alert.position_size_contracts} contract${alert.position_size_contracts === 1 ? '' : 's'}`
+      : null
+  const equityLabel = alert.equity_source === 'challenge'
+    ? 'Challenge account equity'
+    : alert.equity_source === 'env'
+      ? 'configured account equity'
+      : alert.equity_source === 'default'
+        ? 'default $100,000 equity'
+        : null
 
   return (
     <div style={{ ...S.card(accent), background: bg }}>
@@ -133,6 +145,18 @@ function AlertCard({ alert }) {
             <span style={{ ...S.statValue, color: '#f6ad55' }}>${alert.max_loss.toFixed(2)}</span>
           </div>
         )}
+        {sizeLabel && (
+          <div style={S.stat}>
+            <span style={S.statLabel}>Suggested Size</span>
+            <span style={S.statValue}>{sizeLabel}</span>
+          </div>
+        )}
+        {alert.risk_pct_actual != null && (
+          <div style={S.stat}>
+            <span style={S.statLabel}>Account Risk</span>
+            <span style={S.statValue}>{alert.risk_pct_actual.toFixed(2)}%</span>
+          </div>
+        )}
         {alert.iv_percentile != null && (
           <div style={S.stat}>
             <span style={S.statLabel}>IV %ile</span>
@@ -140,6 +164,19 @@ function AlertCard({ alert }) {
           </div>
         )}
       </div>
+
+      {/* Account-aware sizing */}
+      {alert.sizing_note && (
+        <div style={{ marginTop: '8px', background: '#0f1520', border: '1px solid #1e2535', borderRadius: '6px', padding: '8px 10px', fontSize: '12px', color: '#a0aec0', lineHeight: 1.5 }}>
+          {alert.sizing_note}
+          {equityLabel && (
+            <div style={{ fontSize: '11px', color: '#4a5568', marginTop: '2px' }}>
+              Sized from {equityLabel}
+              {alert.sizing_source === 'fallback' ? ' (fallback size, not risk-sized)' : ''}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Options-specific fields */}
       {alert.contract_type && (

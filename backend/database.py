@@ -95,6 +95,14 @@ def _migrate_add_columns():
         ("leveraged_ma_signal_state", "confirmed_position",  "VARCHAR(5)"),
         ("leveraged_ma_signal_state", "pending_signal",      "VARCHAR(5)"),
         ("leveraged_ma_signal_state", "pending_days",        "INTEGER"),
+        # Account-aware sizing on alert cards (Priority 2)
+        ("setup_alerts", "account_equity",       "FLOAT"),
+        ("setup_alerts", "equity_source",        "VARCHAR(20)"),
+        ("setup_alerts", "position_size_shares", "INTEGER"),
+        ("setup_alerts", "risk_dollars",         "FLOAT"),
+        ("setup_alerts", "risk_pct_actual",      "FLOAT"),
+        ("setup_alerts", "sizing_note",          "TEXT"),
+        ("setup_alerts", "sizing_source",        "VARCHAR(20)"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in additions:

@@ -48,6 +48,17 @@ class SetupAlert(Base):
     spread_quality = Column(String(20), nullable=True)
     invalidation_text = Column(Text, nullable=True)
 
+    # Account-aware sizing (Priority 2): 1% of account equity risked per
+    # trade, sized by stop distance (shares) or max loss per contract.
+    # max_loss above is the planned position risk once sizing is applied.
+    account_equity = Column(Float, nullable=True)
+    equity_source = Column(String(20), nullable=True)  # challenge | env | default
+    position_size_shares = Column(Integer, nullable=True)
+    risk_dollars = Column(Float, nullable=True)
+    risk_pct_actual = Column(Float, nullable=True)
+    sizing_note = Column(Text, nullable=True)
+    sizing_source = Column(String(20), nullable=True)  # computed | fallback
+
     # Journal state
     is_open = Column(Boolean, nullable=False, default=True)
     outcome_pct = Column(Float, nullable=True)    # filled by daily outcome job

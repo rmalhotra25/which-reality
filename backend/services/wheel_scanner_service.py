@@ -80,7 +80,22 @@ def _load_universe() -> list[str]:
         bad = [t for t in tickers if t not in valid]
         if bad:
             logger.warning("wheel_scanner: ignoring invalid universe entries: %s", bad)
-        return [t.strip().upper() for t in valid]
+        cleaned = [t.strip().upper() for t in valid]
+        # Dot tickers (BRK.B, BF.B) are stored in canonical Wikipedia form in
+        # the JSON file, but yfinance returns no option expiries and no price
+        # for them (verified Oct 26 2026: BRK.B/BF.B return nothing, BRK-B/BF-B
+        # return chains), so they would silently never produce candidates.
+        # Normalize to the hyphen form the data providers need. A hyphen
+        # ticker that Polygon does not recognise simply falls back to
+        # yfinance, which does return a chain, so the name still scans.
+        normalized = []
+        for t in cleaned:
+            if "." in t:
+                logger.info("wheel_scanner: normalizing dot ticker %s to %s", t, t.replace(".", "-"))
+                normalized.append(t.replace(".", "-"))
+            else:
+                normalized.append(t)
+        return normalized
     except Exception as e:
         logger.error("wheel_scanner: failed to load universe: %s", e)
         return []

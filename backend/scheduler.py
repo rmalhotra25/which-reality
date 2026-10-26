@@ -312,6 +312,26 @@ def refresh_call_suggestions() -> None:
         db.close()
 
 
+def describe_jobs(scheduler) -> list[dict]:
+    """Return each scheduled job with its next run time, for /api/keepalive
+    and /api/scheduler. Returns an empty list when the scheduler is None
+    or has no jobs. Next run times are timezone-aware (America/New_York).
+    """
+    if scheduler is None:
+        return []
+    jobs = []
+    for job in scheduler.get_jobs():
+        nxt = job.next_run_time
+        jobs.append(
+            {
+                "id": job.id,
+                "next_run_time": nxt.isoformat() if nxt is not None else None,
+                "trigger": str(job.trigger),
+            }
+        )
+    return sorted(jobs, key=lambda item: item["id"])
+
+
 def start_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=EASTERN)
 

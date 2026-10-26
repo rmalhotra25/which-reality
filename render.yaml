@@ -1,3 +1,14 @@
+# TradeIQ on Render (free plan).
+#
+# Scheduler note: there is deliberately NO cron job service in this
+# blueprint. Render cron jobs have no free plan (cheapest is Starter),
+# so the free path is an external uptime pinger hitting the public
+# /api/keepalive endpoint every 5 minutes. That keeps the web service
+# awake so the in-process APScheduler fires the 6:00 AM discovery scan,
+# 8:00 AM outcome job, and 9:10 AM champions scan on time. See
+# docs/infra-operations.md for the UptimeRobot setup (5 minutes in the
+# dashboard, no code change) and for why the in-process scheduler alone
+# is not sufficient on the free plan.
 services:
   - type: web
     name: tradeiq
@@ -24,6 +35,18 @@ services:
                              # Format: postgresql://user:password@host/dbname
                              # Get a free database at https://neon.tech
                              # Without this, data is stored in /tmp and WILL BE LOST on redeploy
+                             # VERIFIED LIVE 2026-10-26: Challenge data created Oct 23
+                             # (account + Oct 24 snapshot) was still present Oct 26,
+                             # after the Oct 24 deploy and spin-downs. A /tmp SQLite
+                             # file could not have survived that, so DATABASE_URL is
+                             # set in the dashboard. Do not remove it. See
+                             # docs/infra-operations.md for the evidence.
+      - key: TRADEIQ_AUTH_USER
+        sync: false          # set to a username to enable login; leave unset to keep the app open
+      - key: TRADEIQ_AUTH_PASSWORD
+        sync: false          # set with TRADEIQ_AUTH_USER; browser prompts once, then remembers it
+      - key: TRADEIQ_AUTH_TOKEN
+        sync: false          # optional alternative: scripts use Authorization: Bearer <token>
       - key: DB_PATH
         value: /tmp/trading.db   # only used if DATABASE_URL is not set (local dev fallback)
       - key: PYTHON_VERSION

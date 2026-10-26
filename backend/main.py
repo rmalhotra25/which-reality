@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -61,6 +61,7 @@ def _auto_run_if_empty() -> None:
 async def lifespan(app: FastAPI):
     from database import init_db, SessionLocal
     from scheduler import start_scheduler
+    from auth import auth_status_message
 
     init_db()
     logger.info("Database initialised")
@@ -76,6 +77,8 @@ async def lifespan(app: FastAPI):
         _db.close()
 
     scheduler = start_scheduler()
+    app.state.scheduler = scheduler
+    logger.info("%s", auth_status_message())
     _auto_run_if_empty()
     yield
     scheduler.shutdown(wait=False)
@@ -96,6 +99,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth runs after CORS in the stack (last added runs first on request),
+# so preflight OPTIONS still reaches the CORS middleware. When no
+# TRADEIQ_AUTH_* vars are set this is a no-op passthrough.
+from auth import AuthMiddleware  # noqa: E402
+
+app.add_middleware(AuthMiddleware)
 
 from routers import options, wheel  # noqa: E402
 from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book, challenge  # noqa: E402
@@ -124,6 +134,38 @@ app.include_router(challenge.router)
 @app.get("/api/health", tags=["Health"])
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/keepalive", tags=["Health"])
+def keepalive(request: Request):
+    """Public liveness probe for the external uptime pinger.
+
+    Deliberately exempt from auth so UptimeRobot or cron-job.org can hit
+    it without credentials. A hit every 5 minutes keeps the free Render
+    instance awake so the in-process scheduler fires on time. Returns
+    the next run time of each scheduled job so the pinger log (or Rohit)
+    can see at a glance whether the morning jobs are still scheduled.
+    """
+    from scheduler import describe_jobs
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    return {
+        "status": "ok",
+        "scheduler": "running" if scheduler is not None else "not started",
+        "jobs": describe_jobs(scheduler),
+    }
+
+
+@app.get("/api/scheduler", tags=["Health"])
+def scheduler_status(request: Request):
+    """Scheduled job list with next run times (America/New_York). Auth applies."""
+    from scheduler import describe_jobs
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    return {
+        "scheduler": "running" if scheduler is not None else "not started",
+        "jobs": describe_jobs(scheduler),
+    }
 
 
 @app.get("/api/status", tags=["Health"])

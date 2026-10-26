@@ -22,6 +22,10 @@ when buying; on this data plan bid/ask are 0.0, so when the ask is
 absent the premium falls back to the last trade, then fair value, and
 the premium source is always recorded on the candidate. When no chain
 is available the candidate is suppressed, never priced from an estimate.
+When payoff at target is negative (the target sits below breakeven, so
+hitting the target still loses money) the candidate is suppressed too.
+Payoff at stop is always negative by design and is never a suppression
+reason on its own.
 """
 import json
 import logging
@@ -436,6 +440,31 @@ def earnings_suppression_reason(earnings_in_window: bool | None,
     )
 
 
+def negative_payoff_suppression_reason(payoff_at_target: float | None) -> str | None:
+    """Suppression reason when payoff at target is negative, else None.
+
+    Rule: suppress when payoff_at_target < 0. A payoff of exactly zero
+    (target equals breakeven) is not suppressed by this rule. Payoff at
+    target is the existing compute_payoffs figure: intrinsic value at
+    the target stock price minus premium paid, per contract. For a CALL
+    that is max(0, target - strike) - premium, times 100; for a PUT it
+    is max(0, strike - target) - premium, times 100. A negative payoff
+    means hitting the target still loses money, because the target sits
+    below breakeven, so the candidate is not a tradeable idea.
+
+    Pure function so the exclusion is unit-testable without a DB or a
+    live chain lookup, same pattern as earnings_suppression_reason.
+    Payoff at stop is deliberately not checked here: the stop loss is
+    negative by design, at -50% of premium.
+    """
+    if payoff_at_target is None or payoff_at_target >= 0:
+        return None
+    return (
+        f"payoff at target is negative (${payoff_at_target:.0f} per contract, "
+        "target below breakeven) - candidate suppressed"
+    )
+
+
 def _get_contract_iv(ticker: str, strike: float, option_type: str, dte_target: int,
                      price: float) -> tuple[float | None, str | None]:
     """
@@ -611,6 +640,16 @@ class DirectionalEngine:
                         c.ranking_components.get("earnings_date"),
                         c.earnings_days_away,
                     )
+                    if reason:
+                        c.is_suppressed = True
+                        c.suppressed_reason = reason
+                # Payoff at target negative: excluded from the ranked list.
+                # Belt and braces for the _build_candidate check above, in
+                # case a payoff is repriced after build (bear spread).
+                for c in candidates:
+                    if c.is_suppressed:
+                        continue
+                    reason = negative_payoff_suppression_reason(c.payoff_at_target)
                     if reason:
                         c.is_suppressed = True
                         c.suppressed_reason = reason
@@ -821,6 +860,19 @@ class DirectionalEngine:
             option_type, strike, entry_premium, underlying_target, underlying_stop
         )
 
+        # A candidate whose payoff at target is negative loses money even
+        # when the stock hits its target, because the target sits below
+        # breakeven. It is not a tradeable idea, so suppress it here
+        # instead of ranking it. Payoff at stop is not checked: the stop
+        # loss is negative by design.
+        payoff_reason = negative_payoff_suppression_reason(payoff_target)
+        if payoff_reason:
+            return self._suppressed_candidate(
+                ticker, tech, option_type, verdict, data_complete, run_at,
+                payoff_reason,
+                ee=ee, strike_target=strike_target,
+            )
+
         # Real probabilities from the contract IV
         prob_profit = compute_prob_profit(
             price, strike, entry_premium, dte_actual, iv_used, option_type
@@ -935,6 +987,14 @@ class DirectionalEngine:
                 ) if underlying_target else None
                 payoff_stop = round(-net_debit * 100 * 0.50, 0)
                 payoff_unchanged = round(-net_debit * 100, 0)
+                # Same negative-payoff rule on the repriced spread payoff.
+                spread_payoff_reason = negative_payoff_suppression_reason(payoff_target)
+                if spread_payoff_reason:
+                    return self._suppressed_candidate(
+                        ticker, tech, option_type, verdict, data_complete, run_at,
+                        spread_payoff_reason,
+                        ee=ee, strike_target=strike_target,
+                    )
                 prob_profit = compute_prob_profit(
                     price, strike, net_debit, dte_actual, iv_used, option_type
                 )

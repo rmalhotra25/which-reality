@@ -202,6 +202,8 @@ def _champions_tile(db: Session) -> dict:
         "source": "Champions Daily Picks",
         "recs_made": combined["picks_made"],
         "settled_count": n,
+        "status_label": "SHADOW",
+        "status_note": stats.get("status_note"),
         "by_strategy": stats["by_strategy"],
         "last_settled_at": stats.get("last_settled_at"),
         "outcome_basis": stats.get("outcome_basis"),

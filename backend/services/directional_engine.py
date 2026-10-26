@@ -892,7 +892,8 @@ class DirectionalEngine:
             if underlying_stop else None
         )
 
-        # Ranking: real expectancy in dollars, ranked by EV per $ risked.
+        # Ranking: expiry-consistent expectancy in dollars, ranked by EV per $ risked.
+        # Payoff at target is display only and never enters EV.
         components = compute_ranking_components(
             prob_profit=prob_profit,
             payoff_at_target=payoff_target,
@@ -904,6 +905,14 @@ class DirectionalEngine:
             above_ma50=above_ma50,
             above_ma200=above_ma200,
             option_type=option_type,
+            underlying_price=price,
+            strike=strike,
+            entry_premium=entry_premium,
+            dte=dte_actual,
+            iv_pct=iv_used,
+            bid=listed.get("bid"),
+            ask=listed.get("ask"),
+            premium_source=premium_source,
         )
 
         # Earnings proximity (actual listed DTE window)
@@ -946,6 +955,10 @@ class DirectionalEngine:
                 round(entry_premium * 100, 2),
                 iv_percentile, iv_available, above_ma50, above_ma200,
                 earnings_in_window, delta_abs,
+                underlying_price=price, strike=strike,
+                entry_premium=entry_premium, dte=dte_actual,
+                iv_pct=iv_used, bid=listed.get("bid"),
+                ask=listed.get("ask"), premium_source=premium_source,
             )
             if put_eval["decision"] == "excluded":
                 return self._suppressed_candidate(
@@ -1009,6 +1022,15 @@ class DirectionalEngine:
                     above_ma50=above_ma50,
                     above_ma200=above_ma200,
                     option_type=option_type,
+                    underlying_price=price,
+                    strike=strike,
+                    entry_premium=net_debit,
+                    dte=dte_actual,
+                    iv_pct=iv_used,
+                    bid=None,
+                    ask=None,
+                    premium_source=None,
+                    payoff_cap_per_contract=spread["max_gain"],
                 )
                 components["contract_iv_pct"] = contract_iv_pct
                 components["iv_source"] = iv_source
@@ -1133,7 +1155,18 @@ class DirectionalEngine:
         }
 
     def _journal_candidate(self, c: DirectionalCandidate, run_at: datetime) -> int | None:
-        """Write one SetupAlert row for the candidate. Returns the row id."""
+        """Write one SetupAlert row for the candidate. Returns the row id.
+
+        Status comes from the setup registry, never hardcoded: Directional
+        is SHADOW until its backtest passes on real data (see
+        backtests/directional_options.md). A registry row that cannot be
+        read defaults to SHADOW, never LIVE.
+        """
+        from services.setup_registry_service import get_status
+        try:
+            journal_status = get_status(self.db, DIRECTIONAL_SETUP_KEY)
+        except Exception:
+            journal_status = "SHADOW"
         components = c.ranking_components
         snapshot = {
             "run_at": run_at.isoformat(),
@@ -1176,7 +1209,7 @@ class DirectionalEngine:
         alert = SetupAlert(
             setup_key=DIRECTIONAL_SETUP_KEY,
             setup_name=f"Phase 3A Directional {c.option_type}",
-            setup_status="SHADOW",
+            setup_status=journal_status,
             ticker=c.ticker,
             fired_at=run_at,
             is_suppressed=False,

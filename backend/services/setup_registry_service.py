@@ -106,6 +106,28 @@ def resolve_status_from_file(report_file: str | None) -> tuple[str, str | None, 
     return "SHADOW", verdict, data_source
 
 
+def get_status(db, setup_key: str) -> str:
+    """
+    Registry status for a setup key, re-enforced against its backtest
+    file. Returns "SHADOW" when the setup has no registry row yet (an
+    unregistered setup never counts as LIVE). This is the single
+    gate for LIVE alerting: Directional and Champions picks check it
+    before any Challenge or Telegram alert is created.
+    """
+    try:
+        row = get_setup(db, setup_key)
+    except Exception:
+        return "SHADOW"
+    if row is None:
+        return "SHADOW"
+    return row.status or "SHADOW"
+
+
+def is_live(db, setup_key: str) -> bool:
+    """True only when the registry says the setup is LIVE."""
+    return get_status(db, setup_key) == "LIVE"
+
+
 # ---------------------------------------------------------------------------
 # Registry definitions
 # ---------------------------------------------------------------------------
@@ -168,6 +190,41 @@ _SETUPS = [
             "15-day time stop."
         ),
         "backtest_file": "backtests/volume_breakout.md",
+    },
+    {
+        "setup_key": "directional_options",
+        "name": "Directional Options (Phase 3A)",
+        "job": "directional",
+        "recipe": (
+            "Universe: app directional universe (DEFAULT_UNIVERSE in stock_data.py).\n"
+            "Signal: DirectionalEngine builds one candidate per ticker from the "
+            "listed 21 DTE chain, ranked by expiry-consistent EV per $ risked.\n"
+            "P(profit) is P(stock finishes past breakeven) from the contract IV.\n"
+            "Entry: listed contract premium (ask, else last trade, else fair value).\n"
+            "Exit: premium stop at -50% of entry premium, target, or expiry.\n"
+            "Live grading as of 2026-10-26: 64 picks, 11 settled, 0% win rate, "
+            "-$10,595 option P&L. Status SHADOW until a real-data backtest "
+            "passes on file. While SHADOW, candidates are journaled for "
+            "grading only and are never sent as LIVE Challenge alerts."
+        ),
+        "backtest_file": "backtests/directional_options.md",
+    },
+    {
+        "setup_key": "champions_ai_picks",
+        "name": "Champions AI Picks",
+        "job": "directional",
+        "recipe": (
+            "Daily AI picks (wheel / options / longterm strategies) from the "
+            "Champions engine: a prescreened universe passed to Claude in one "
+            "batched call, three picks per run, settled on a fixed calendar "
+            "horizon by strategy (30 / 21 / 90 days) on the underlying stock "
+            "move, because no contract is recorded at pick time.\n"
+            "Status SHADOW until the picks pass the same harness as the stock "
+            "setups (real-data backtest with a PASSES verdict). While SHADOW, "
+            "picks are graded in the Book scoreboard only and are never sent "
+            "as LIVE Challenge alerts."
+        ),
+        "backtest_file": None,
     },
     {
         "setup_key": "directional_puts",
@@ -298,7 +355,7 @@ def reenforce_statuses(db) -> list:
 
 def seed_registry(db) -> None:
     """
-    Insert all seven setups into the database if they are not already there.
+    Insert all nine setups into the database if they are not already there.
     Status is derived from the backtest file on disk using the enforcement rule.
     Safe to call on every startup; already-existing rows are re-enforced
     against their current backtest file (see reenforce_statuses), so a row

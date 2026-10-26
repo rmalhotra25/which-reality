@@ -23,6 +23,7 @@ def _serialize(row: Champion) -> dict:
         "score": row.score,
         "grade": row.grade,
         "reason": row.reason,
+        "status_label": "SHADOW",
         "universe_size": row.universe_size,
         "survivors_count": row.survivors_count,
         "run_at": row.run_at.isoformat() if row.run_at else None,
@@ -40,6 +41,14 @@ def get_champions(db: Session = Depends(get_db)):
     return {
         "champions": [_serialize(r) for r in ordered],
         "run_at": run_at,
+        "status": "SHADOW",
+        "status_label": "SHADOW",
+        "status_note": (
+            "Champions AI picks are SHADOW until they pass the same harness "
+            "as the stock setups (a real-data backtest with a PASSES verdict). "
+            "Picks are graded for observation only and are never sent as "
+            "LIVE Challenge alerts."
+        ),
         "scan_running": _job["running"],
         "last_error": _job["error"],
     }

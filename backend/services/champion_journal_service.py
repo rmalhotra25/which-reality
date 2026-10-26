@@ -298,6 +298,13 @@ def get_stats(db) -> dict:
         "combined": combined,
         "by_strategy": by_strategy,
         "last_settled_at": last_settled_at,
+        "status_label": "SHADOW",
+        "status_note": (
+            "Champions AI picks are SHADOW until they pass the same harness "
+            "as the stock setups (a real-data backtest with a PASSES verdict). "
+            "Picks are graded here for observation only and are never sent "
+            "as LIVE Challenge alerts."
+        ),
         "outcome_basis": "stock_price",
         "outcome_note": (
             "Champions picks carry no contract (no strike, expiry, or "

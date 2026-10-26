@@ -139,16 +139,26 @@ def evaluate_put_candidate(
     prob_profit, payoff_at_target, payoff_at_stop, max_loss_per_contract,
     iv_percentile, iv_available: bool, above_ma50, above_ma200,
     earnings_in_window, delta_abs, per_trade_cap_dollars=None,
+    underlying_price=None, strike=None, entry_premium=None, dte=None,
+    iv_pct=None, bid=None, ask=None, premium_source=None,
 ) -> dict:
     """Apply the put strategy rules to one candidate.
 
     Returns a dict with decision "outright", "spread", or "excluded",
     the reasons, EV, reward/risk, and the Challenge fit check. EV is
-    computed with the same real-expectancy math as calls.
+    computed with the same expiry-consistent math as calls (see
+    directional_ranker.compute_expected_value): P(profit) times the
+    expected payoff at expiry given profit, not the payoff at target.
     """
     reasons: list[str] = []
+    from services.directional_ranker import compute_spread_cost
+    spread_known, spread_cost, _spread_note = compute_spread_cost(bid, ask, premium_source)
     ev_dollars, ev_per_dollar = compute_expected_value(
-        prob_profit, payoff_at_target, max_loss_per_contract
+        prob_profit, payoff_at_target, max_loss_per_contract,
+        underlying_price=underlying_price, strike=strike,
+        entry_premium=entry_premium, dte=dte, iv_pct=iv_pct,
+        option_type="PUT",
+        spread_cost_per_contract=spread_cost, spread_known=spread_known,
     )
     reward_risk = compute_reward_risk(payoff_at_target, payoff_at_stop)
 

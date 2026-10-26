@@ -4,7 +4,8 @@ Phase 3A directional options ranking.
 Pure math functions. No DB, no API calls.
 
 RANKING (printed on every card, see RANKING_FORMULA_TEXT):
-  EV per contract = P(profit) x payoff at target - (1 - P(profit)) x max loss
+  EV per contract = P(profit) x expected payoff at expiry given profit
+                    - (1 - P(profit)) x max loss - spread cost
   rank by EV per $ risked = EV / max loss per contract
 
   P(profit) is a real Black-Scholes probability from the chosen contract's own
@@ -12,6 +13,27 @@ RANKING (printed on every card, see RANKING_FORMULA_TEXT):
   breakeven = strike + entry premium for a bought call (strike - premium for
   a bought put). Delta is shown separately, labeled as the chance of finishing
   above (CALL) or below (PUT) the strike.
+
+  The payoff term is now defined at expiry, on the same event as P(profit):
+  the expected intrinsic payoff if the stock finishes past breakeven, from
+  the truncated lognormal distribution at the contract IV, minus the premium
+  paid. The old formula multiplied P(profit) by the payoff at the stock
+  target, which is a different event (hitting a target price before expiry),
+  so it overstated or understated EV depending on the target. Payoff at
+  target survives only as a display figure and in the reward/risk ratio,
+  never inside EV.
+
+  EV is conservative in one stated way: when the trade is not profitable
+  the loss is taken as the full max loss (the whole premium), while the
+  actual loss is smaller when the stock finishes between the strike and
+  breakeven. So this EV is a lower bound on the market-implied EV, not
+  an exact forecast.
+
+  P(profit) from IV is the market's price restated, not a forecast and
+  not an edge: if the entry premium equals the Black-Scholes price at
+  the contract IV, this EV is about zero before costs. Ranking by it
+  ranks mostly on premium mispricing versus IV, and a positive EV here
+  is not evidence of an edge. That limitation is printed on the card.
 
   There is exactly one reward/risk figure: payoff at target / |payoff at stop|.
   The stop is a premium stop: the stock level where the option is worth 50% of
@@ -22,19 +44,31 @@ RANKING (printed on every card, see RANKING_FORMULA_TEXT):
   0.15 trend) is gone as a ranking input. Its four factors survive only as
   diagnostics in compute_ranking_components, and the IV diagnostic is hidden
   (None) while IV history is still building: the placeholder 50 is never fed
-  into any score. Spread cost is never subtracted: bid/ask are 0.0 on this
-  data plan (no quotes entitlement), so the spread is unknown.
+  into any score. Spread cost is subtracted when the spread is known (see
+  compute_spread_cost); when bid/ask are 0.0 on this data plan (no quotes
+  entitlement) the spread is unknown and the card says so, never assuming
+  a zero spread.
 """
 import math
 
 
 RANKING_FORMULA_TEXT = (
-    "EV = P(profit) x payoff at target - (1 - P(profit)) x max loss  |  "
+    "EV = P(profit) x expected payoff at expiry given profit - (1 - P(profit)) x max loss - spread cost  |  "
     "rank by EV per $ risked = EV / max loss  |  "
     "P(profit) = P(stock finishes past breakeven) from Black-Scholes d2 at the contract IV  |  "
+    "expected payoff given profit is the truncated-lognormal mean intrinsic value past breakeven minus premium, at expiry, not the payoff at target  |  "
+    "EV is conservative: a non-profitable finish is charged the full max loss, actual loss is smaller between strike and breakeven  |  "
+    "P(profit) from IV is the market price restated, not a forecast and not an edge: at a fair premium this EV is about zero before costs  |  "
     "R/R = payoff at target / |payoff at stop| (one figure, everywhere)  |  "
-    "spread unknown (no live quotes), so no spread cost is subtracted  |  "
+    "spread cost is the half-spread entry cost when bid/ask are known and the premium was not taken at the ask, zero when the premium is the ask (already paid), and unknown when bid/ask are not quoted  |  "
     "IV score hidden while IV history is building, never a placeholder 50"
+)
+
+EV_LIMITATION_TEXT = (
+    "P(profit) comes from the contract IV, so this EV restates the market price, "
+    "it is not a forecast and not an edge. At a fair premium the EV is about "
+    "zero before costs. EV is conservative: a finish that is not profitable is "
+    "charged the full premium as a loss."
 )
 
 # Risk tiers are calibrated to real P(profit), not delta. Bought slightly-OTM
@@ -308,22 +342,148 @@ def compute_prob_touch(S: float, level: float, dte: int, iv_pct: float,
     return round(max(0.01, min(0.99, 2.0 * p_finish)), 3)
 
 
+def compute_expected_payoff_given_profit(
+    underlying_price: float, strike: float, entry_premium: float,
+    dte: int, iv_pct: float, option_type: str, r: float = 0.045,
+) -> float | None:
+    """
+    Expected payoff per contract if the stock finishes past breakeven
+    at expiry, under the same risk-neutral lognormal distribution that
+    gives P(profit): E[intrinsic value at expiry | finish past
+    breakeven] minus the premium paid, times 100.
+
+    CALL, breakeven BE = strike + premium:
+      E[S_T | S_T > BE] = S * exp(rT) * N(d1_BE) / N(d2_BE), so the
+      conditional intrinsic value is that minus the strike.
+    PUT, breakeven BE = strike - premium:
+      E[S_T | S_T < BE] = S * exp(rT) * N(-d1_BE) / N(-d2_BE), so the
+      conditional intrinsic value is the strike minus that.
+    where d1_BE uses the breakeven level in place of the strike and
+    d2_BE = d1_BE - sigma * sqrt(T). Returns None when the inputs
+    cannot support an estimate, or when P(profit) is effectively zero.
+    """
+    if not underlying_price or underlying_price <= 0 or not strike or strike <= 0:
+        return None
+    if entry_premium is None or entry_premium < 0:
+        return None
+    if dte is None or dte <= 0 or not iv_pct or iv_pct <= 0:
+        return None
+    T = dte / 365.0
+    sigma = iv_pct / 100.0
+    sqrt_t = sigma * math.sqrt(T)
+    if sqrt_t <= 0:
+        return None
+    is_call = option_type.upper() == "CALL"
+    breakeven = strike + entry_premium if is_call else strike - entry_premium
+    if breakeven <= 0:
+        return None
+    d1 = (math.log(underlying_price / breakeven) + (r + 0.5 * sigma ** 2) * T) / sqrt_t
+    d2 = d1 - sqrt_t
+    if is_call:
+        p = _norm_cdf(d2)
+        if p <= 0.001:
+            return None
+        cond_intrinsic = (
+            underlying_price * math.exp(r * T) * _norm_cdf(d1) - strike * p
+        ) / p
+    else:
+        p = _norm_cdf(-d2)
+        if p <= 0.001:
+            return None
+        cond_intrinsic = strike - (
+            underlying_price * math.exp(r * T) * _norm_cdf(-d1)
+        ) / p
+    return round((cond_intrinsic - entry_premium) * 100, 2)
+
+
+def compute_spread_cost(
+    bid: float | None, ask: float | None, premium_source: str | None = None,
+) -> tuple[bool, float | None, str]:
+    """
+    Spread cost per contract for a bought option, and whether the
+    spread is known. Returns (spread_known, spread_cost, note).
+
+    - bid/ask both missing or zero: spread unknown, cost None. This is
+      the normal state on this data plan (no quotes entitlement), so
+      the card must say "spread unknown", never assume zero.
+    - premium taken at the ask: the ask is already the entry premium,
+      so the half-spread entry cost is already paid; cost is 0.0 and
+      the spread is known.
+    - otherwise (premium from last trade or fair value): cost is the
+      half-spread, (ask - bid) / 2 * 100, the extra paid over the mid
+      to fill at the ask. A negative or zero spread is treated as
+      unknown, never as a negative cost.
+    """
+    if bid is None or ask is None:
+        return (False, None, "spread unknown")
+    try:
+        bid_f, ask_f = float(bid), float(ask)
+    except (TypeError, ValueError):
+        return (False, None, "spread unknown")
+    if bid_f <= 0 or ask_f <= 0 or ask_f < bid_f:
+        return (False, None, "spread unknown")
+    if (premium_source or "").lower() == "ask":
+        return (True, 0.0, "spread known, premium is the ask so the spread is already in the entry price")
+    return (
+        True,
+        round((ask_f - bid_f) / 2.0 * 100, 2),
+        "spread known, half-spread entry cost subtracted",
+    )
+
+
 def compute_expected_value(prob_profit: float | None, payoff_at_target: float | None,
-                           max_loss_per_contract: float | None
+                           max_loss_per_contract: float | None,
+                           underlying_price: float | None = None,
+                           strike: float | None = None,
+                           entry_premium: float | None = None,
+                           dte: int | None = None,
+                           iv_pct: float | None = None,
+                           option_type: str | None = None,
+                           spread_cost_per_contract: float | None = None,
+                           spread_known: bool = False,
+                           payoff_cap_per_contract: float | None = None,
                            ) -> tuple[float | None, float | None]:
     """
-    Real expectancy in dollars per contract:
-      EV = P(profit) x payoff at target - (1 - P(profit)) x max loss
-    Returns (ev_dollars, ev_per_dollar_risked = EV / max loss). Either is None
-    when the inputs cannot support it. A negative EV is a real result, not an
-    error: it means the trade loses money on average at these prices.
+    Real expectancy in dollars per contract, on one event at expiry:
+      EV = P(profit) x expected payoff at expiry given profit
+           - (1 - P(profit)) x max loss - spread cost
+    where P(profit) is P(stock finishes past breakeven at expiry) and
+    the payoff term is the truncated-lognormal conditional payoff at
+    expiry (see compute_expected_payoff_given_profit), not the payoff
+    at the stock target. payoff_at_target is accepted for call-site
+    compatibility but is NOT used in EV: it is a different event
+    (hitting a target price) and multiplying it by P(profit) was the
+    old error. payoff_cap_per_contract caps the conditional payoff
+    for a defined-risk spread, whose gain is capped at the strike
+    width minus the net debit. Returns (None, None) when the expiry inputs needed for
+    the conditional payoff are missing: no silent fallback to the old
+    mixed-event formula. A negative EV is a real result, not an error:
+    it means the trade loses money on average at these prices. The
+    loss term charges the full max loss when not profitable, so this
+    EV is conservative (see the module docstring). spread_cost is
+    subtracted only when spread_known is True; when the spread is
+    unknown no spread cost is subtracted and the card must say so.
+    Returns (ev_dollars, ev_per_dollar_risked = EV / max loss).
     """
-    if prob_profit is None or payoff_at_target is None or max_loss_per_contract is None:
+    if prob_profit is None or max_loss_per_contract is None:
         return (None, None)
     loss = abs(max_loss_per_contract)
     if loss <= 0:
         return (None, None)
-    ev = prob_profit * payoff_at_target - (1.0 - prob_profit) * loss
+    if (underlying_price is None or strike is None or entry_premium is None
+            or dte is None or iv_pct is None or not option_type):
+        return (None, None)
+    expected_payoff = compute_expected_payoff_given_profit(
+        underlying_price, strike, entry_premium, dte, iv_pct, option_type
+    )
+    if expected_payoff is None:
+        return (None, None)
+    if payoff_cap_per_contract is not None:
+        expected_payoff = min(expected_payoff, payoff_cap_per_contract)
+    spread_cost = spread_cost_per_contract if spread_known else 0.0
+    if spread_cost is None:
+        spread_cost = 0.0
+    ev = prob_profit * expected_payoff - (1.0 - prob_profit) * loss - spread_cost
     return (round(ev, 2), round(ev / loss, 3))
 
 
@@ -465,15 +625,46 @@ def compute_ranking_components(
     above_ma50: bool | None,
     above_ma200: bool | None,
     option_type: str,
+    underlying_price: float | None = None,
+    strike: float | None = None,
+    entry_premium: float | None = None,
+    dte: int | None = None,
+    iv_pct: float | None = None,
+    bid: float | None = None,
+    ask: float | None = None,
+    premium_source: str | None = None,
+    payoff_cap_per_contract: float | None = None,
 ) -> dict:
     """
     Rank by real expectancy: score is EV per $ risked (EV / max loss).
-    The four old blend factors survive only as diagnostics and never
+    EV is the expiry-consistent expectancy (see compute_expected_value):
+    P(profit) times the expected payoff at expiry given profit, minus
+    the full max loss when not profitable, minus the spread cost when
+    known. Payoff at target is display only and never enters EV. The
+    four old blend factors survive only as diagnostics and never
     influence the rank. When IV history is building, the IV diagnostic is
     None and excluded; no placeholder feeds the rank.
     """
+    spread_known, spread_cost, spread_note = compute_spread_cost(bid, ask, premium_source)
+    expected_payoff_given_profit = None
+    if (underlying_price is not None and strike is not None
+            and entry_premium is not None and dte is not None
+            and iv_pct is not None and option_type):
+        expected_payoff_given_profit = compute_expected_payoff_given_profit(
+            underlying_price, strike, entry_premium, dte, iv_pct, option_type
+        )
+        if (expected_payoff_given_profit is not None
+                and payoff_cap_per_contract is not None):
+            expected_payoff_given_profit = min(
+                expected_payoff_given_profit, payoff_cap_per_contract
+            )
     ev_dollars, ev_per_dollar = compute_expected_value(
-        prob_profit, payoff_at_target, max_loss_per_contract
+        prob_profit, payoff_at_target, max_loss_per_contract,
+        underlying_price=underlying_price, strike=strike,
+        entry_premium=entry_premium, dte=dte, iv_pct=iv_pct,
+        option_type=option_type,
+        spread_cost_per_contract=spread_cost, spread_known=spread_known,
+        payoff_cap_per_contract=payoff_cap_per_contract,
     )
     reward_risk = compute_reward_risk(payoff_at_target, payoff_at_stop)
     prob_diag = score_probability(prob_profit)
@@ -485,6 +676,12 @@ def compute_ranking_components(
         "score": ev_per_dollar,
         "ev_dollars": ev_dollars,
         "ev_per_dollar_risked": ev_per_dollar,
+        "expected_payoff_given_profit": expected_payoff_given_profit,
+        "ev_method": "expiry-consistent: P(profit) x expected payoff at expiry given profit - (1 - P(profit)) x max loss - spread cost",
+        "ev_limitation": EV_LIMITATION_TEXT,
+        "spread_known": spread_known,
+        "spread_cost_per_contract": spread_cost,
+        "spread_note": spread_note,
         "prob_profit": prob_profit,
         "reward_risk": reward_risk,
         "prob_score": round(prob_diag, 1) if prob_diag is not None else None,

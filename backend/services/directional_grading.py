@@ -104,6 +104,7 @@ def grade_directional_journal(db: Session, min_settled: int = MIN_SETTLED) -> di
         "source": "Directional Options",
         "picks_made": len(rows),
         "settled_count": n,
+        "status_label": "SHADOW",
         "min_settled": min_settled,
         "outcome_basis": "option_pnl",
         "ungraded_legacy_settled": ungraded_legacy,

@@ -194,7 +194,18 @@ function RankingPanel({ c }) {
         {c.ev_dollars != null
           ? `EV per contract: ${c.ev_dollars >= 0 ? '+' : ''}$${c.ev_dollars.toFixed(0)}`
           : 'EV per contract: n/a'}
-        {'  |  spread unknown (no live quotes)'}
+        {'  |  '}
+        {c.spread_known
+          ? (c.spread_cost_per_contract
+            ? `spread cost $${c.spread_cost_per_contract.toFixed(0)} subtracted`
+            : 'spread known, already in the ask price')
+          : 'spread unknown (no live quotes)'}
+        {c.expected_payoff_given_profit != null
+          ? `  |  expected payoff at expiry if profitable: $${c.expected_payoff_given_profit.toFixed(0)}`
+          : ''}
+      </div>
+      <div style={{ color: '#718096', fontSize: 11, marginBottom: 10 }}>
+        EV is market-implied from the contract IV, not a forecast and not an edge. At a fair premium it is about zero before costs.
       </div>
       {Object.entries(COMPONENT_LABELS).map(([key, meta]) => (
         <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -658,6 +669,17 @@ export default function OptionsTab() {
         dataComplete={dataComplete}
         suppressedReason={suppressedReason}
       />
+
+      {/* SHADOW banner: Directional is unproven, never presented as live */}
+      <div style={{
+        background: '#1a0a1f', border: '1px solid #6b46c1', borderRadius: 8,
+        padding: '10px 16px', marginBottom: 20, fontSize: 12, color: '#b794f4',
+      }}>
+        <span style={{ fontWeight: 700, letterSpacing: '0.03em' }}>SHADOW (untested)</span>
+        {': live grading is 64 picks, 11 settled, 0% win rate, -$10,595 as of 2026-10-26. '
+        + 'Candidates are shown for observation only and are never sent as live Challenge alerts. '
+        + 'EV is market-implied from the contract IV, not a forecast and not an edge.'}
+      </div>
 
       {/* No data */}
       {candidates.length === 0 && suppressed.length === 0 && (

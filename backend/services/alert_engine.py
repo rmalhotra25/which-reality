@@ -671,7 +671,10 @@ def _evaluate_setup(setup_row, db) -> dict:
     key = setup_row.setup_key
     evaluator_fn, job = _SETUP_EVALUATORS.get(key, (None, None))
     if evaluator_fn is None:
-        return {"alerts": [], "suppressed": [], "tickers_evaluated": 0, "errors": [f"{key}: no evaluator"]}
+        # Registry entries that are not alert-engine setups (Directional
+        # Options, whose engine journals separately, and Champions AI
+        # Picks) are not evaluated here. That is not an error.
+        return {"alerts": [], "suppressed": [], "tickers_evaluated": 0, "errors": []}
 
     universe = _universe_for(setup_row.job)
     alerts = []

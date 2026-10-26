@@ -163,8 +163,14 @@ def get_directional_candidates(db: Session = Depends(get_db)):
             "ticker": c.ticker,
             "rank": c.rank,
             "score": c.score,
+            "status_label": "SHADOW",
             "ev_dollars": components.get("ev_dollars"),
             "ev_per_dollar_risked": components.get("ev_per_dollar_risked"),
+            "expected_payoff_given_profit": components.get("expected_payoff_given_profit"),
+            "ev_limitation": components.get("ev_limitation"),
+            "spread_known": components.get("spread_known"),
+            "spread_cost_per_contract": components.get("spread_cost_per_contract"),
+            "spread_note": components.get("spread_note"),
             "prob_score": c.prob_score,
             "rr_score": c.rr_score,
             "iv_context_score": c.iv_context_score,
@@ -225,6 +231,15 @@ def get_directional_candidates(db: Session = Depends(get_db)):
         "run_at": run_at,
         "regime": regime,
         "data_complete": data_complete,
+        "status": "SHADOW",
+        "status_label": "SHADOW",
+        "status_note": (
+            "Directional Options are SHADOW: live grading is 64 picks, "
+            "11 settled, 0% win rate, -$10,595 as of 2026-10-26. Candidates "
+            "are shown for observation only and are never sent as LIVE "
+            "Challenge alerts. EV is market-implied from the contract IV, "
+            "not a forecast and not an edge."
+        ),
         "candidates": active,
         "suppressed": suppressed,
     }

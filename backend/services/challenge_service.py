@@ -558,6 +558,22 @@ def _gen_eligible_setups(db: Session, account, state, existing) -> int:
 def _gen_eligible_directional(db: Session, account, state, existing) -> int:
     from models.directional_candidate import DirectionalCandidate
 
+    # SHADOW gate: Directional is SHADOW in the setup registry (live
+    # grading 64 picks, 11 settled, 0% win rate, -$10,595 as of
+    # 2026-10-26), so it never creates LIVE Challenge alerts or Telegram
+    # notifications. Candidates stay visible in the Directional tab and
+    # journaled for grading only. This returns 0, it does not raise:
+    # a SHADOW setup is a normal state, not an error.
+    from services.setup_registry_service import is_live
+    try:
+        if not is_live(db, "directional_options"):
+            logger.info(
+                "Challenge alerts: directional_options is SHADOW, no eligible_directional alerts"
+            )
+            return 0
+    except Exception:
+        return 0
+
     cap = state["risk_caps"]["per_trade_cap"] or 0
     cash = state["cash"] or 0
     if cap <= 0 or cash <= 0:

@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     db_path: str = "../data/trading.db"   # SQLite fallback for local dev
     backend_port: int = 8000
 
+    # TradeIQ login: set both to require HTTP Basic auth on every route
+    # except /api/health and /api/keepalive. Leave both empty (default)
+    # and the app stays open, as it is today. See backend/auth.py.
+    tradeiq_auth_user: str = ""
+    tradeiq_auth_password: str = ""
+    # Bearer token alternative for scripts: Authorization: Bearer <token>
+    tradeiq_auth_token: str = ""
+
     model_config = {"env_file": "../.env", "env_file_encoding": "utf-8"}
 
 

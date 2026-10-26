@@ -178,6 +178,91 @@ def select_listed_contract(contracts: list, target_date: date,
     }
 
 
+def _has_tradable_premium(rows: list) -> bool:
+    """True when at least one row has a premium to price from.
+
+    On the Massive Options Starter plan bid/ask are 0.0, so a row is
+    tradable when its ask, last trade, or fair value is above zero.
+    A chain of rows with none of those is not a usable chain, even
+    though rows were returned: Polygon can return a full snapshot
+    page for the 21 to 35 DTE window whose contracts have not traded
+    yet that day, so last_trade and fair_value are both empty.
+    """
+    for row in rows or []:
+        for field in ("ask", "last_trade", "fair_value"):
+            try:
+                if row.get(field) is not None and float(row.get(field)) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _fetch_yfinance_chain(ticker: str, option_type: str,
+                          target_date: date) -> list:
+    """Nearest listed expiry at or after the target, via yfinance.
+
+    Returns contract dicts in the same shape as the Polygon rows, with
+    lastPrice as last_trade. Returns an empty list when no expiry at
+    or after the target exists or the lookup fails. Never invents a
+    premium: a contract with no lastPrice, bid, or ask has no premium.
+    """
+    contract_type = option_type.lower()
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        expiries = t.options or []
+        expiry = snap_expiry_to_listed(expiries, target_date)
+        if expiry is None:
+            return []
+        chain = t.option_chain(expiry.isoformat())
+        df = chain.calls if contract_type == "call" else chain.puts
+        rows = []
+        for _, r in df.iterrows():
+            try:
+                strike = float(r.get("strike") or 0)
+            except Exception:
+                continue
+            if strike <= 0:
+                continue
+            iv = r.get("impliedVolatility")
+            rows.append({
+                "expiry": expiry,
+                "strike": strike,
+                "bid": float(r.get("bid") or 0) or None,
+                "ask": float(r.get("ask") or 0) or None,
+                "last_trade": float(r.get("lastPrice") or 0) or None,
+                "fair_value": None,
+                "iv_pct": round(float(iv) * 100, 1) if iv else None,
+            })
+        return rows
+    except Exception as e:
+        logger.debug("Listed chain yfinance lookup failed for %s: %s", ticker, e)
+        return []
+
+
+def _yfinance_contract(ticker: str, option_type: str, target_date: date,
+                       strike_target: float) -> dict | None:
+    """One listed contract via yfinance, for a Polygon contract with no premium.
+
+    Picks the same snapped expiry and nearest strike as
+    select_listed_contract, but prices from yfinance and labels the
+    source so the card can flag it (for example "yfinance last trade"
+    or "yfinance ask"). Returns None when yfinance has no tradable
+    premium for that contract either.
+    """
+    rows = _fetch_yfinance_chain(ticker, option_type, target_date)
+    if not rows:
+        return None
+    picked = select_listed_contract(rows, target_date, strike_target,
+                                    as_of_date=date.today())
+    if picked is None or picked.get("premium") is None:
+        return None
+    raw_source = picked.get("premium_source")
+    picked["premium_source"] = f"yfinance {raw_source}" if raw_source else "yfinance"
+    return picked
+
+
 def fetch_listed_chain(ticker: str, option_type: str, price: float) -> list:
     """Listed options chain for expiries at or after the 21 DTE target.
 
@@ -185,6 +270,14 @@ def fetch_listed_chain(ticker: str, option_type: str, price: float) -> list:
     page is not filled with sub-window weeklies), yfinance second for
     the nearest listed expiry at or after the target. Returns a list
     of contract dicts (possibly empty when no chain is available).
+
+    The yfinance fallback runs not only when Polygon returns no rows
+    but also when Polygon returns rows with no tradable premium at
+    all. Before this fix, a full Polygon page with empty premiums
+    short-circuited the fallback, so every candidate was suppressed
+    even though the contracts were tradable on yfinance (Oct 26, 2026:
+    AAPL Nov 20 $350 call, lastPrice $9.70 on yfinance, no premium in
+    the Polygon snapshot).
     """
     target_date = date.today() + timedelta(days=DTE_TARGET)
     contract_type = option_type.lower()
@@ -229,53 +322,39 @@ def fetch_listed_chain(ticker: str, option_type: str, price: float) -> list:
                 "fair_value": fair,
                 "iv_pct": round(float(iv) * 100, 1) if iv else None,
             })
-        if rows:
+        if rows and _has_tradable_premium(rows):
             return rows
+        if rows:
+            logger.debug(
+                "Listed chain Polygon rows for %s have no tradable premium, "
+                "falling back to yfinance", ticker)
     except Exception as e:
         logger.debug("Listed chain Polygon lookup failed for %s: %s", ticker, e)
 
-    try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        expiries = t.options or []
-        expiry = snap_expiry_to_listed(expiries, target_date)
-        if expiry is None:
-            return []
-        chain = t.option_chain(expiry.isoformat())
-        df = chain.calls if contract_type == "call" else chain.puts
-        rows = []
-        for _, r in df.iterrows():
-            try:
-                strike = float(r.get("strike") or 0)
-            except Exception:
-                continue
-            if strike <= 0:
-                continue
-            iv = r.get("impliedVolatility")
-            rows.append({
-                "expiry": expiry,
-                "strike": strike,
-                "bid": float(r.get("bid") or 0) or None,
-                "ask": float(r.get("ask") or 0) or None,
-                "last_trade": float(r.get("lastPrice") or 0) or None,
-                "fair_value": None,
-                "iv_pct": round(float(iv) * 100, 1) if iv else None,
-            })
-        return rows
-    except Exception as e:
-        logger.debug("Listed chain yfinance lookup failed for %s: %s", ticker, e)
-
-    return []
+    return _fetch_yfinance_chain(ticker, option_type, target_date)
 
 
 def resolve_listed_contract(ticker: str, strike_target: float,
                             option_type: str, price: float,
                             chain: list | None = None) -> dict | None:
-    """Listed contract at the stated 21 DTE, or None when no chain exists."""
+    """Listed contract at the stated 21 DTE, or None when no chain exists.
+
+    If the Polygon contract at the snapped expiry and strike has no
+    tradable premium, one yfinance lookup is tried for that same
+    contract before giving up. If yfinance also has no premium, None
+    is returned in effect (a dict with premium None), and the caller
+    still suppresses the candidate with the same reason as before.
+    No premium is ever invented or model-priced.
+    """
     if chain is None:
         chain = fetch_listed_chain(ticker, option_type, price)
     target_date = date.today() + timedelta(days=DTE_TARGET)
-    return select_listed_contract(chain, target_date, strike_target, as_of_date=date.today())
+    picked = select_listed_contract(chain, target_date, strike_target, as_of_date=date.today())
+    if picked is None:
+        return None
+    if picked.get("premium") is not None:
+        return picked
+    return _yfinance_contract(ticker, option_type, target_date, strike_target) or picked
 
 OPTIONS_UNIVERSE = DEFAULT_UNIVERSE[:30]
 DTE_TARGET = 21   # three-week expiry target for directional single-leg options

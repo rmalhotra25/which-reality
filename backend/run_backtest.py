@@ -20,8 +20,11 @@ The harness writes three markdown files:
 
 Each file contains: data source stamp (REAL or SYNTHETIC), cost assumptions,
 survivorship caveat, rule definition, walk-forward IS/OOS stats, calendar and
-SPY MA regime splits, +/-20% robustness tests, and a verdict
-(PASSES | SHADOW ONLY | FAILS).
+SPY MA regime splits, +/-20% robustness tests, a verdict
+(PASSES | SHADOW ONLY | FAILS), a portfolio simulator section (fixed-fractional
+risk, position and heat caps, drawdown circuit breaker), and a random-entry
+baseline for comparison. The verdict gate is unchanged by the simulator and
+baseline sections; they are reported alongside it.
 
 Synthetic data produces at most SHADOW ONLY verdicts -- never PASSES -- with
 the reason "synthetic data: mechanics verification only, not market evidence"

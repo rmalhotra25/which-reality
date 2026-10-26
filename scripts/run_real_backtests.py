@@ -24,7 +24,7 @@ record of the smaller effective universe.
 Backtest standard (review E.5):
   - Mechanical rules only, exactly as defined in the registry recipes.
   - Walk-forward: in-sample 2019-2022, out-of-sample 2023 to present.
-  - Regime splits reported separately (2022 bear, 2023-2024 bull, recent,
+  - Regime splits reported separately (pre-2022, 2022 bear, 2023-2024 bull, recent,
     and per-trade SPY above/below 200-day MA).
   - Entry at the T+1 open; fills use the open adjusted by 0.05% slippage
     per side as the bid/ask proxy (daily bars carry no intraday bid/ask),

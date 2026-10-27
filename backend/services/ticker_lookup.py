@@ -33,6 +33,35 @@ reason, instead of building a second directional or champions system.
 The down-market put strategy is SHADOW ONLY and Post-Earnings Drift
 is RETIRED; both are reported the same way.
 
+Verdict (build_verdict): the top of the tab is three binary answers,
+BUY THE STOCK or DON'T BUY THE STOCK, SELL THE PUT or DON'T SELL A
+PUT, BUY THE CALL or DON'T BUY THE CALL, computed only from the
+quant results above, never by Claude, and with no threshold loosened.
+The stock verdict is based on data, not on setups alone:
+
+- Stock ticker setups that provide conviction: the LIVE setups,
+  Quality Pullback and Volume Breakout, plus trend, the display-only
+  quality composite, volume, and the SPY gate.
+- News and company releases: the live provider fetches recent
+  articles from Polygon ticker news (title, published date,
+  publisher, url). Only a fresh article, published within 3 days,
+  from a press-release wire counts as a company release that
+  supports the verdict. Fresh general news is shown as data but
+  never counted as support. An article with no date, a fetch
+  failure, or no articles at all is recorded as news unavailable,
+  and counts for nothing, never as support.
+- Anticipated vs actual results: anticipated is the earnings date
+  and days away from the Finnhub earnings calendar. Actual is not
+  available: the app has no reliable consensus-estimate feed and
+  no reliable reported-beat-or-miss feed (Post-Earnings Drift was
+  retired for exactly that reason), so the verdict records both as
+  missing and never guesses a beat or a miss. A name that reports
+  within 5 days is never a BUY, by the same earnings gate that
+  blocks every setup, and the verdict says so plainly.
+- The conviction summary lists which data actually supported the
+  verdict, which data was against it, and which data was missing.
+  No factor is invented, and no missing data is counted as support.
+
 Quant decides, Claude explains only (services.ai_boundary): entry,
 stop, target, strike, size, rank, score, and grade come only from
 quant rules and the listed chain. Claude may write the plain-language
@@ -144,6 +173,12 @@ class LookupInputs:
     chain_source: Optional[str] = None
     chain_error: Optional[str] = None
     chain_fetched_at: Optional[str] = None
+    # News, from Polygon ticker news via the live provider. Each item
+    # is {"title", "published_at", "publisher", "url"}. Stub tests
+    # build this directly. Empty means unavailable, never guessed.
+    news_items: list = field(default_factory=list)
+    news_source: Optional[str] = None
+    news_error: Optional[str] = None
 
 
 def normalize_ticker(raw: str) -> str:
@@ -299,6 +334,610 @@ def _json_safe(value):
     # Anything else unexpected becomes its string form, so the
     # response still serializes instead of 500ing at encoding.
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Verdict: three binary answers, computed only from quant results.
+#
+# BUY THE STOCK only when at least one LIVE setup (Quality Pullback or
+# Volume Breakout) passes, the earnings date is known and more than 5
+# days away, and the SPY gate passes. Those gates are already enforced
+# by the evaluators; the verdict re-checks them so a setup can never
+# produce a BUY on its own if a gate is unknown or blocked. Premium
+# at Support is SHADOW, so it never makes a BUY on its own. No
+# threshold is loosened, no new buy signal is invented, and no missing
+# data is counted as support. News, earnings, trend, quality, volume,
+# and the SPY gate are listed in the conviction summary as supporting,
+# against, or missing, in plain language.
+# ---------------------------------------------------------------------------
+
+_LIVE_STOCK_SETUPS = ("quality_pullback", "volume_breakout")
+_NEWS_FRESH_DAYS = 3
+# Publishers that carry company press releases. Only a fresh article
+# from one of these counts as a company release that supports the
+# verdict. Fresh general news is shown as data, never as support.
+_PRESS_RELEASE_PUBLISHERS = (
+    "globenewswire", "business wire", "pr newswire",
+    "prnewswire", "accesswire", "businesswire",
+)
+
+
+def _money(value):
+    """Round a per-share price to cents, or None."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _delta_abs(row: dict) -> Optional[float]:
+    d = row.get("delta_abs")
+    if d is not None:
+        try:
+            return abs(float(d))
+        except (TypeError, ValueError):
+            return None
+    d = row.get("delta")
+    if d is not None:
+        try:
+            return abs(float(d))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _spread_pct(row: dict) -> Optional[float]:
+    bid = row.get("bid")
+    ask = row.get("ask")
+    mid = row.get("mid")
+    try:
+        if bid is not None and ask is not None and mid:
+            return round((float(ask) - float(bid)) / float(mid) * 100, 1)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _parse_news_date(value):
+    """Parse an ISO published_at to a date, or None when unverifiable."""
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _news_verdict(news_items, news_source, news_error, as_of: date) -> dict:
+    """Classify the news input for the verdict.
+
+    Returns the latest article with its date and publisher, whether
+    it is a fresh company release, and a plain-language note. News
+    with no date is unverifiable and counts for nothing. This is
+    data only: no sentiment is scored, no headline is summarized
+    into a decision, and Claude never touches it.
+    """
+    items = []
+    for row in (news_items or []):
+        if not isinstance(row, dict):
+            continue
+        title = (row.get("title") or "").strip()
+        if not title:
+            continue
+        published = _parse_news_date(row.get("published_at"))
+        publisher = (row.get("publisher") or "").strip() or None
+        items.append({
+            "title": title,
+            "published_at": row.get("published_at"),
+            "published_date": published.isoformat() if published else None,
+            "publisher": publisher,
+            "url": row.get("url") or None,
+        })
+    if not items:
+        return {
+            "status": "unavailable",
+            "source": news_source,
+            "error": news_error,
+            "latest": None,
+            "fresh_company_release": False,
+            "note": (
+                "No fresh company news or press release could be verified. "
+                "News counts for nothing in this verdict."
+            ),
+        }
+    dated = [i for i in items if i["published_date"]]
+    latest = dated[0] if dated else items[0]
+    if not dated:
+        return {
+            "status": "unavailable",
+            "source": news_source,
+            "error": news_error,
+            "latest": latest,
+            "fresh_company_release": False,
+            "note": (
+                "News articles were found but none carried a date, so "
+                "freshness cannot be verified. News counts for nothing "
+                "in this verdict."
+            ),
+        }
+    # Polygon returns newest first, but sort by date to be sure.
+    dated.sort(key=lambda i: i["published_date"], reverse=True)
+    latest = dated[0]
+    days_old = (as_of - date.fromisoformat(latest["published_date"])).days
+    publisher_lower = (latest["publisher"] or "").lower()
+    is_wire = any(w in publisher_lower for w in _PRESS_RELEASE_PUBLISHERS)
+    if days_old < 0:
+        days_old = 0
+    if days_old <= _NEWS_FRESH_DAYS and is_wire:
+        return {
+            "status": "fresh_company_release",
+            "source": news_source,
+            "error": None,
+            "latest": latest,
+            "fresh_company_release": True,
+            "note": (
+                f"Fresh company release {days_old} day(s) ago from "
+                f"{latest['publisher']}: {latest['title']}"
+            ),
+        }
+    if days_old <= _NEWS_FRESH_DAYS:
+        return {
+            "status": "fresh_news",
+            "source": news_source,
+            "error": None,
+            "latest": latest,
+            "fresh_company_release": False,
+            "note": (
+                f"Fresh news {days_old} day(s) ago from "
+                f"{latest['publisher'] or 'an unknown publisher'}: "
+                f"{latest['title']}. Shown as data, not counted as support."
+            ),
+        }
+    return {
+        "status": "stale",
+        "source": news_source,
+        "error": None,
+        "latest": latest,
+        "fresh_company_release": False,
+        "note": (
+            f"Latest news is {days_old} day(s) old, from "
+            f"{latest['publisher'] or 'an unknown publisher'}. "
+            "No fresh company release in the last 3 days."
+        ),
+    }
+
+
+def _select_put(price: float, puts: list) -> tuple:
+    """Pick the ~0.30-delta put nearest 21 DTE, bid-priced only.
+
+    Same gates as the wheel helper get_listed_put: bid must exist,
+    spread at most 15% when known, open interest at least 100 when
+    known. Returns (row, None) or (None, (code, plain reason)).
+    Never a guessed strike or a last-trade price.
+    """
+    if not puts:
+        return None, ("no_listed_chain",
+                      "No listed options chain was available, so no put can be priced.")
+    with_bid = []
+    for row in puts:
+        bid = row.get("bid")
+        try:
+            bid = float(bid) if bid is not None else None
+        except (TypeError, ValueError):
+            bid = None
+        if bid is not None and bid > 0:
+            with_bid.append(row)
+    if not with_bid:
+        return None, ("no_executable_bid",
+                      "No put in the listed chain has a live bid, so no put can be sold.")
+    liquid = []
+    for row in with_bid:
+        spread = _spread_pct(row)
+        if spread is not None and spread > 15.0:
+            continue
+        oi = row.get("open_interest")
+        if oi is not None:
+            try:
+                if float(oi) < 100:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        liquid.append(row)
+    if not liquid:
+        spread_wide = any(
+            _spread_pct(r) is not None and _spread_pct(r) > 15.0 for r in with_bid
+        )
+        if spread_wide:
+            return None, ("spread_too_wide",
+                          "The put spreads are too wide to sell safely, so no put is offered.")
+        return None, ("insufficient_liquidity",
+                      "The puts in the listed chain have too little open interest, so no put is offered.")
+    def _put_key(row):
+        d = _delta_abs(row)
+        dte = row.get("dte")
+        try:
+            dte = float(dte) if dte is not None else 21
+        except (TypeError, ValueError):
+            dte = 21
+        return (
+            abs(d - 0.30) if d is not None else 1.0,
+            abs(dte - 21),
+            abs(float(row.get("strike") or 0) - price),
+        )
+    return sorted(liquid, key=_put_key)[0], None
+
+
+def _select_call(price: float, calls: list) -> tuple:
+    """Pick the call for the BUY THE CALL answer.
+
+    Rule, reused from the directional engine: listed expiry nearest
+    21 DTE, strike snapped to the nearest listed strike above the
+    price. Premium is the ask when there is one, else the mid,
+    labelled, never a last trade as executable. Returns (row, None)
+    or (None, (code, plain reason)).
+    """
+    if not calls:
+        return None, ("no_listed_chain",
+                      "No listed options chain was available, so no call can be priced.")
+    above = []
+    for row in calls:
+        try:
+            strike = float(row.get("strike") or 0)
+        except (TypeError, ValueError):
+            continue
+        if strike > price:
+            above.append(row)
+    if not above:
+        return None, ("no_call_above_price",
+                      "No listed call strike sits above today's price, so no call is offered.")
+    def _call_key(row):
+        dte = row.get("dte")
+        try:
+            dte = float(dte) if dte is not None else 21
+        except (TypeError, ValueError):
+            dte = 21
+        return (abs(dte - 21), float(row.get("strike") or 0) - price)
+    row = sorted(above, key=_call_key)[0]
+    ask = row.get("ask")
+    mid = row.get("mid")
+    try:
+        ask = float(ask) if ask is not None else None
+    except (TypeError, ValueError):
+        ask = None
+    try:
+        mid = float(mid) if mid is not None else None
+    except (TypeError, ValueError):
+        mid = None
+    if ask is not None and ask > 0:
+        return row, None
+    if mid is not None and mid > 0:
+        return row, None
+    return None, ("no_executable_ask",
+                  "The call above today's price has no live ask or mid, so no call is offered.")
+
+
+def _what_would_change(qp_cond, vb_cond, earnings_days, spy_gate) -> str:
+    """One line, derived from the failing setup conditions, not invented."""
+    if earnings_days is None:
+        return "Once the next earnings date is known, the setups can be checked again."
+    if earnings_days <= 5:
+        return "After the earnings report, in a few days, the setups can be checked again."
+    if spy_gate is False:
+        return "If the wider market closes back above its 200-day average, the gate opens again."
+    if spy_gate is None:
+        return "Once the wider market trend is known, the gate can be checked again."
+    qp = qp_cond or {}
+    vb = vb_cond or {}
+    if not qp.get("near_ma"):
+        return "A pullback to the 50-day or 200-day average on quiet volume would change this."
+    if not qp.get("rsi_lt_55"):
+        return "A cooler RSI, below 55, after a pullback to an average would change this."
+    if not qp.get("quiet_volume"):
+        return "A pullback day on quiet volume, below the 20-day average, would change this."
+    if not vb.get("above_55d_high"):
+        return "A close above the 55-day high on strong volume would change this."
+    if not vb.get("vol_confirmed"):
+        return "A breakout day with volume at least 1.5 times the 20-day average would change this."
+    return "A fresh pullback to an average, or a volume breakout, would change this."
+
+
+def build_verdict(ticker: str, *, price: float, setups: list,
+                  earnings: dict, spy_gate: dict, quality: dict,
+                  trend: dict, iv_percentile, news: dict,
+                  chain_puts: list, chain_calls: list,
+                  as_of: Optional[date] = None) -> dict:
+    """Deterministic verdict from quant results only.
+
+    Same inputs give the same verdict. Claude is never called here.
+    """
+    as_of = as_of or date.today()
+    by_key = {s["setup_key"]: s for s in setups}
+    qp = by_key.get("quality_pullback") or {}
+    vb = by_key.get("volume_breakout") or {}
+    live_passing = [
+        s for s in setups
+        if s.get("setup_key") in _LIVE_STOCK_SETUPS
+        and s.get("rule_result") == "pass"
+        and s.get("status") == "LIVE"
+        and s.get("action")
+    ]
+    passing = live_passing[0] if live_passing else None
+    earnings_days = earnings.get("earnings_days")
+    earnings_known = earnings.get("status") == "known"
+    earnings_ok = earnings_days is not None and earnings_days > 5
+    spy_ok = spy_gate.get("spy_above_200") is True
+    spy_below = spy_gate.get("spy_above_200") is False
+
+    supports, against, missing = [], [], []
+
+    # Conviction inputs, each only when the data actually says so.
+    if passing:
+        supports.append(
+            f"A live setup fired today: {passing.get('setup_name')}."
+        )
+    if trend.get("above_ma50") and trend.get("above_ma200"):
+        supports.append("Price is above its 50-day and 200-day averages.")
+    if trend.get("ma50_direction") == "rising" and trend.get("ma200_direction") == "rising":
+        supports.append("Both the 50-day and 200-day averages are rising.")
+    vol_ratio = (quality.get("inputs") or {}).get("volume_ratio_vs_20d")
+    if vol_ratio is not None and vol_ratio >= 1.5:
+        supports.append(f"Volume is strong, {vol_ratio} times the 20-day average.")
+    if earnings_ok:
+        supports.append(
+            f"Next earnings are known and more than 5 days away "
+            f"({earnings.get('earnings_date')})."
+        )
+    if spy_ok:
+        supports.append("The wider market is above its 200-day average.")
+    if news.get("fresh_company_release"):
+        supports.append(news.get("note") or "Fresh company release in the last 3 days.")
+
+    if not live_passing:
+        against.append("No live setup fired today, no pullback and no volume breakout.")
+    if not earnings_known:
+        against.append("The next earnings date is unknown, so every setup is blocked.")
+    elif not earnings_ok:
+        against.append(
+            f"Earnings are in {earnings_days} day(s), so setups are blocked until after the report."
+        )
+    if spy_below:
+        against.append("The wider market is below its 200-day average, so new buys are blocked.")
+    elif not spy_ok and live_passing:
+        against.append("The wider market trend is unknown, so new buys are blocked.")
+    if trend.get("above_ma50") is False:
+        against.append("Price is below its 50-day average.")
+    if trend.get("above_ma200") is False:
+        against.append("Price is below its 200-day average.")
+
+    # Missing data is listed, never counted as support.
+    if not news.get("fresh_company_release"):
+        missing.append(news.get("note") or "No fresh company news could be verified.")
+    missing.append(
+        "No consensus earnings estimate is available, so anticipated results "
+        "cannot be compared with actual results."
+    )
+    missing.append(
+        "No reported earnings beat or miss is available. The app has no "
+        "reliable beat-or-miss feed, so actual results cannot be scored."
+    )
+    if iv_percentile is None:
+        missing.append("IV rank is unavailable, so the put setup cannot be judged on IV.")
+
+    # Stock verdict. The earnings and SPY gates are re-checked here so
+    # a setup can never produce a BUY if a gate is unknown or blocked.
+    can_buy = bool(passing) and earnings_ok and spy_ok
+    if can_buy:
+        action = passing["action"]
+        invalidation = action.get("invalidation_price")
+        stock = {
+            "decision": "buy",
+            "label": "BUY THE STOCK",
+            "reason": f"{passing.get('setup_name')} fired today, with a clear price where it is wrong.",
+            "reasons": [f"{passing.get('setup_name')} fired today."] + supports[1:3],
+            "what_would_change": (
+                f"A close below ${invalidation} would change this."
+                if invalidation is not None else
+                "A close below the invalidation price would change this."
+            ),
+            "positive_note": "The rule fired today, with a clear price where it is wrong.",
+            "price": _money(price),
+            "passing_setup_key": passing.get("setup_key"),
+            "passing_setup_name": passing.get("setup_name"),
+            "entry_price": _money(action.get("entry_price")),
+            "invalidation_price": _money(invalidation),
+            "target_price": _money(action.get("target_price")),
+            "exit_rule": action.get("exit_rule"),
+        }
+    else:
+        reasons = []
+        if not earnings_known:
+            reasons.append("We do not know the next earnings date, so every setup is blocked until it is known.")
+        elif not earnings_ok:
+            reasons.append(f"Earnings are in {earnings_days} day(s), so setups are blocked until after the report.")
+        if spy_below:
+            reasons.append("The wider market is below its 200-day average, so new buys are blocked.")
+        elif spy_gate.get("spy_above_200") is None:
+            reasons.append("The wider market trend is unknown, so new buys are blocked.")
+        suppressed_live = [
+            s for s in setups
+            if s.get("setup_key") in _LIVE_STOCK_SETUPS
+            and s.get("rule_result") == "suppressed"
+            and s.get("suppressed_reason")
+        ]
+        if suppressed_live:
+            reasons.append(
+                f"{suppressed_live[0].get('setup_name')} fired but was held back: "
+                f"{suppressed_live[0].get('suppressed_reason')}."
+            )
+        if not reasons:
+            reasons.append("No pullback to a rising average and no volume breakout today.")
+        reasons = reasons[:3]
+        stock = {
+            "decision": "dont_buy",
+            "label": "DON'T BUY THE STOCK",
+            "reason": reasons[0],
+            "reasons": reasons,
+            "what_would_change": _what_would_change(
+                qp.get("conditions") or {}, vb.get("conditions") or {},
+                earnings_days, spy_gate.get("spy_above_200"),
+            ),
+            "positive_note": "That is a good outcome too. It saved a bad trade today.",
+            "price": _money(price),
+            "passing_setup_key": None,
+            "passing_setup_name": None,
+            "entry_price": None,
+            "invalidation_price": None,
+            "target_price": None,
+            "exit_rule": None,
+        }
+
+    # Sell a put, only when the stock is a BUY.
+    if stock["decision"] != "buy":
+        put = {
+            "decision": "not_available",
+            "label": "NOT AVAILABLE",
+            "reason": "The stock verdict is Don't Buy, so no put is offered.",
+            "reason_code": "stock_not_buy",
+            "strike": None, "expiry": None, "dte": None,
+            "premium_per_share": None, "premium_per_contract": None,
+            "breakeven": None, "assignment_price": None,
+            "max_loss_per_contract": None, "price_source": None,
+            "why": None,
+        }
+    else:
+        row, fail = _select_put(price, chain_puts)
+        if fail is not None:
+            code, reason = fail
+            put = {
+                "decision": "dont_sell",
+                "label": "DON'T SELL A PUT",
+                "reason": reason,
+                "reason_code": code,
+                "strike": None, "expiry": None, "dte": None,
+                "premium_per_share": None, "premium_per_contract": None,
+                "breakeven": None, "assignment_price": None,
+                "max_loss_per_contract": None, "price_source": None,
+                "why": None,
+            }
+        else:
+            strike = _money(row.get("strike"))
+            premium = _money(row.get("bid"))
+            put = {
+                "decision": "sell",
+                "label": "SELL THE PUT",
+                "reason": f"Sell the {row.get('expiry')} ${strike} put and collect ${round(premium * 100)} now.",
+                "reason_code": None,
+                "strike": strike,
+                "expiry": row.get("expiry"),
+                "dte": row.get("dte"),
+                "premium_per_share": premium,
+                "premium_per_contract": round(premium * 100, 2),
+                "breakeven": _money(strike - premium),
+                "assignment_price": strike,
+                "max_loss_per_contract": round((strike - premium) * 100, 2),
+                "price_source": "bid",
+                "why": (
+                    f"You collect ${round(premium * 100)} now and buy the stock at "
+                    f"${strike} if it falls there, lower than today's ${price}."
+                ),
+            }
+
+    # Buy a call, only when the stock is a BUY.
+    if stock["decision"] != "buy":
+        call = {
+            "decision": "not_available",
+            "label": "NOT AVAILABLE",
+            "reason": "The stock verdict is Don't Buy, so no call is offered.",
+            "reason_code": "stock_not_buy",
+            "strike": None, "expiry": None, "dte": None,
+            "premium_per_share": None, "premium_per_contract": None,
+            "breakeven": None, "max_loss_per_contract": None,
+            "invalidation_price": None, "premium_source": None,
+            "why": None,
+        }
+    else:
+        row, fail = _select_call(price, chain_calls)
+        if fail is not None:
+            code, reason = fail
+            call = {
+                "decision": "dont_buy",
+                "label": "DON'T BUY THE CALL",
+                "reason": reason,
+                "reason_code": code,
+                "strike": None, "expiry": None, "dte": None,
+                "premium_per_share": None, "premium_per_contract": None,
+                "breakeven": None, "max_loss_per_contract": None,
+                "invalidation_price": None, "premium_source": None,
+                "why": None,
+            }
+        else:
+            strike = _money(row.get("strike"))
+            ask = row.get("ask")
+            mid = row.get("mid")
+            try:
+                ask = float(ask) if ask is not None else None
+            except (TypeError, ValueError):
+                ask = None
+            try:
+                mid = float(mid) if mid is not None else None
+            except (TypeError, ValueError):
+                mid = None
+            if ask is not None and ask > 0:
+                premium, premium_source = _money(ask), "ask"
+            else:
+                premium, premium_source = _money(mid), "mid"
+            call = {
+                "decision": "buy",
+                "label": "BUY THE CALL",
+                "reason": f"Buy the {row.get('expiry')} ${strike} call for ${round(premium * 100)}.",
+                "reason_code": None,
+                "strike": strike,
+                "expiry": row.get("expiry"),
+                "dte": row.get("dte"),
+                "premium_per_share": premium,
+                "premium_per_contract": round(premium * 100, 2),
+                "breakeven": _money(strike + premium),
+                "max_loss_per_contract": round(premium * 100, 2),
+                "invalidation_price": stock["invalidation_price"],
+                "premium_source": premium_source,
+                "why": (
+                    f"If the stock rises above ${round(strike + premium, 2)}, the call "
+                    f"pays off. The most you can lose is the ${round(premium * 100)} paid."
+                ),
+            }
+
+    return {
+        "stock": stock,
+        "put": put,
+        "call": call,
+        "conviction": {
+            "supports": supports,
+            "against": against,
+            "missing": missing,
+        },
+        "news": news,
+        "earnings": {
+            "anticipated_date": earnings.get("earnings_date"),
+            "days_away": earnings_days,
+            "status": earnings.get("status"),
+            "consensus_estimate_eps": None,
+            "estimate_source": None,
+            "reported_eps": None,
+            "reported_vs_estimate": None,
+            "beat_or_miss": None,
+            "note": (
+                "Anticipated: the next earnings date from the Finnhub "
+                "earnings calendar. Actual: not available, the app has "
+                "no reliable consensus-estimate or beat-or-miss feed, "
+                "so no beat or miss is guessed."
+            ),
+        },
+    }
 
 
 def _evaluate_setups(ticker: str, inputs: LookupInputs, db,
@@ -478,6 +1117,7 @@ class LiveLookupProvider:
         chain_puts, chain_calls, chain_source, chain_error = self._fetch_chain(
             ticker, ind["price"]
         )
+        news_items, news_source, news_error = self._fetch_news(ticker)
         return LookupInputs(
             indicators=ind,
             data_timestamp=data_timestamp,
@@ -493,7 +1133,28 @@ class LiveLookupProvider:
             chain_source=chain_source,
             chain_error=chain_error,
             chain_fetched_at=datetime.now(timezone.utc).isoformat(),
+            news_items=news_items,
+            news_source=news_source,
+            news_error=news_error,
         )
+
+    @staticmethod
+    def _fetch_news(ticker: str):
+        """Recent articles from Polygon ticker news.
+
+        Returns (items, source, error). A failure is reported, not
+        guessed: the verdict records news as unavailable. Titles
+        without a date are kept here and marked unverifiable by
+        _news_verdict, which is the only place news is judged.
+        """
+        try:
+            from services.polygon_client import get_news
+
+            items = get_news(ticker, limit=5) or []
+            return items, "polygon_news", None
+        except Exception as e:
+            logger.debug("ticker_lookup: Polygon news failed for %s: %s", ticker, e)
+            return [], "polygon_news", f"news_unavailable: {type(e).__name__}"
 
     @staticmethod
     def _fetch_chain(ticker: str, price: float):
@@ -550,6 +1211,39 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
     quality = _quality_score(ind, inputs.iv_percentile)
     earnings_known = inputs.earnings_days is not None
     setups = _evaluate_setups(ticker, inputs, db, registry_statuses, signal_date)
+    trend = _trend(ind)
+    earnings = {
+        "status": "known" if earnings_known else "earnings_unknown",
+        "earnings_days": inputs.earnings_days,
+        "earnings_date": inputs.earnings_date,
+        "source": "finnhub_earnings_calendar",
+        "note": (
+            None if earnings_known else
+            "earnings_unknown: no earnings date on the calendar, "
+            "so every setup is fail-closed"
+        ),
+    }
+    news = _news_verdict(
+        inputs.news_items, inputs.news_source, inputs.news_error,
+        signal_date or date.today(),
+    )
+    verdict = build_verdict(
+        ticker, price=price, setups=setups,
+        earnings=earnings,
+        spy_gate={
+            "spy_above_200": inputs.spy_gate,
+            "spy_vs_200ma_pct": inputs.spy_vs_200ma_pct,
+            "gate": (
+                "pass" if inputs.spy_gate is True
+                else "block_below_200" if inputs.spy_gate is False
+                else "block_unknown"
+            ),
+        },
+        quality=quality, trend=trend,
+        iv_percentile=inputs.iv_percentile, news=news,
+        chain_puts=inputs.chain_puts, chain_calls=inputs.chain_calls,
+        as_of=signal_date or date.today(),
+    )
     chain_available = bool(inputs.chain_puts or inputs.chain_calls)
     if not chain_available and inputs.chain_error is None:
         chain_error = "no_listed_chain"
@@ -587,19 +1281,18 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         "data_timestamp": inputs.data_timestamp,
         "price": round(price, 2),
         "price_source": inputs.price_source,
-        "trend": _trend(ind),
+        "trend": trend,
         "quality": quality,
-        "earnings": {
-            "status": "known" if earnings_known else "earnings_unknown",
-            "earnings_days": inputs.earnings_days,
-            "earnings_date": inputs.earnings_date,
-            "source": "finnhub_earnings_calendar",
-            "note": (
-                None if earnings_known else
-                "earnings_unknown: no earnings date on the calendar, "
-                "so every setup is fail-closed"
-            ),
+        "earnings": earnings,
+        "news": {
+            "status": news["status"],
+            "source": news["source"],
+            "error": news["error"],
+            "latest": news["latest"],
+            "fresh_company_release": news["fresh_company_release"],
+            "note": news["note"],
         },
+        "verdict": verdict,
         "iv": {
             "iv_percentile": inputs.iv_percentile,
             "source": inputs.iv_source,

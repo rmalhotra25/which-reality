@@ -8,7 +8,22 @@ the same row format so consumers can treat them identically.
 Normalized row fields:
   strike, expiry, dte, bid, ask, mid, iv_pct, delta, delta_abs,
   theta_seller (positive = income per share per day to seller), gamma, vega,
-  volume, open_interest
+  volume, open_interest, sale_price, price_source, last_trade
+
+Sale pricing (wheel put sales, Oct 26 2026 fix):
+  A seller collects the bid, never the mid and never the last trade.
+  sale_price is the bid when bid > 0, else 0. mid is the executable
+  mid, (bid + ask) / 2, only when bid > 0 and ask > 0, else the bid
+  when bid > 0 and ask is 0, else 0. A last trade, fair value, or day
+  close is never used as the premium: on the Massive Options Starter
+  plan Polygon returns bid/ask 0.0 (no quotes entitlement), so the old
+  code fell through to the last trade and called it the mid. TXN Nov 13
+  $270 put, Oct 26 2026: bid $1.55, ask $3.45, mid $2.50, last trade
+  $5.00 on 5 contracts. The app showed $5.00, double the real price.
+  price_source is "bid" when bid > 0, else "no_executable_bid".
+  Rows with no executable bid are kept with sale_price 0 so callers can
+  exclude them with that reason instead of silently pricing them at a
+  stale last trade.
 
 ChainResult.source: "polygon_live" | "yfinance_live" | "yfinance_last_trade"
 ChainResult.fetched_at: UTC datetime of the fetch
@@ -58,6 +73,31 @@ def _safe_int(x) -> int:
     except (TypeError, ValueError):
         return 0
     return 0 if math.isnan(v) else int(v)
+
+
+def resolve_sale_price(bid: float, ask: float) -> tuple[float, float, str]:
+    """
+    Sale price for an option a seller is writing, from a quote.
+
+    Returns (sale_price, mid, price_source):
+      - bid > 0: sale_price is the bid, what the seller actually collects.
+        mid is (bid + ask) / 2 when ask > 0 too, else the bid.
+        price_source is "bid".
+      - bid <= 0: sale_price 0, mid 0, price_source "no_executable_bid".
+        There is no executable price, and the caller must exclude the
+        contract, never fall back to a last trade, fair value, or day
+        close as if it were executable.
+
+    Pure function, no API calls. Used by both chain sources below and
+    by the wheel tiers in stock_data.py so every wheel premium is
+    priced the same way.
+    """
+    bid = float(bid or 0)
+    ask = float(ask or 0)
+    if bid <= 0:
+        return 0.0, 0.0, "no_executable_bid"
+    mid = round((bid + ask) / 2, 2) if ask > 0 else round(bid, 2)
+    return round(bid, 2), mid, "bid"
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +239,12 @@ class ChainProvider:
         Fetch normalized chain rows from Polygon for the given DTE window.
         Returns (rows, underlying_price). Returns ([], None) on any failure.
 
-        Row fields: strike, expiry, dte, bid, ask, mid, iv_pct, delta, delta_abs,
+        Row fields: strike, expiry, dte, bid, ask, mid, sale_price,
+                    price_source, last_trade, iv_pct, delta, delta_abs,
                     theta_seller, gamma, vega, volume, open_interest.
+        mid is the executable mid only, never a last trade, fair value,
+        or day close (see resolve_sale_price). Rows with no executable
+        bid are skipped, so the caller falls through to yfinance.
         """
         try:
             from services.polygon_client import (
@@ -244,18 +288,21 @@ class ChainProvider:
                         continue
 
                     bid = ask = mid = 0.0
+                    last_trade = 0.0
                     if snap.last_quote:
                         bid = float(snap.last_quote.bid or 0)
                         ask = float(snap.last_quote.ask or 0)
-                        mp = snap.last_quote.midpoint
-                        mid = float(mp) if mp else (round((bid + ask) / 2, 2) if bid > 0 else 0.0)
-                    if mid <= 0 and snap.last_trade:
-                        mid = float(snap.last_trade.price or 0)
-                    if mid <= 0 and snap.fair_market_value:
-                        mid = float(snap.fair_market_value)
-                    if mid <= 0 and snap.day and snap.day.close:
-                        mid = float(snap.day.close)
-                    mid = round(mid, 2)
+                    # Sale price is the bid, mid is the executable mid only.
+                    # A last trade, fair value, or day close is never used
+                    # as the premium: on this data plan bid/ask are 0.0, so
+                    # the old fallback priced every contract at its last
+                    # trade (TXN Nov 13 $270 put: $5.00 last trade vs
+                    # $1.55 bid, $2.50 mid). Rows with no executable bid
+                    # are skipped here, so callers fall through to
+                    # yfinance, which does return real bid/ask.
+                    sale_price, mid, price_source = resolve_sale_price(bid, ask)
+                    if snap.last_trade:
+                        last_trade = float(snap.last_trade.price or 0)
                     if mid <= 0:
                         skipped_mid += 1
                         continue
@@ -292,6 +339,9 @@ class ChainProvider:
                         "bid": round(bid, 2),
                         "ask": round(ask, 2),
                         "mid": round(mid, 2),
+                        "sale_price": sale_price,
+                        "price_source": price_source,
+                        "last_trade": round(last_trade, 2),
                         "iv_pct": iv_pct,
                         "delta": delta,
                         "delta_abs": abs(delta),
@@ -399,15 +449,24 @@ class ChainProvider:
             dte_val = (exp_date - today).days
             T = max(dte_val, 1) / 365.0
 
+            # Executable mid only: (bid + ask) / 2 when both are real,
+            # the bid when only a bid exists, else 0. A last trade is
+            # never used as the premium (TXN Nov 13 $270 put: last $5.00
+            # vs bid $1.55, mid $2.50). Rows with no executable bid are
+            # kept when they carry a last trade or IV, so callers can
+            # exclude them as "no_executable_bid" instead of the contract
+            # vanishing silently.
             df["_mid"] = df.apply(
                 lambda r: round((float(r.get("bid") or 0) + float(r.get("ask") or 0)) / 2, 2)
+                          if float(r.get("bid") or 0) > 0 and float(r.get("ask") or 0) > 0
+                          else round(float(r.get("bid") or 0), 2)
                           if float(r.get("bid") or 0) > 0
-                          else float(r.get("lastPrice") or 0),
+                          else 0.0,
                 axis=1,
             )
             df["_is_live"] = df["bid"].gt(0) if "bid" in df.columns else False
 
-            df_filtered = df[df["_mid"] > 0].copy()
+            df_filtered = df[(df["_mid"] > 0) | (df["lastPrice"].fillna(0) > 0)].copy()
             if not df_filtered.empty:
                 df = df_filtered
             elif "impliedVolatility" in df.columns:
@@ -444,6 +503,7 @@ class ChainProvider:
                 bid = round(float(row.get("bid") or 0), 2)
                 ask = round(float(row.get("ask") or 0), 2)
                 mid = round(float(row["_mid"]), 2)
+                sale_price, _, price_source = resolve_sale_price(bid, ask)
 
                 rows.append({
                     "strike": float(row["strike"]),
@@ -452,6 +512,9 @@ class ChainProvider:
                     "bid": bid,
                     "ask": ask,
                     "mid": mid,
+                    "sale_price": sale_price,
+                    "price_source": price_source,
+                    "last_trade": round(float(row.get("lastPrice") or 0), 2),
                     "iv_pct": round(iv_dec * 100, 1),
                     "delta": delta,
                     "delta_abs": abs(delta),

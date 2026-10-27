@@ -8,7 +8,11 @@ per dollar of secured capital.
 Ranking formula (stated here and echoed in each result payload):
   EV per contract = (1 - p) * premium - p * assignment_loss
   p = assignment chance (delta_abs, or assignment_chance_pct / 100)
-  premium = mid_premium * 100
+  premium = sale_price * 100, where sale_price is the bid, what the
+  seller actually collects. A last trade is never the premium (TXN
+  Nov 13 $270 put, Oct 26 2026: bid $1.55, mid $2.50, last trade
+  $5.00, app showed $500 per contract and breakeven $265.00, real
+  sale is $155 and breakeven $268.45).
   assignment_loss = max(0, strike - 0.9 * current_price) * 100
   rank = EV / (strike * 100), times the mode penalties
 
@@ -32,6 +36,8 @@ the result says spread_known=false instead of implying a check passed.
 Filters that exclude before ranking (both modes):
   - open_interest < 100    (insufficient_liquidity)
   - spread_pct > 15%       (spread_too_wide, only when spread is known)
+  - no executable bid      (no_executable_bid: bid is 0, so there is no
+                            sale price. A last trade is never used instead.)
 
 Hard gates in harvest mode only:
   - earnings inside the options window  (earnings_in_window)
@@ -182,14 +188,40 @@ def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[
     multipliers). Wheel mode keeps the soft penalty multipliers; harvest
     mode has no multipliers because its gates are hard exclusions.
     The spread multiplier applies only when the spread is known.
+    The premium is the sale price, the bid. Production tiers carry
+    sale_price / premium_source; a tier dict with neither sale_price
+    nor bid/ask at all (legacy test fixtures) falls back to its
+    mid_premium and is labelled legacy_mid, so those fixtures keep
+    working. A tier with a bid of 0 is never priced at its mid.
     """
+    sale_price = tier.get("sale_price")
+    if sale_price is None:
+        sale_price = tier.get("bid", 0) or 0
+    if sale_price is None or sale_price <= 0:
+        if "bid" not in tier and "ask" not in tier and tier.get("mid_premium"):
+            sale_price = tier.get("mid_premium")
+            premium_source = "legacy_mid"
+        else:
+            return {
+                "ev_per_contract": 0.0,
+                "ev_per_capital": 0.0,
+                "assignment_loss": 0.0,
+                "p_assign": 0.0,
+                "rank_score": 0.0,
+                "spread_known": False,
+                "spread_pct": 0.0,
+                "penalties": [],
+                "premium_source": "no_executable_bid",
+            }
+    else:
+        premium_source = tier.get("premium_source") or "bid"
     mid = tier.get("mid_premium", 0)
     strike = tier.get("strike", 0)
     dte = tier.get("dte", 0)
     bid = tier.get("bid", 0)
     ask = tier.get("ask", 0)
 
-    if not strike or not dte or not mid:
+    if not strike or not dte or not sale_price:
         return {
             "ev_per_contract": 0.0,
             "ev_per_capital": 0.0,
@@ -199,9 +231,10 @@ def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[
             "spread_known": False,
             "spread_pct": 0.0,
             "penalties": [],
+            "premium_source": premium_source,
         }
 
-    premium = mid * 100
+    premium = sale_price * 100
     p_assign = tier.get("assignment_chance_pct")
     if p_assign is not None:
         p_assign = p_assign / 100.0
@@ -239,6 +272,7 @@ def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[
         "spread_known": spread_known,
         "spread_pct": round(spread_pct, 1),
         "penalties": penalties,
+        "premium_source": premium_source,
     }
 
 
@@ -283,8 +317,27 @@ def _evaluate_put_ticker(ticker: str, db, mode: str = WHEEL_MODE) -> dict:
     ask = tier.get("ask", 0)
     oi = tier.get("open_interest", 0)
     volume = tier.get("volume", 0)
+    sale_price = tier.get("sale_price", bid if bid else 0) or 0
+    premium_source = tier.get("premium_source") or ("bid" if bid else "no_executable_bid")
 
-    if not mid or not strike or not dte:
+    if not mid and not sale_price and not strike and not dte:
+        return {"ticker": ticker, "excluded": True, "reason": "incomplete_tier_data"}
+
+    # No executable bid: there is no sale price. Exclude, never price
+    # the candidate at a last trade. TXN Nov 13 $270 put is the case
+    # that caught this: last trade $5.00, bid $1.55.
+    if not sale_price or premium_source == "no_executable_bid":
+        return {
+            "ticker": ticker,
+            "excluded": True,
+            "reason": "no_executable_bid",
+            "bid": bid,
+            "ask": ask,
+            "mid_premium": mid,
+            "premium_source": "no_executable_bid",
+        }
+
+    if not strike or not dte:
         return {"ticker": ticker, "excluded": True, "reason": "incomplete_tier_data"}
 
     # Spread honesty: with no live quotes bid and ask are both 0, so no
@@ -329,7 +382,7 @@ def _evaluate_put_ticker(ticker: str, db, mode: str = WHEEL_MODE) -> dict:
         if iv_percentile is None or iv_percentile < 50:
             return {"ticker": ticker, "excluded": True, "reason": "iv_too_low"}
 
-    raw_pppd = round(mid / (strike * 100) / dte, 7)
+    raw_pppd = round(sale_price / (strike * 100) / dte, 7)
     scored = _score_put_candidate(
         tier, iv_pct_val, iv_percentile, earnings_flag, above200, current_price, mode
     )
@@ -355,7 +408,10 @@ def _evaluate_put_ticker(ticker: str, db, mode: str = WHEEL_MODE) -> dict:
         "bid": bid,
         "ask": ask,
         "mid_premium": mid,
-        "premium_per_contract": tier.get("premium_per_contract"),
+        "sale_price": sale_price,
+        "premium_source": premium_source,
+        "premium_per_contract": round(sale_price * 100, 2),
+        "breakeven": tier.get("breakeven"),
         "iv_pct": iv_pct_val,
         "iv_percentile": iv_percentile,
         "iv_pct_source": iv_pct_source,
@@ -411,8 +467,23 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
     ask = tier.get("ask", 0)
     oi = tier.get("open_interest", 0)
     current_price = tiers.get("current_price")
+    sale_price = tier.get("sale_price", bid if bid else 0) or 0
+    premium_source = tier.get("premium_source") or ("bid" if bid else "no_executable_bid")
 
-    if not mid or not strike or not dte or not current_price:
+    # No executable bid: no sale price, exclude, never price at a
+    # last trade.
+    if not sale_price or premium_source == "no_executable_bid":
+        return {
+            "ticker": ticker,
+            "excluded": True,
+            "reason": "no_executable_bid",
+            "bid": bid,
+            "ask": ask,
+            "mid_premium": mid,
+            "premium_source": "no_executable_bid",
+        }
+
+    if not strike or not dte or not current_price:
         return {"ticker": ticker, "excluded": True, "reason": "incomplete_tier_data"}
 
     spread_known = not (bid == 0 and ask == 0)
@@ -436,7 +507,7 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
     # Dividend ex-date flag for early assignment risk
     ex_date = _div_exdate_flag(ticker)
 
-    raw_pppd = round(mid / (current_price * 100) / dte, 7)
+    raw_pppd = round(sale_price / (current_price * 100) / dte, 7)
     upside_pct = round((strike - current_price) / current_price * 100, 1)
 
     return {
@@ -451,7 +522,9 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
         "bid": bid,
         "ask": ask,
         "mid_premium": mid,
-        "premium_per_contract": tier.get("premium_per_contract"),
+        "sale_price": sale_price,
+        "premium_source": premium_source,
+        "premium_per_contract": round(sale_price * 100, 2),
         "iv_pct": tiers.get("atm_iv_pct") or tier.get("iv_pct"),
         "delta": tier.get("delta"),
         "call_away_chance_pct": tier.get("call_away_chance_pct"),

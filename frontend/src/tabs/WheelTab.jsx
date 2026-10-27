@@ -153,6 +153,8 @@ function PutCandidateCard({ c, rank, mode }) {
         <span><span style={scannerStyles.label}>Strike: </span>${c.strike}</span>
         <span><span style={scannerStyles.label}>Expiry: </span>{c.expiry} ({c.dte}d)</span>
         <span><span style={scannerStyles.label}>Mid: </span>${fmt(c.mid_premium)} ({c.bid}/{c.ask})</span>
+        <span><span style={scannerStyles.label}>Sale (bid): </span>${fmt(c.sale_price)} / contract ${c.premium_per_contract != null ? `$${c.premium_per_contract.toFixed(2)}` : ''}</span>
+        <span><span style={scannerStyles.label}>Breakeven: </span>{c.breakeven != null ? `$${c.breakeven.toFixed(2)}` : 'n/a'}</span>
         <span><span style={scannerStyles.label}>$/day on capital: </span>{pct(c.raw_pppd, 4)}</span>
         <span><span style={scannerStyles.label}>EV / $ capital: </span>{c.ev_per_capital != null ? `${(c.ev_per_capital * 100).toFixed(3)}%` : 'n/a'}</span>
         <span><span style={scannerStyles.label}>Delta: </span>{fmt(c.delta_abs)} ({c.assignment_chance_pct}% asgn)</span>
@@ -173,6 +175,7 @@ function PutCandidateCard({ c, rank, mode }) {
           {mode === 'wheel' ? `Own it? ${c.quality_verdict}` : c.quality_verdict}{c.quant_score != null ? ` (${c.quant_score})` : ''}
         </span>
         {c.data_source && <span style={scannerStyles.flag('neutral')}>{c.data_source}</span>}
+        {c.premium_source && <span style={scannerStyles.flag('neutral')}>premium at {c.premium_source}</span>}
       </div>
       <div style={scannerStyles.formula}>formula: {c.ranking_formula}</div>
       <div style={scannerStyles.evNote}>{evNote(mode, c.ev_per_contract)}</div>
@@ -197,6 +200,7 @@ function CallCandidateCard({ c, rank }) {
         <span><span style={{ color: '#718096' }}>Strike: </span>${c.strike} (+{c.upside_to_strike_pct}%)</span>
         <span><span style={{ color: '#718096' }}>Expiry: </span>{c.expiry} ({c.dte}d)</span>
         <span><span style={{ color: '#718096' }}>Mid: </span>${fmt(c.mid_premium)} ({c.bid}/{c.ask})</span>
+        <span><span style={{ color: '#718096' }}>Sale (bid): </span>${fmt(c.sale_price)} / contract ${c.premium_per_contract != null ? `$${c.premium_per_contract.toFixed(2)}` : ''}</span>
         <span><span style={{ color: '#718096' }}>$/day on stock: </span>{(c.raw_pppd * 100).toFixed(4)}%</span>
         <span><span style={{ color: '#718096' }}>IV: </span>{c.iv_pct?.toFixed(1)}%</span>
         <span><span style={{ color: '#718096' }}>Delta: </span>{fmt(c.delta)} ({c.call_away_chance_pct}% call-away)</span>

@@ -26,6 +26,10 @@ class WheelRecommendation(Base):
     put_strike = Column(Float, nullable=True)
     put_expiry = Column(String(12), nullable=True)
     put_premium = Column(Float, nullable=True)
+    # How put_premium was priced: "bid" (what the seller collects) or
+    # "no_executable_bid". A last trade is never the premium (TXN Nov 13
+    # $270 put, Oct 26 2026: bid $1.55, mid $2.50, last trade $5.00).
+    premium_source = Column(String(20), nullable=True)
     iv_rank = Column(Float, nullable=True)
     # Dual confidence scores
     quant_score = Column(Float, nullable=True)

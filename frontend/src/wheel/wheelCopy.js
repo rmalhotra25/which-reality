@@ -87,6 +87,7 @@ const PLAIN_REASONS = {
   no_options_data: "no option data found",
   incomplete_tier_data: "option data incomplete",
   no_call_tier: "no call available",
+  no_executable_bid: "no bid, so no sale price (last trade not used)",
 };
 
 export function plainExclusionReason(reason) {

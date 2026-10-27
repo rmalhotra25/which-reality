@@ -360,8 +360,9 @@ def run_flow_scan() -> dict:
 
     all_alerts: list[dict] = []
 
-    universe = FLOW_UNIVERSE[:]
-    random.shuffle(universe)
+    # W9: no shuffle. Same inputs give the same scan order, so the top
+    # 20 does not depend on which tickers finish first.
+    universe = sorted(FLOW_UNIVERSE)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(_fetch_ticker_flow, t): t for t in universe}
@@ -429,8 +430,27 @@ def run_flow_scan() -> dict:
     sentiment_ratio = round(call_notional / total_notional * 100) if total_notional > 0 else 50
     overall = "bullish" if sentiment_ratio > 55 else ("bearish" if sentiment_ratio < 45 else "neutral")
 
-    analyst = ClaudeAnalyst()
-    interpreted = analyst.interpret_options_flow(top, sentiment_ratio, overall)
+    # W8 (P2): quant verdicts, Claude explains only. Verdict, confidence,
+    # implied target, and recommendation come from
+    # services.quant_picks.flow_verdict. A Claude failure never changes
+    # the verdicts: alerts keep a quant action note.
+    from services.quant_picks import flow_verdict
+    interpreted = []
+    for alert in top:
+        verdict = flow_verdict(alert)
+        interpreted.append({**alert, **verdict, "interpretation": verdict["action_note"]})
+    try:
+        analyst = ClaudeAnalyst()
+        explanations = analyst.explain_flow(interpreted)
+        by_key = {}
+        for e in explanations or []:
+            by_key[(e.get("ticker"), e.get("strike"), e.get("expiry"))] = e.get("interpretation", "")
+        for alert in interpreted:
+            key = (alert.get("ticker"), alert.get("strike"), alert.get("expiry"))
+            if by_key.get(key):
+                alert["interpretation"] = by_key[key]
+    except Exception as e:
+        logger.warning("flow explainer failed: %s", e)
 
     return {
         "alerts": interpreted,

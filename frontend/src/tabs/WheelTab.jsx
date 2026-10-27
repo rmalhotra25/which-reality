@@ -251,6 +251,10 @@ function ScannerSection({ data, loading, refreshing, onRefresh, showCallCandidat
               Last scan: {new Date(runAt).toLocaleString()} &middot; universe: {universeSize}
             </div>
           )}
+          <div style={{ fontSize: '12px', color: '#a0aec0', marginTop: '4px' }}>
+            Canonical wheel system: the wheel scanner, scheduled 10:30 and 14:00 ET
+            (classic and harvest). WheelEngine is research only.
+          </div>
           {!runAt && !loading && (
             <div style={scannerStyles.meta}>No scan results yet. Click Scan Universe to run.</div>
           )}
@@ -1237,9 +1241,14 @@ export default function WheelTab() {
 
       <hr style={s.divider} />
 
-      {/* AI wheel recommendations */}
+      {/* AI wheel recommendations: WheelEngine is research only (P2 W9).
+          Canonical wheel candidates are the scanner above. */}
       <div style={s.sectionTitle}>
         <span>🎯</span> AI Put-Selling Candidates
+      </div>
+      <div style={{ fontSize: '12px', color: '#a0aec0', marginBottom: '12px' }}>
+        Research only: these candidates come from WheelEngine, which does not fire
+        alerts or open positions. Canonical wheel candidates are the scanner above.
       </div>
 
       {!loading && recs.length === 0 && !error && (

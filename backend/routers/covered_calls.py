@@ -87,7 +87,7 @@ def _evaluate_covered_call_tiers(call_tiers: dict, current_price: float, ticker:
     }
 
 
-def _annotate_recommendations(claude_tiers: list, evaluations: dict) -> list:
+def _annotate_recommendations(claude_tiers: list, evaluations: dict, call_tiers: dict | None = None) -> list:
     """Mark Claude's recommended tiers against the deterministic evaluations.
 
     A recommendation whose strike matches an abstained tier is marked
@@ -95,16 +95,33 @@ def _annotate_recommendations(claude_tiers: list, evaluations: dict) -> list:
     tier is marked strike_unverified and abstained: the strike was not on
     the chain the analyzer fetched, so it cannot be validated.
     """
+    # W9/W8: the listed chain wins. Any strike, premium, or call-away
+    # chance Claude returns is dropped and replaced with the chain
+    # tier's own values; a strike not on the chain is abstained.
     by_strike = {}
-    for ev in (evaluations or {}).values():
+    for name, ev in (evaluations or {}).items():
         strike = ev.get("strike")
         if strike is not None:
-            by_strike[float(strike)] = ev
+            by_strike[float(strike)] = (name, ev)
     annotated = []
     for rec in (claude_tiers or []):
         rec = dict(rec)
         strike = rec.get("strike")
-        ev = by_strike.get(float(strike)) if strike is not None else None
+        entry = by_strike.get(float(strike)) if strike is not None else None
+        ev = entry[1] if entry else None
+        if entry:
+            # Overwrite Claude's numbers with the chain tier's numbers.
+            tier_name, _ev = entry
+            tier = (call_tiers or {}).get(tier_name) or {}
+            rec["strike"] = float(strike)
+            if tier.get("expiry"):
+                rec["expiry"] = tier["expiry"]
+            if tier.get("dte") is not None:
+                rec["dte"] = tier["dte"]
+            if tier.get("premium_per_contract") is not None:
+                rec["premium_per_contract"] = tier["premium_per_contract"]
+            if tier.get("call_away_chance_pct") is not None:
+                rec["call_away_chance_pct"] = tier["call_away_chance_pct"]
         if ev is None:
             rec["abstain"] = True
             rec["strike_unverified"] = True
@@ -182,20 +199,42 @@ def analyze_covered_calls(req: CoveredCallRequest):
             "next_ex_div_date": tier_check["next_ex_div_date"],
         }
 
+    # W8 (P2): tiers come from the listed chain, Claude explains only.
+    # Strike, premium, and call-away chance are the chain tier's own
+    # values; Claude text is attached per tier and never changes them.
+    result = {"tiers": [], "iv_environment": None, "ai_unavailable": False}
+    for name in ("aggressive", "balanced", "conservative"):
+        tier = (call_tiers or {}).get(name) or {}
+        if not tier.get("strike"):
+            continue
+        ev = tier_check["evaluations"].get(name) or {}
+        result["tiers"].append({
+            "tier": name,
+            "strike": tier.get("strike"),
+            "expiry": tier.get("expiry"),
+            "dte": tier.get("dte"),
+            "premium_per_contract": tier.get("premium_per_contract"),
+            "call_away_chance_pct": tier.get("call_away_chance_pct"),
+            "abstain": bool(ev.get("abstain")),
+            "abstain_reasons": ev.get("abstain_reasons") or [],
+        })
     try:
         from services.claude_analyst import ClaudeAnalyst
-        analyst = ClaudeAnalyst()
-        result = analyst.suggest_covered_calls(
-            ticker=ticker,
-            current_price=current_price,
-            call_tiers=call_tiers,
-            cost_basis=req.cost_basis,
-        )
+        notes = ClaudeAnalyst().explain_covered_calls(ticker, call_tiers)
+        result["iv_environment"] = notes.get("iv_environment")
+        by_tier = {t.get("tier"): t for t in (notes.get("tiers") or [])}
+        for rec in result["tiers"]:
+            text = by_tier.get(rec["tier"]) or {}
+            rec["premium_plain"] = text.get("premium_plain", "")
+            rec["callaway_plain"] = text.get("callaway_plain", "")
+            rec["if_called_plain"] = text.get("if_called_plain", "")
+            rec["if_not_called_plain"] = text.get("if_not_called_plain", "")
+            rec["best_for"] = text.get("best_for", "")
     except Exception as e:
         logger.warning("Claude unavailable for %s covered calls: %s", ticker, e)
-        result = {"tiers": [], "iv_environment": None, "ai_unavailable": True}
+        result["ai_unavailable"] = True
 
-    result["tiers"] = _annotate_recommendations(result.get("tiers"), tier_check["evaluations"])
+    result["tiers"] = _annotate_recommendations(result["tiers"], tier_check["evaluations"], call_tiers)
     result["covered_call_blocked"] = False
     result["tier_evaluations"] = tier_check["evaluations"]
     result["earnings_date"] = tier_check["earnings_date"]
@@ -265,19 +304,33 @@ def analyze_weekly_covered_call(req: CoveredCallRequest):
             "next_ex_div_date": tier_check["next_ex_div_date"],
         }
 
-    try:
-        from services.claude_analyst import ClaudeAnalyst
-        analyst = ClaudeAnalyst()
-        result = analyst.suggest_weekly_covered_call(
-            ticker=ticker,
-            current_price=current_price,
-            call_tiers=weekly_tiers,
-            iv_rank=iv_rank,
-            cost_basis=req.cost_basis,
-        )
-    except Exception as e:
-        logger.warning("Claude unavailable for %s weekly covered calls: %s", ticker, e)
-        result = {"ai_unavailable": True}
+    # W8 (P2): quant picks the tier, Claude writes text only. Pick order
+    # is balanced, then conservative, then aggressive, first tier that
+    # does not abstain. No pick when every tier abstains.
+    from services.quant_picks import covered_call_quant_pick
+    picked = covered_call_quant_pick(tier_check["evaluations"])
+    if picked is None:
+        result = {"ai_unavailable": False, "recommended_tier": None, "abstain": True,
+                  "abstain_reasons": tier_check["block_reasons"]}
+    else:
+        tier = weekly_tiers.get(picked) or {}
+        result = {
+            "recommended_tier": picked,
+            "strike": tier.get("strike"),
+            "expiry": tier.get("expiry"),
+            "dte": tier.get("dte"),
+            "premium_per_contract": tier.get("premium_per_contract"),
+            "call_away_chance_pct": tier.get("call_away_chance_pct"),
+            "weekly_yield_pct": tier.get("pct_of_stock_weekly"),
+            "ai_unavailable": False,
+        }
+        try:
+            from services.claude_analyst import ClaudeAnalyst
+            notes = ClaudeAnalyst().explain_covered_calls(ticker, weekly_tiers)
+            result["recommendation"] = notes.get("iv_environment") or ""
+            result["iv_environment"] = notes.get("iv_environment")
+        except Exception as e:
+            logger.warning("Claude unavailable for %s weekly covered calls: %s", ticker, e)
 
     if result.get("strike") is not None:
         annotated = _annotate_recommendations([{"strike": result["strike"]}], tier_check["evaluations"])

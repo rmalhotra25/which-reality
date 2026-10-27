@@ -678,7 +678,9 @@ export default function OptionsTab() {
         <span style={{ fontWeight: 700, letterSpacing: '0.03em' }}>SHADOW (untested)</span>
         {': live grading is 64 picks, 11 settled, 0% win rate, -$10,595 as of 2026-10-26. '
         + 'Candidates are shown for observation only and are never sent as live Challenge alerts. '
-        + 'EV is market-implied from the contract IV, not a forecast and not an edge.'}
+        + 'EV is market-implied from the contract IV, not a forecast and not an edge. '
+        + 'Canonical directional system: DirectionalEngine, scheduled weekdays 16:30 ET. '
+        + 'OptionsEngine is research only and never fires alerts.'}
       </div>
 
       {/* No data */}

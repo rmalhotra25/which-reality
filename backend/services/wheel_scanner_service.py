@@ -276,6 +276,46 @@ def _score_put_candidate(tier: dict, iv_pct: float, iv_percentile_val: Optional[
     }
 
 
+def get_listed_put(ticker: str, target_dte: int = 21, target_delta_abs: float = 0.30) -> tuple:
+    """Return (tier, None) for the listed ~0.30-delta put nearest target_dte.
+
+    W5 shared helper: the wheel scanner and Premium at Support both price
+    from this tier, at the bid, never from a modelled strike or premium.
+    Returns (None, reason) when the candidate must be suppressed, using
+    the wheel scanner's own reason strings, plus "no listed chain" when
+    no chain is available at all.
+    """
+    try:
+        from services.stock_data import StockDataService
+        tiers = StockDataService().get_put_tiers(ticker)
+    except Exception as e:
+        return None, f"no listed chain: {e}"
+    if not tiers:
+        return None, "no listed chain"
+    tier, tier_name = _select_tier(tiers, WHEEL_MODE)
+    if not tier:
+        return None, tier_name
+    sale_price = tier.get("sale_price", tier.get("bid", 0) or 0) or 0
+    premium_source = tier.get("premium_source") or ("bid" if tier.get("bid") else "no_executable_bid")
+    if not sale_price or premium_source == "no_executable_bid":
+        return None, "no_executable_bid"
+    if not tier.get("strike") or not tier.get("dte"):
+        return None, "incomplete_tier_data"
+    bid = tier.get("bid", 0) or 0
+    ask = tier.get("ask", 0) or 0
+    mid = tier.get("mid_premium", 0) or 0
+    spread_known = not (bid == 0 and ask == 0)
+    spread_pct = round(((ask - bid) / mid * 100), 1) if (mid > 0 and spread_known) else 0.0
+    if spread_known and spread_pct > 15.0:
+        return None, "spread_too_wide"
+    if (tier.get("open_interest") or 0) < 100:
+        return None, "insufficient_liquidity"
+    tier = dict(tier)
+    tier["spread_pct"] = spread_pct
+    tier["spread_known"] = spread_known
+    return tier, None
+
+
 def _select_tier(tiers: dict, mode: str) -> tuple:
     """Return (tier, tier_name) for the mode, or (None, reason)."""
     if mode == HARVEST_MODE:

@@ -326,7 +326,9 @@ def run_momentum_scan(force: bool = False) -> dict:
         try:
             import random
             universe = _load_universe()
-            random.shuffle(universe)  # shuffle so partial runs aren't alphabet-biased
+            # W9: no shuffle. A research view must be reproducible: the
+            # same inputs give the same order, so a partial run is
+            # deterministic instead of order-unstable.
             _set_progress(phase="stage1_price_volume", total=len(universe))
 
             from services.polygon_client import get_snapshots_batch

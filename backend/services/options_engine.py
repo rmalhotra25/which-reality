@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 OPTIONS_UNIVERSE = DEFAULT_UNIVERSE[:30]
 TOP_N = 5
+# W9: research view only. The canonical directional system is
+# DirectionalEngine. This engine never fires alerts, never notifies,
+# and no longer runs on the scheduler. Manual refresh only.
+RESEARCH_ONLY = True
+CANONICAL_SYSTEM = "directional_engine"
 
 
 def _format_news(items) -> str:

@@ -150,14 +150,31 @@ def run(db) -> tuple[bool, str | None]:
     if len(survivors) < 3:
         return False, f"Only {len(survivors)} stocks passed screening — need at least 3."
 
-    analyst = ClaudeAnalyst()
-    try:
-        champions = analyst.pick_champions(survivors)
-    except Exception as e:
-        return False, f"AI analysis failed: {e}"
-
+    # W8 (P2): quant picks, Claude explains only. The score is a written
+    # rule in services.quant_picks.champion_score, graded by
+    # ai_boundary.grade_from_quant_score. A Claude failure never changes
+    # the picks: each pick keeps a quant-derived explanation.
+    from services.quant_picks import pick_champions_quant
+    from services.ai_boundary import explain_or_fallback
+    champions = pick_champions_quant(survivors)
     if not champions or len(champions) < 2:
-        return False, "AI returned incomplete results — try again."
+        return False, "Quant pick returned incomplete results - try again."
+    try:
+        analyst = ClaudeAnalyst()
+        explanations = analyst.explain_champions(
+            [{"ticker": d["ticker"], "score": d["score"], "grade": d["grade"]}
+             for d in champions.values()]
+        )
+        by_ticker = {e.get("ticker"): e.get("explanation", "") for e in explanations or []}
+        for data in champions.values():
+            if by_ticker.get(data["ticker"]):
+                data["reason"] = by_ticker[data["ticker"]]
+            else:
+                data["reason"] = explain_or_fallback(
+                    [{"ticker": data["ticker"], "score": data["score"]}], "champions"
+                )[0].get("explanation", "")
+    except Exception as e:
+        logger.warning("Champions: AI explainer failed: %s", e)
 
     run_at = datetime.now(timezone.utc)
     # Build entry_prices map from survivors list

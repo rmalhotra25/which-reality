@@ -819,14 +819,28 @@ def generate_challenge_alerts(db: Session) -> int:
     stage = _current_stage(db, account.id)
     today_str = date.today().isoformat()
     created = 0
+    # P1 rule registry gate: a Challenge alert type whose rule is not in
+    # the registry (or is RETIRED) cannot fire. The section is skipped
+    # and logged, not evaluated.
+    from services.rule_registry import can_fire as _rule_can_fire
     sections = [
-        ("eligible_setups", lambda: _gen_eligible_setups(db, account, state, existing)),
-        ("eligible_directional", lambda: _gen_eligible_directional(db, account, state, existing)),
-        ("position_reviews", lambda: _gen_position_reviews(db, account, existing, today_str)),
-        ("milestones", lambda: _gen_milestones(db, account, stage, state, existing)),
-        ("drawdown", lambda: _gen_drawdown(db, account, stage, state, existing, today_str)),
+        ("eligible_setups", "challenge.eligible_setup",
+         lambda: _gen_eligible_setups(db, account, state, existing)),
+        ("eligible_directional", "challenge.eligible_directional",
+         lambda: _gen_eligible_directional(db, account, state, existing)),
+        ("position_reviews", "challenge.position_review",
+         lambda: _gen_position_reviews(db, account, existing, today_str)),
+        ("milestones", "challenge.milestone",
+         lambda: _gen_milestones(db, account, stage, state, existing)),
+        ("drawdown", "challenge.drawdown_warning",
+         lambda: _gen_drawdown(db, account, stage, state, existing, today_str)),
     ]
-    for name, fn in sections:
+    for name, rule_key, fn in sections:
+        if not _rule_can_fire(db, rule_key):
+            logger.warning(
+                "Challenge alerts: rule %s is not in the rule registry "
+                "or is RETIRED; section %s skipped", rule_key, name)
+            continue
         try:
             created += fn()
         except Exception as e:

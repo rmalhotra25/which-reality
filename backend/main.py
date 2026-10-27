@@ -76,6 +76,22 @@ async def lifespan(app: FastAPI):
     finally:
         _db.close()
 
+    # Seed the rule registry and run the startup check (P1): a LIVE
+    # rule with no implementing function, or thresholds that differ from
+    # its row, fails the deploy visibly instead of firing on the wrong
+    # thresholds.
+    _db = SessionLocal()
+    try:
+        from services.rule_registry import seed_rule_registry, verify_rules
+        seed_rule_registry(_db)
+        verify_rules(_db)
+        logger.info("Rule registry seeded and startup check passed")
+    except Exception as e:
+        logger.critical("Rule registry startup check FAILED: %s", e)
+        raise
+    finally:
+        _db.close()
+
     scheduler = start_scheduler()
     app.state.scheduler = scheduler
     logger.info("%s", auth_status_message())
@@ -108,7 +124,7 @@ from auth import AuthMiddleware  # noqa: E402
 app.add_middleware(AuthMiddleware)
 
 from routers import options, wheel  # noqa: E402
-from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book, challenge  # noqa: E402
+from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book, challenge, rules  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
@@ -129,6 +145,7 @@ app.include_router(iv_history.router)
 app.include_router(alerts.router)
 app.include_router(book.router)
 app.include_router(challenge.router)
+app.include_router(rules.router)
 
 
 @app.get("/api/health", tags=["Health"])
@@ -170,8 +187,23 @@ def scheduler_status(request: Request):
 
 @app.get("/api/status", tags=["Health"])
 def run_status_endpoint():
+    """System status: one line per job from the persistent run receipts
+    (the source of truth), plus the in-memory run_status mirror as a
+    fallback. A job with no receipt is a job that did not run; a failed
+    job shows state error here, never silence."""
+    from database import SessionLocal
     from services.run_status import get_all
-    return get_all()
+
+    receipts = []
+    db = SessionLocal()
+    try:
+        from services.run_receipts import latest_per_job
+        receipts = latest_per_job(db)
+    except Exception as e:
+        logger.warning("run receipts unavailable for /api/status: %s", e)
+    finally:
+        db.close()
+    return {"run_status": get_all(), "receipts": receipts}
 
 
 # Serve the built React frontend — must come last

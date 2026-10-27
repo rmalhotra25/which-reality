@@ -693,6 +693,7 @@ def build_dividend_path(
             logger.info("dividend_path: returning cached results")
             return cached
 
+    _scan_started_at = datetime.now(timezone.utc)
     scored_all = []
     errors = []
     for ticker, meta in _UNIVERSE.items():
@@ -751,4 +752,22 @@ def build_dividend_path(
     }
     set_cache(_cache_key(starting_capital, weekly_dca), output)
     logger.info("dividend_path complete: %d scored, portfolio of %d", len(scored_all), len(portfolio))
+    # Persistent run receipt (P1). A cache hit above returns early with
+    # no receipt: no new run happened, the original scan's receipt stands.
+    try:
+        from database import SessionLocal
+        from services.run_receipts import write_receipt, JOB_DIVIDEND_PATH
+        _db = SessionLocal()
+        try:
+            write_receipt(
+                _db, JOB_DIVIDEND_PATH, _scan_started_at, "ok",
+                tickers_evaluated=len(_UNIVERSE),
+                alerts_fired=len(portfolio),
+                suppressed=len(errors),
+                errors=errors[:50],
+            )
+        finally:
+            _db.close()
+    except Exception as e:
+        logger.warning("dividend_path: receipt write failed: %s", e)
     return output

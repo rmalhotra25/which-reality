@@ -15,6 +15,9 @@ class SetupAlert(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     setup_key = Column(String(60), nullable=False, index=True)
+    # P1 rule registry key, e.g. alert.quality_pullback. The contract
+    # requires every alert to name the rule that fired it.
+    rule_key = Column(String(80), nullable=True, index=True)
     setup_name = Column(String(120), nullable=False)
     setup_status = Column(String(10), nullable=False)  # LIVE | SHADOW at fire time
     ticker = Column(String(10), nullable=False, index=True)
@@ -28,8 +31,16 @@ class SetupAlert(Base):
     # Suggested action fields (stock setups)
     action = Column(String(30), nullable=True)   # BUY | SELL | WATCH
     entry_price = Column(Float, nullable=True)
+    # Where the entry price came from: "next_open_estimate" for stock
+    # setups, or a listed-chain source (bid/ask/last/fair value) for
+    # options. The contract requires a named source, never a bare price.
+    entry_source = Column(String(30), nullable=True)
     invalidation_price = Column(Float, nullable=True)
     target_price = Column(Float, nullable=True)
+    # Exit rule in words when the rule defines no price target, e.g.
+    # "exit when RSI(14) exceeds 68". Target and exit rule are never
+    # both invented: RSI-exit rules carry this and target_price None.
+    exit_rule = Column(Text, nullable=True)
     action_summary = Column(Text, nullable=True)  # one-line "why now"
 
     # Options fields (wheel setup)

@@ -22,6 +22,8 @@ from typing import Optional
 
 import numpy as np
 
+from services.alert_contract import time_stop_date
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,7 +116,7 @@ def _indicators(df) -> Optional[dict]:
         rsi = (100 - 100 / (1 + rs))
 
         # RSI was high (>60) in last 20 sessions
-        rsi_was_high = rsi.shift(1).rolling(20).max() > 60
+        rsi_was_high = rsi.shift(1).rolling(20).max() > QP_RSI_WAS_ABOVE
 
         # Volume 20-day average
         vol20 = vols.rolling(20).mean()
@@ -156,6 +158,10 @@ def _indicators(df) -> Optional[dict]:
             "vol20": float(vol20.iloc[-1]) if not np.isnan(vol20.iloc[-1]) else None,
             "atr14": float(atr14.iloc[-1]) if not np.isnan(atr14.iloc[-1]) else None,
             "prior_high_55": float(prior_high_55.iloc[-1]) if not np.isnan(prior_high_55.iloc[-1]) else None,
+            # Signal-day low: the Trend Pullback Reversal stop is the low
+            # of the signal candle (recipe), not an invented ATR offset.
+            "low_today": float(lows.iloc[-1]),
+            "low_prev": float(lows.iloc[-2]) if n > 1 else None,
             "hv30": float(hv30.iloc[-1]) if not np.isnan(hv30.iloc[-1]) else None,
             "bullish_engulf": bullish_engulf,
         }
@@ -182,6 +188,41 @@ def _earnings_days(ticker: str) -> Optional[int]:
 # with a reason, never a pass.
 EARNINGS_BLOCK_DAYS = 5
 EARNINGS_UNKNOWN_REASON = "earnings_unknown"
+
+
+# ---------------------------------------------------------------------------
+# Setup thresholds as named constants (P1 rule registry)
+# ---------------------------------------------------------------------------
+# The rule registry rows carry these same numbers in trigger_json, and
+# the startup check (services.rule_registry.verify_rules) compares the
+# row against these constants. Change a threshold here AND in the seed
+# row in services.rule_registry, never in one place only.
+QP_NEAR_MA_PCT = 0.02
+QP_RSI_LT = 55
+QP_RSI_WAS_ABOVE = 60
+QP_RSI_EXIT = 68
+QP_TIME_STOP_DAYS = 30
+PAS_NEAR_MA_PCT = 0.02
+PAS_IV_PCT_MIN = 67
+PAS_HV_PROXY_PCT = 30
+PAS_TARGET_DTE = 37
+PAS_TIME_STOP_DAYS = 30
+VB_PRIOR_HIGH_DAYS = 55
+VB_VOL_MULT = 1.5
+VB_ATR_TARGET_MULT = 2.0
+VB_TIME_STOP_DAYS = 15
+OB_RSI_LT = 30
+OB_RSI_EXIT = 50
+OB_TIME_STOP_DAYS = 30
+TPR_NEAR_MA_PCT = 0.01
+TPR_RSI_BAND_LOW = 40
+TPR_RSI_BAND_HIGH = 55
+TPR_ATR_TARGET_MULT = 2.0
+TPR_TIME_STOP_DAYS = 15
+PED_GAP_HOLD_PCT = 0.005
+PED_HV_CRUSH_PCT = 35
+PED_TARGET_PCT = 0.10
+PED_TIME_STOP_DAYS = 15
 
 
 def _earnings_ok(earnings_days_val: Optional[int]) -> bool:
@@ -403,9 +444,9 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
     ma200_lag = ind.get("ma200_lag20")
 
     # Price within 2% above 50-day MA
-    near_ma50 = (ma50 is not None and p > ma50 and p <= ma50 * 1.02)
+    near_ma50 = (ma50 is not None and p > ma50 and p <= ma50 * (1 + QP_NEAR_MA_PCT))
     # Price within 2% above 200-day MA
-    near_ma200 = (ma200 is not None and p > ma200 and p <= ma200 * 1.02)
+    near_ma200 = (ma200 is not None and p > ma200 and p <= ma200 * (1 + QP_NEAR_MA_PCT))
     cond["near_ma50"] = near_ma50
     cond["near_ma200"] = near_ma200
     cond["price"] = round(p, 2)
@@ -424,7 +465,7 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
     rsi = ind.get("rsi")
     rsi_was_high = ind.get("rsi_was_high", False)
     cond["rsi"] = round(rsi, 1) if rsi is not None else None
-    cond["rsi_lt_55"] = (rsi is not None and rsi < 55)
+    cond["rsi_lt_55"] = (rsi is not None and rsi < QP_RSI_LT)
     cond["rsi_was_above_60"] = rsi_was_high
 
     # Volume below 20-day average
@@ -482,7 +523,7 @@ def _eval_premium_at_support(ind: dict, earnings_days_val: Optional[int], iv_pct
     hv30 = ind.get("hv30")
 
     # Price within 2% of 50-day MA (above or below)
-    near_ma50 = (ma50 is not None and abs(p - ma50) / ma50 <= 0.02)
+    near_ma50 = (ma50 is not None and abs(p - ma50) / ma50 <= PAS_NEAR_MA_PCT)
     cond["near_ma50"] = near_ma50
     cond["price"] = round(p, 2)
     cond["ma50"] = round(ma50, 2) if ma50 else None
@@ -497,12 +538,12 @@ def _eval_premium_at_support(ind: dict, earnings_days_val: Optional[int], iv_pct
     iv_source = "iv_store"
     iv_high = False
     if iv_pct is not None:
-        iv_high = iv_pct >= 67.0
+        iv_high = iv_pct >= PAS_IV_PCT_MIN
         cond["iv_percentile"] = round(iv_pct, 1)
         cond["iv_source"] = "iv_store"
     elif hv30 is not None:
         # Use HV as a rough proxy -- flag as approximate
-        iv_high = hv30 > 0.30  # annualised HV above 30% as a rough high-IV threshold
+        iv_high = hv30 > (PAS_HV_PROXY_PCT / 100.0)  # annualised HV above 30% as a rough high-IV threshold
         cond["iv_percentile"] = None
         cond["hv30_approx"] = round(hv30 * 100, 1)
         cond["iv_source"] = "hv_approx"
@@ -560,7 +601,7 @@ def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int],
     cond["prior_high_55"] = round(prior_high, 2) if prior_high else None
 
     # Volume at least 1.5x average
-    vol_confirmed = (vol20 is not None and vol >= 1.5 * vol20)
+    vol_confirmed = (vol20 is not None and vol >= VB_VOL_MULT * vol20)
     cond["volume"] = int(vol)
     cond["vol20"] = int(vol20) if vol20 else None
     cond["vol_confirmed"] = vol_confirmed
@@ -609,7 +650,7 @@ def _eval_oversold_bounce(ind: dict, earnings_days_val: Optional[int]) -> tuple[
     ma200_lag = ind.get("ma200_lag20")
     rsi = ind.get("rsi")
 
-    rsi_oversold = (rsi is not None and rsi < 30)
+    rsi_oversold = (rsi is not None and rsi < OB_RSI_LT)
     above_ma200 = (ma200 is not None and p > ma200)
     ma200_rising = (ma200 is not None and ma200_lag is not None and ma200 > ma200_lag)
     # No earnings within 5 days (fail-closed: unknown blocks)
@@ -646,10 +687,10 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
         and p > ma20 and p > ma50
     )
     near_ma = (
-        (ma20 is not None and abs(p - ma20) / ma20 <= 0.01) or
-        (ma50 is not None and abs(p - ma50) / ma50 <= 0.01)
+        (ma20 is not None and abs(p - ma20) / ma20 <= TPR_NEAR_MA_PCT) or
+        (ma50 is not None and abs(p - ma50) / ma50 <= TPR_NEAR_MA_PCT)
     )
-    rsi_turning_up = (rsi is not None and 40 <= rsi <= 55)
+    rsi_turning_up = (rsi is not None and TPR_RSI_BAND_LOW <= rsi <= TPR_RSI_BAND_HIGH)
     bullish_engulf = ind.get("bullish_engulf", False)
     reversal = rsi_turning_up or bullish_engulf
     # No earnings within 5 days (fail-closed: unknown blocks)
@@ -690,10 +731,10 @@ def _eval_post_earnings_drift(ind: dict, earnings_days_val: Optional[int]) -> tu
 
     # Proxy check: IV crush means current HV is notably lower than historical norm.
     # Without live IV history this is approximate.
-    iv_crushed = (hv30 is not None and hv30 < 0.35)  # below 35% annualised
+    iv_crushed = (hv30 is not None and hv30 < (PED_HV_CRUSH_PCT / 100.0))  # below 35% annualised
 
     # Gap held: today's price above yesterday's close
-    gap_held = (prev_close is not None and p > prev_close * 1.005)
+    gap_held = (prev_close is not None and p > prev_close * (1 + PED_GAP_HOLD_PCT))
 
     cond["price"] = round(p, 2)
     cond["prev_close"] = round(prev_close, 2) if prev_close else None
@@ -723,59 +764,84 @@ def _eval_post_earnings_drift(ind: dict, earnings_days_val: Optional[int]) -> tu
 # Action block builders
 # ---------------------------------------------------------------------------
 
-def _build_stock_action(ind: dict, setup_key: str) -> dict:
-    """Build entry/invalidation/target for stock-side setups."""
+def _build_stock_action(ind: dict, setup_key: str,
+                        signal_date: date | None = None) -> dict:
+    """Build entry/invalidation/target for stock-side setups.
+
+    P1 (W3): no invented targets or stops. A rule whose exit is a
+    condition (Quality Pullback RSI exit, Oversold Bounce RSI exit)
+    carries exit_rule in words and target_price None, never a made-up
+    price like 1.08x or 1.07x entry. Trend Pullback Reversal stops below
+    the low of the signal candle, per its recipe, not entry minus half
+    an ATR. Volume Breakout keeps entry plus 2x ATR (real, per recipe)
+    and Post-Earnings Drift keeps 10% above entry (real, per recipe).
+    """
     p = ind["price"]
     atr = ind.get("atr14") or (p * 0.02)  # rough fallback
     ma200 = ind.get("ma200")
     prior_high = ind.get("prior_high_55")
+    sig_date = signal_date or date.today()
 
     if setup_key == "quality_pullback":
         entry = round(p * 1.0005, 2)  # next open estimate, 0.05% slippage
         invalidation = round(ma200, 2) if ma200 else round(p * 0.95, 2)
-        target = round(p * 1.08, 2)   # approximate; RSI target not expressible as price
+        target = None
+        exit_rule = (
+            f"Exit when RSI(14) exceeds {QP_RSI_EXIT}; stop on close below "
+            f"the 200-day MA; {QP_TIME_STOP_DAYS}-day time stop."
+        )
+        expiry = time_stop_date(sig_date, QP_TIME_STOP_DAYS)
         summary = (
             f"Pullback to MA on quiet volume. "
             f"Entry ~${entry}, stop below 200-day MA ${invalidation}, "
-            f"RSI(14) target exit >68."
+            f"RSI(14) target exit >{QP_RSI_EXIT} (no price target)."
         )
     elif setup_key == "oversold_bounce":
         entry = round(p * 1.0005, 2)
         invalidation = round(ma200, 2) if ma200 else round(p * 0.95, 2)
-        target = round(p * 1.07, 2)
+        target = None
+        exit_rule = (
+            f"Exit when RSI(14) exceeds {OB_RSI_EXIT}; stop on close below "
+            f"the 200-day MA; {OB_TIME_STOP_DAYS}-day time stop."
+        )
+        expiry = time_stop_date(sig_date, OB_TIME_STOP_DAYS)
         summary = (
             f"Deeply oversold above rising 200-day MA. "
             f"Entry ~${entry}, stop below 200-day MA ${invalidation}, "
-            f"target RSI>50 (approx ${target})."
+            f"exit when RSI exceeds {OB_RSI_EXIT} (no price target)."
         )
     elif setup_key == "volume_breakout":
         entry = round(p * 1.0005, 2)
         invalidation = round(prior_high, 2) if prior_high else round(p * 0.97, 2)
-        target = round(entry + 2 * atr, 2)
+        target = round(entry + VB_ATR_TARGET_MULT * atr, 2)
+        exit_rule = None
+        expiry = time_stop_date(sig_date, VB_TIME_STOP_DAYS)
         summary = (
             f"Volume-confirmed breakout above 55-day high. "
             f"Entry ~${entry}, stop at breakout level ${invalidation}, "
             f"target ${target} (2x ATR)."
         )
     elif setup_key == "trend_pullback_reversal":
-        ma20 = ind.get("ma20")
-        ma50 = ind.get("ma50")
         entry = round(p * 1.0005, 2)
-        support = min(
-            v for v in [ma20, ma50] if v is not None
-        ) if any(v is not None for v in [ma20, ma50]) else p * 0.98
-        invalidation = round(p - atr * 0.5, 2)  # below signal-day low approx
-        target = round(p + atr * 2, 2)
+        # Stop below the low of the signal candle, per the recipe.
+        # The old price minus half an ATR was an invented approximation.
+        low_today = ind.get("low_today")
+        invalidation = round(low_today, 2) if low_today is not None else None
+        target = round(entry + TPR_ATR_TARGET_MULT * atr, 2)
+        exit_rule = None
+        expiry = time_stop_date(sig_date, TPR_TIME_STOP_DAYS)
         summary = (
             f"Pullback reversal at MA. "
-            f"Entry ~${entry}, stop at ${invalidation} (below signal low), "
+            f"Entry ~${entry}, stop at ${invalidation} (below signal-day low), "
             f"target ${target}."
         )
     elif setup_key == "post_earnings_drift":
         entry = round(p, 2)   # enters at close
         prev_close = ind.get("prev_close") or p * 0.95
         invalidation = round(prev_close * 1.0, 2)  # gap fills = stop
-        target = round(p * 1.10, 2)
+        target = round(p * (1 + PED_TARGET_PCT), 2)
+        exit_rule = None
+        expiry = time_stop_date(sig_date, PED_TIME_STOP_DAYS)
         summary = (
             f"Post-earnings drift. "
             f"Entry at close ~${entry}, stop at gap open ${invalidation}, "
@@ -785,15 +851,23 @@ def _build_stock_action(ind: dict, setup_key: str) -> dict:
         entry = round(p * 1.0005, 2)
         invalidation = round(p * 0.95, 2)
         target = round(p * 1.10, 2)
+        exit_rule = None
+        expiry = time_stop_date(sig_date, 30)
         summary = f"Entry ~${entry}, stop ${invalidation}, target ${target}."
 
-    max_loss = round((entry - invalidation) if entry > invalidation else entry * 0.05, 2)
+    if invalidation is not None:
+        max_loss = round((entry - invalidation) if entry > invalidation else entry * 0.05, 2)
+    else:
+        max_loss = None
     return {
         "action": "BUY",
         "entry_price": entry,
+        "entry_source": "next_open_estimate",
         "invalidation_price": invalidation,
         "target_price": target,
-        "max_loss": abs(max_loss),
+        "exit_rule": exit_rule,
+        "expiry": expiry,
+        "max_loss": abs(max_loss) if max_loss is not None else None,
         "action_summary": summary,
     }
 
@@ -815,7 +889,7 @@ def _build_options_action(ind: dict, db) -> dict | None:
             return None, "Strike price is zero or negative"
 
         # Target 37 DTE expiry
-        target_dte = 37
+        target_dte = PAS_TARGET_DTE
         expiry_date = date.today() + timedelta(days=target_dte)
         expiry_str = expiry_date.isoformat()
 
@@ -867,8 +941,14 @@ def _build_options_action(ind: dict, db) -> dict | None:
             "max_loss": max_loss_position,
             "action_summary": summary,
             "entry_price": p,
+            # Entry here is the underlying close; the premium is a
+            # Black-Scholes estimate from HV, labelled as such, not a
+            # listed-chain price (audit W5: listed chain or suppress is
+            # still open work; this label keeps the estimate honest).
+            "entry_source": "black_scholes_hv_proxy",
             "invalidation_price": round(p * 0.93, 2),  # stop the underlying below 200 MA
             "target_price": None,
+            "exit_rule": "Close at 50% profit or 21 DTE.",
         }, None
     except Exception as e:
         return None, str(e)
@@ -890,13 +970,28 @@ def _build_alert(
     suppressed_reason: str = None,
     account_equity: float | None = None,
     equity_source: str | None = None,
+    signal_date: date | None = None,
 ) -> dict:
-    """Build the alert record dict (not yet a DB row)."""
+    """Build the alert record dict (not yet a DB row).
+
+    P1 alert contract: the built alert is validated against
+    services.alert_contract before it is returned. A non-conforming
+    alert (missing action, size, entry source, invalidation, target or
+    exit rule, expiry, reason, rule_key, status) is returned as
+    suppressed with the missing fields named, so it never reaches the
+    Alerts tab or Telegram. A 1-unit sizing fallback is not a size:
+    when no stop distance exists to size from, the alert is suppressed
+    instead of guessing 1 unit.
+    """
+    from services.alert_contract import validate_alert, build_reason, time_stop_date
+
     earnings_days_val = cond.get("earnings_days")
+    rule_key = f"alert.{setup_key}"
 
     if is_suppressed:
         return {
             "setup_key": setup_key,
+            "rule_key": rule_key,
             "setup_name": setup_name,
             "setup_status": setup_status,
             "ticker": ticker,
@@ -911,6 +1006,7 @@ def _build_alert(
         if action_data is None:
             return {
                 "setup_key": setup_key,
+                "rule_key": rule_key,
                 "setup_name": setup_name,
                 "setup_status": setup_status,
                 "ticker": ticker,
@@ -921,7 +1017,7 @@ def _build_alert(
             }
         iv_pct = cond.get("iv_percentile")
     else:
-        action_data = _build_stock_action(ind, setup_key)
+        action_data = _build_stock_action(ind, setup_key, signal_date=signal_date)
         iv_pct = cond.get("iv_percentile")
         fail_reason = None
 
@@ -931,13 +1027,31 @@ def _build_alert(
         action_data, setup_key, account_equity, equity_source or "default"
     )
 
+    # Sizing fallback is not a size: suppress, never guess 1 unit.
+    if action_data.get("sizing_source") == "fallback":
+        return {
+            "setup_key": setup_key,
+            "rule_key": rule_key,
+            "setup_name": setup_name,
+            "setup_status": setup_status,
+            "ticker": ticker,
+            "is_suppressed": True,
+            "suppressed_reason": (
+                "size_rule: no stop distance to size from; suppress, "
+                "do not guess 1 unit"
+            ),
+            "conditions": cond,
+            "action": None,
+        }
+
     invalidation_text = (
         f"Invalidated if price closes below ${action_data.get('invalidation_price', '?')}. "
         f"{'Earnings in ' + str(earnings_days_val) + ' days.' if earnings_days_val and earnings_days_val <= 30 else ''}"
     ).strip()
 
-    return {
+    alert = {
         "setup_key": setup_key,
+        "rule_key": rule_key,
         "setup_name": setup_name,
         "setup_status": setup_status,
         "ticker": ticker,
@@ -949,7 +1063,25 @@ def _build_alert(
         "iv_percentile": iv_pct,
         "spread_quality": "estimated" if setup_key == "premium_at_support" else None,
         "invalidation_text": invalidation_text,
+        "reason": build_reason(setup_key, cond),
     }
+
+    ok, missing = validate_alert(alert)
+    if not ok:
+        return {
+            "setup_key": setup_key,
+            "rule_key": rule_key,
+            "setup_name": setup_name,
+            "setup_status": setup_status,
+            "ticker": ticker,
+            "is_suppressed": True,
+            "suppressed_reason": (
+                "alert_contract: missing " + ", ".join(missing)
+            ),
+            "conditions": cond,
+            "action": None,
+        }
+    return alert
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +1107,8 @@ def _universe_for(job: str) -> list[str]:
 
 
 def _evaluate_setup(setup_row, db, account_equity: float | None = None,
-                    equity_source: str | None = None) -> dict:
+                    equity_source: str | None = None,
+                    signal_date: date | None = None) -> dict:
     """
     Evaluate one setup across its universe.
     Returns {"alerts": [...], "suppressed": [...], "tickers_evaluated": int, "errors": []}.
@@ -1077,6 +1210,7 @@ def _evaluate_setup(setup_row, db, account_equity: float | None = None,
                 key, setup_row.name, setup_row.status,
                 ticker, ind, cond, db,
                 account_equity=account_equity, equity_source=equity_source,
+                signal_date=signal_date,
             )
             if alert["is_suppressed"]:
                 suppressed.append(alert)
@@ -1150,13 +1284,21 @@ def run_alert_engine(db) -> dict:
     """
     Evaluate all registered setups and write results to DB.
     Returns a summary dict for run_status.
+
+    P1: a setup whose rule is not in the rule registry (or is RETIRED)
+    cannot fire; it is skipped and recorded as an error, not evaluated.
+    Every run writes a persistent run receipt (services.run_receipts),
+    so a run that fires nothing is still checkable.
     """
     from models.setup_registry import SetupRegistry
     from models.setup_alert import SetupAlert, AlertEngineRun
+    from services.rule_registry import can_fire
+    from services.run_receipts import write_receipt, JOB_ALERT_ENGINE
     import services.run_status as run_status
 
     run_status.set_running("alert_engine")
     start = time.time()
+    started_at = datetime.now(timezone.utc)
 
     # Account equity resolved once per run so every alert in the run is
     # sized from the same equity (Challenge trading equity when available).
@@ -1176,9 +1318,19 @@ def run_alert_engine(db) -> dict:
     fired_at = datetime.now(timezone.utc)
 
     for setup in setups:
+        # Rule registry gate: a rule not in the registry cannot fire.
+        if not can_fire(db, f"alert.{setup.setup_key}"):
+            msg = (
+                f"{setup.setup_key}: rule alert.{setup.setup_key} is not "
+                f"in the rule registry or is RETIRED; setup skipped"
+            )
+            logger.warning("alert_engine: %s", msg)
+            all_errors.append(msg)
+            continue
         result = _evaluate_setup(
             setup, db,
             account_equity=account_equity, equity_source=equity_source,
+            signal_date=fired_at.date(),
         )
         total_tickers = max(total_tickers, result["tickers_evaluated"])
         all_errors.extend(result["errors"])
@@ -1203,6 +1355,7 @@ def run_alert_engine(db) -> dict:
                     continue
             row = SetupAlert(
                 setup_key=alert_dict["setup_key"],
+                rule_key=alert_dict.get("rule_key"),
                 setup_name=alert_dict["setup_name"],
                 setup_status=alert_dict["setup_status"],
                 ticker=alert_dict["ticker"],
@@ -1212,8 +1365,10 @@ def run_alert_engine(db) -> dict:
                 conditions_json=json.dumps(alert_dict.get("conditions", {})),
                 action=alert_dict.get("action"),
                 entry_price=alert_dict.get("entry_price"),
+                entry_source=alert_dict.get("entry_source"),
                 invalidation_price=alert_dict.get("invalidation_price"),
                 target_price=alert_dict.get("target_price"),
+                exit_rule=alert_dict.get("exit_rule"),
                 action_summary=alert_dict.get("action_summary"),
                 contract_type=alert_dict.get("contract_type"),
                 strike=alert_dict.get("strike"),
@@ -1265,6 +1420,15 @@ def run_alert_engine(db) -> dict:
         logger.error("alert_engine: commit failed: %s", e)
         db.rollback()
         run_status.set_error("alert_engine", str(e))
+        write_receipt(
+            db, JOB_ALERT_ENGINE, started_at, "error",
+            tickers_evaluated=total_tickers,
+            alerts_fired=total_alerts,
+            suppressed=total_suppressed,
+            duplicates_suppressed=total_duplicates,
+            errors=[str(e)],
+            duration_seconds=round(time.time() - start, 1),
+        )
         return {"ok": False, "error": str(e)}
 
     summary = {
@@ -1279,5 +1443,16 @@ def run_alert_engine(db) -> dict:
         "duration_seconds": duration,
     }
     run_status.set_success_with_counts("alert_engine", summary)
+    # Persistent run receipt: the source of truth. Silence after this
+    # run means "ran, nothing qualified", not "job died".
+    write_receipt(
+        db, JOB_ALERT_ENGINE, started_at, "ok",
+        tickers_evaluated=total_tickers,
+        alerts_fired=total_alerts,
+        suppressed=total_suppressed,
+        duplicates_suppressed=total_duplicates,
+        errors=all_errors[:50],
+        duration_seconds=duration,
+    )
     logger.info("alert_engine: run complete: %s", summary)
     return summary

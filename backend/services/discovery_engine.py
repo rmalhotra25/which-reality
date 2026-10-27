@@ -615,6 +615,7 @@ def _fmt_candidates(candidates: list[dict]) -> str:
 
 def _run_scan() -> None:
     """Fetches fundamentals, scores with multi-factor model, calls Claude."""
+    _scan_started_at = datetime.now(tz=timezone.utc)
     with _lock:
         _state["status"] = "scanning"
         _state["progress"] = 0.0
@@ -810,8 +811,38 @@ def _run_scan() -> None:
             len(results["compounders"]), len(results["sleepers"]),
         )
 
+        # Persistent run receipt (P1): one line per job in the system
+        # status view, so a scan that finds nothing is still checkable.
+        try:
+            from database import SessionLocal
+            from services.run_receipts import write_receipt, JOB_DISCOVERY
+            _db = SessionLocal()
+            try:
+                write_receipt(
+                    _db, JOB_DISCOVERY, _scan_started_at, "ok",
+                    tickers_evaluated=total,
+                    alerts_fired=len(results["compounders"]) + len(results["sleepers"]),
+                )
+            finally:
+                _db.close()
+        except Exception as e:
+            logger.warning("Discovery scan: receipt write failed: %s", e)
+
     except Exception as e:
         logger.error("Discovery scan failed: %s", e, exc_info=True)
+        try:
+            from database import SessionLocal
+            from services.run_receipts import write_receipt, JOB_DISCOVERY
+            _db = SessionLocal()
+            try:
+                write_receipt(
+                    _db, JOB_DISCOVERY, _scan_started_at, "error",
+                    errors=[str(e)],
+                )
+            finally:
+                _db.close()
+        except Exception:
+            pass
         with _lock:
             _state["status"] = "error"
             _state["error"] = str(e)

@@ -104,54 +104,67 @@ def run_all_analyses() -> None:
     from database import SessionLocal
     from services.options_engine import OptionsEngine
     from services.wheel_engine import WheelEngine
+    from services.run_receipts import job_receipt, JOB_ANALYSIS
 
     today_eastern = date.today()   # server runs in UTC; check via pytz below
     import datetime as _dt
     today_eastern = _dt.datetime.now(EASTERN).date()
 
-    if not is_trading_day(today_eastern):
-        logger.info(
-            "Scheduler: skipping run on %s — not a trading day (weekend or NYSE holiday)",
-            today_eastern,
-        )
-        return
-
-    logger.info("Scheduler: starting all analysis pipelines for %s", today_eastern)
     db = SessionLocal()
     try:
-        OptionsEngine(db).run()
-        WheelEngine(db).run()
+        with job_receipt(db, JOB_ANALYSIS) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [
+                    f"not a trading day (weekend or NYSE holiday): {today_eastern}"
+                ]
+                logger.info(
+                    "Scheduler: skipping run on %s - not a trading day (weekend or NYSE holiday)",
+                    today_eastern,
+                )
+                return
+
+            logger.info("Scheduler: starting all analysis pipelines for %s", today_eastern)
+            OptionsEngine(db).run()
+            WheelEngine(db).run()
+
+            # Snap ATM IV for the universe after each analysis run
+            db2 = SessionLocal()
+            try:
+                from services.iv_snapshot_service import snap_iv_universe
+                result = snap_iv_universe(db2)
+                logger.info("Scheduler: IV snapshot complete: %s", result)
+            finally:
+                db2.close()
     except Exception as e:
+        # job_receipt already wrote the failed receipt and re-raised;
+        # log once here so the scheduler log still names the job.
         logger.error("Scheduled run failed: %s", e, exc_info=True)
     finally:
         db.close()
-
-    # Snap ATM IV for the universe after each analysis run
-    db2 = SessionLocal()
-    try:
-        from services.iv_snapshot_service import snap_iv_universe
-        result = snap_iv_universe(db2)
-        logger.info("Scheduler: IV snapshot complete: %s", result)
-    except Exception as e:
-        logger.error("IV snapshot run failed: %s", e, exc_info=True)
-    finally:
-        db2.close()
 
 
 def run_champions_scan() -> None:
     from database import SessionLocal
     from services.champions_engine import run as run_champions
+    from services.run_receipts import job_receipt, JOB_CHAMPIONS
     import datetime as _dt
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping champions scan — not a trading day")
-        return
 
-    logger.info("Scheduler: running daily champions scan")
     db = SessionLocal()
     try:
-        run_champions(db)
+        with job_receipt(db, JOB_CHAMPIONS) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping champions scan - not a trading day")
+                return
+
+            logger.info("Scheduler: running daily champions scan")
+            ok, error = run_champions(db)
+            if not ok:
+                counts["errors"] = [error or "champions scan failed"]
     except Exception as e:
         logger.error("Champions scan failed: %s", e, exc_info=True)
     finally:
@@ -159,25 +172,45 @@ def run_champions_scan() -> None:
 
 
 def run_discovery_scan_job() -> None:
-    """Run the buy-and-hold discovery scan — fires once daily pre-market."""
+    """Run the buy-and-hold discovery scan - fires once daily pre-market.
+
+    The launch is recorded here; the background scan writes its own
+    receipt on completion (services.discovery_engine._run_scan), so a
+    scan that finds nothing is still checkable.
+    """
+    from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_DISCOVERY
     import datetime as _dt
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping discovery scan — not a trading day")
-        return
 
-    logger.info("Scheduler: running daily discovery scan")
-    from services.discovery_engine import trigger_scan
+    db = SessionLocal()
     try:
-        trigger_scan(force=True)
-        logger.info("Scheduler: discovery scan launched in background thread")
+        with job_receipt(db, JOB_DISCOVERY) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping discovery scan - not a trading day")
+                return
+
+            logger.info("Scheduler: running daily discovery scan")
+            from services.discovery_engine import trigger_scan
+            launched = trigger_scan(force=True)
+            counts["errors"] = [] if launched else ["discovery scan already running"]
+            logger.info("Scheduler: discovery scan launched in background thread")
     except Exception as e:
         logger.error("Discovery scan failed to launch: %s", e, exc_info=True)
+    finally:
+        db.close()
 
 
 def run_alert_engine_job() -> None:
-    """Evaluate all setup signals and journal any alerts. Runs after market close."""
+    """Evaluate all setup signals and journal any alerts. Runs after market close.
+
+    The alert engine writes its own persistent run receipt
+    (services.alert_engine.run_alert_engine). This wrapper only records
+    a failed receipt when the engine raises before it can write one.
+    """
     import datetime as _dt
     from database import SessionLocal
 
@@ -196,6 +229,15 @@ def run_alert_engine_job() -> None:
         logger.error("Alert engine failed: %s", e, exc_info=True)
         import services.run_status as run_status
         run_status.set_error("alert_engine", str(e))
+        try:
+            from datetime import datetime as _datetime, timezone as _tz
+            from services.run_receipts import write_receipt, JOB_ALERT_ENGINE
+            write_receipt(
+                db, JOB_ALERT_ENGINE,
+                _datetime.now(_tz.utc), "error", errors=[str(e)],
+            )
+        except Exception:
+            pass
     finally:
         db.close()
 
@@ -204,18 +246,25 @@ def run_alert_outcome_job() -> None:
     """Mark open alerts closed when target/stop/time-stop is hit."""
     import datetime as _dt
     from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_ALERT_OUTCOME
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping alert outcome job -- not a trading day")
-        return
 
-    logger.info("Scheduler: running alert outcome job")
     db = SessionLocal()
     try:
-        from services.alert_journal_service import run_outcome_job
-        result = run_outcome_job(db)
-        logger.info("Scheduler: alert outcome job complete: %s", result)
+        with job_receipt(db, JOB_ALERT_OUTCOME) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping alert outcome job -- not a trading day")
+                return
+
+            logger.info("Scheduler: running alert outcome job")
+            from services.alert_journal_service import run_outcome_job
+            result = run_outcome_job(db)
+            counts["alerts_fired"] = result.get("closed", 0)
+            counts["errors"] = [f"{result.get('errors', 0)} outcome errors"] if result.get("errors") else []
+            logger.info("Scheduler: alert outcome job complete: %s", result)
     except Exception as e:
         logger.error("Alert outcome job failed: %s", e, exc_info=True)
         import services.run_status as run_status
@@ -228,18 +277,25 @@ def run_champion_outcome_job() -> None:
     """Settle open champion picks that have reached their horizon."""
     import datetime as _dt
     from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_CHAMPION_OUTCOME
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping champion outcome job -- not a trading day")
-        return
 
-    logger.info("Scheduler: running champion outcome job")
     db = SessionLocal()
     try:
-        from services.champion_journal_service import run_outcome_job
-        result = run_outcome_job(db)
-        logger.info("Scheduler: champion outcome job complete: %s", result)
+        with job_receipt(db, JOB_CHAMPION_OUTCOME) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping champion outcome job -- not a trading day")
+                return
+
+            logger.info("Scheduler: running champion outcome job")
+            from services.champion_journal_service import run_outcome_job
+            result = run_outcome_job(db)
+            counts["alerts_fired"] = result.get("settled", 0)
+            counts["errors"] = [f"{result.get('errors', 0)} outcome errors"] if result.get("errors") else []
+            logger.info("Scheduler: champion outcome job complete: %s", result)
     except Exception as e:
         logger.error("Champion outcome job failed: %s", e, exc_info=True)
         import services.run_status as run_status
@@ -252,19 +308,34 @@ def run_wheel_scanner_job() -> None:
     """Run the wheel put + call scanner after market open and mid-afternoon."""
     import datetime as _dt
     from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_WHEEL_SCANNER
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping wheel scanner -- not a trading day")
-        return
 
-    logger.info("Scheduler: running wheel scanner")
     db = SessionLocal()
     try:
-        from services.wheel_scanner_service import run_put_scanner, run_call_scanner
-        run_put_scanner(db)
-        run_call_scanner(db)
-        logger.info("Scheduler: wheel scanner complete")
+        with job_receipt(db, JOB_WHEEL_SCANNER) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping wheel scanner -- not a trading day")
+                return
+
+            logger.info("Scheduler: running wheel scanner")
+            from services.wheel_scanner_service import run_put_scanner, run_call_scanner
+            put_result = run_put_scanner(db)
+            call_result = run_call_scanner(db)
+            put_candidates = put_result.get("candidates", []) or []
+            put_excluded = put_result.get("excluded", []) or []
+            call_candidates = call_result.get("candidates", []) or []
+            call_excluded = call_result.get("excluded", []) or []
+            counts["tickers_evaluated"] = (
+                len(put_candidates) + len(put_excluded)
+                + len(call_candidates) + len(call_excluded)
+            )
+            counts["alerts_fired"] = len(put_candidates) + len(call_candidates)
+            counts["suppressed"] = len(put_excluded) + len(call_excluded)
+            logger.info("Scheduler: wheel scanner complete")
     except Exception as e:
         logger.error("Wheel scanner failed: %s", e, exc_info=True)
         import services.run_status as run_status
@@ -276,16 +347,23 @@ def run_wheel_scanner_job() -> None:
 def run_challenge_snapshot_job() -> None:
     """Snapshot the challenge account after the close; no-op if uninitialized."""
     from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_CHALLENGE_SNAPSHOT
 
     logger.info("Scheduler: running challenge snapshot")
     db = SessionLocal()
     try:
-        from services import challenge_service
-        if challenge_service.get_account(db) is None:
-            logger.info("Scheduler: challenge account not initialized -- skipping")
-            return
-        challenge_service.take_snapshot(db)
-        logger.info("Scheduler: challenge snapshot complete")
+        with job_receipt(db, JOB_CHALLENGE_SNAPSHOT) as counts:
+            from services import challenge_service
+            from models.challenge import ChallengeAlert
+            if challenge_service.get_account(db) is None:
+                counts["state"] = "skipped"
+                counts["errors"] = ["challenge account not initialized"]
+                logger.info("Scheduler: challenge account not initialized -- skipping")
+                return
+            before = db.query(ChallengeAlert).count()
+            challenge_service.take_snapshot(db)
+            counts["alerts_fired"] = db.query(ChallengeAlert).count() - before
+            logger.info("Scheduler: challenge snapshot complete")
     except Exception as e:
         logger.error("Challenge snapshot failed: %s", e, exc_info=True)
     finally:
@@ -303,16 +381,21 @@ def run_challenge_alerts_job() -> None:
     in this job, so the 17:15 snapshot time is unchanged.
     """
     from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_CHALLENGE_ALERTS
 
     logger.info("Scheduler: running challenge alerts after alert engine")
     db = SessionLocal()
     try:
-        from services import challenge_service
-        if challenge_service.get_account(db) is None:
-            logger.info("Scheduler: challenge account not initialized -- skipping")
-            return
-        created = challenge_service.generate_challenge_alerts(db)
-        logger.info("Scheduler: challenge alerts after engine complete: %d new", created)
+        with job_receipt(db, JOB_CHALLENGE_ALERTS) as counts:
+            from services import challenge_service
+            if challenge_service.get_account(db) is None:
+                counts["state"] = "skipped"
+                counts["errors"] = ["challenge account not initialized"]
+                logger.info("Scheduler: challenge account not initialized -- skipping")
+                return
+            created = challenge_service.generate_challenge_alerts(db)
+            counts["alerts_fired"] = created
+            logger.info("Scheduler: challenge alerts after engine complete: %d new", created)
     except Exception as e:
         logger.error("Challenge alerts after engine failed: %s", e, exc_info=True)
     finally:
@@ -322,17 +405,22 @@ def run_challenge_alerts_job() -> None:
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
+    from services.run_receipts import job_receipt, JOB_CALL_SUGGESTIONS
     import datetime as _dt
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-    if not is_trading_day(today_eastern):
-        logger.info("Scheduler: skipping call suggestion refresh — not a trading day")
-        return
 
-    logger.info("Scheduler: refreshing weekly call suggestions")
     db = SessionLocal()
     try:
-        WheelEngine(db).refresh_all_call_suggestions()
+        with job_receipt(db, JOB_CALL_SUGGESTIONS) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping call suggestion refresh - not a trading day")
+                return
+
+            logger.info("Scheduler: refreshing weekly call suggestions")
+            WheelEngine(db).refresh_all_call_suggestions()
     except Exception as e:
         logger.error("Call suggestion refresh failed: %s", e, exc_info=True)
     finally:

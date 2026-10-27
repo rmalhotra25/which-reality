@@ -256,6 +256,7 @@ def scan_universe(force: bool = False) -> dict:
             logger.info("CEF scan: returning cached results")
             return cached
 
+    _scan_started_at = datetime.now(tz=timezone.utc)
     results = []
     errors = []
     for ticker in _CEF_UNIVERSE:
@@ -279,4 +280,21 @@ def scan_universe(force: bool = False) -> dict:
     }
     set_cache(_CACHE_KEY, output)
     logger.info("CEF scan complete: %d scored, %d errors", len(results), len(errors))
+    # Persistent run receipt (P1). A cache hit above returns early with
+    # no receipt: no new run happened, the original scan's receipt stands.
+    try:
+        from database import SessionLocal
+        from services.run_receipts import write_receipt, JOB_CEF_SCAN
+        _db = SessionLocal()
+        try:
+            write_receipt(
+                _db, JOB_CEF_SCAN, _scan_started_at, "ok",
+                tickers_evaluated=len(_CEF_UNIVERSE),
+                alerts_fired=len(results),
+                errors=errors[:50],
+            )
+        finally:
+            _db.close()
+    except Exception as e:
+        logger.warning("CEF scan: receipt write failed: %s", e)
     return output

@@ -75,7 +75,7 @@ def init_db():
             _url,
         )
 
-    from models import recommendation, wheel, account, watchlist, champion, leveraged_ma, iv_snapshot, setup_registry, setup_alert, directional_candidate, champion_pick, challenge  # noqa: F401
+    from models import recommendation, wheel, account, watchlist, champion, leveraged_ma, iv_snapshot, setup_registry, setup_alert, directional_candidate, champion_pick, challenge, rule_registry, run_receipt  # noqa: F401
     Base.metadata.create_all(bind=engine)
     try:
         _migrate_add_columns()
@@ -105,6 +105,10 @@ def _migrate_add_columns():
         ("setup_alerts", "sizing_source",        "VARCHAR(20)"),
         # Wheel premium priced at the bid (Oct 26 2026 fix)
         ("wheel_recommendations", "premium_source", "VARCHAR(20)"),
+        # P1 rule registry and alert contract (Oct 27 2026)
+        ("setup_alerts", "rule_key", "VARCHAR(80)"),
+        ("setup_alerts", "exit_rule", "TEXT"),
+        ("setup_alerts", "entry_source", "VARCHAR(30)"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in additions:

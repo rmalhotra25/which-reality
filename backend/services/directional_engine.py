@@ -699,6 +699,19 @@ class DirectionalEngine:
             active_count = len(active)
             suppressed_count = len(candidates) - active_count
             run_status.set_success("directional")
+            # Persistent run receipt (P1): the source of truth for the
+            # system status view. Silence after this run means "ran,
+            # nothing qualified", not "job died".
+            try:
+                from services.run_receipts import write_receipt, JOB_DIRECTIONAL
+                write_receipt(
+                    self.db, JOB_DIRECTIONAL, run_at, "ok",
+                    tickers_evaluated=len(candidates),
+                    alerts_fired=active_count,
+                    suppressed=suppressed_count,
+                )
+            except Exception as e:
+                logger.warning("DirectionalEngine: receipt write failed: %s", e)
             logger.info(
                 "DirectionalEngine: stored %d active + %d suppressed candidates",
                 active_count, suppressed_count,
@@ -706,6 +719,11 @@ class DirectionalEngine:
 
         except Exception as e:
             run_status.set_error("directional", str(e))
+            try:
+                from services.run_receipts import write_receipt, JOB_DIRECTIONAL
+                write_receipt(self.db, JOB_DIRECTIONAL, run_at, "error", errors=[str(e)])
+            except Exception:
+                pass
             logger.error("DirectionalEngine run failed: %s", e, exc_info=True)
 
     def _suppressed_candidate(self, ticker: str, tech: dict, option_type: str,

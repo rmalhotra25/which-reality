@@ -8,7 +8,16 @@ async function request(path, options = {}) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    const detail = err.detail
+    // Named backend errors arrive as {error, reason}; show the reason
+    // plainly instead of "[object Object]". A plain string detail
+    // still shows as-is.
+    const message =
+      typeof detail === 'string' ? detail
+      : detail && typeof detail === 'object'
+        ? (detail.reason || detail.error || JSON.stringify(detail))
+        : `HTTP ${res.status}`
+    throw new Error(message || `HTTP ${res.status}`)
   }
   return res.json()
 }

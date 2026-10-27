@@ -11,11 +11,19 @@ of those writers.
 Claude explains only, and only when ?explain=true is passed: the
 quant result is computed first, and a Claude failure leaves it
 untouched with the quant fallback text in place.
+
+A lookup never answers with a bare 500: a known data failure is a
+named LookupError, and anything unexpected is logged and returned as
+a named lookup_failed 502, so the tab can show the reason plainly.
 """
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_db
 from services.ticker_lookup import LookupError, lookup_ticker
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/lookup", tags=["Ticker Lookup"])
 
@@ -50,3 +58,11 @@ def get_lookup(ticker: str, explain: bool = Query(False), db=Depends(get_db)):
     except LookupError as e:
         status = 404 if e.code in ("invalid_ticker", "unknown_ticker", "no_data", "no_indicators") else 502
         raise HTTPException(status_code=status, detail={"error": e.code, "reason": e.reason})
+    except Exception as e:
+        # Named, not a bare 500: the tab shows the reason instead of a
+        # blank card, and the log keeps the traceback for diagnosis.
+        logger.exception("ticker lookup failed for %s", ticker)
+        raise HTTPException(status_code=502, detail={
+            "error": "lookup_failed",
+            "reason": f"lookup_failed: {type(e).__name__}: {e}",
+        })

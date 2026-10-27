@@ -250,9 +250,9 @@ function CandidateCard({ pick, expanded, onToggle, onRunWizard }) {
                 Score {score}
               </span>
             )}
-            {pick.long_term_rec && (
-              <span style={{ fontSize: '11px', fontWeight: 700, color: pick.long_term_rec === 'Strong Buy' || pick.long_term_rec === 'Buy' ? C.green : C.yellow, background: '#ffffff10', borderRadius: '5px', padding: '2px 7px' }}>
-                {pick.long_term_rec}
+            {pick.dcf_recommendation && (
+              <span title="Mechanical DCF recommendation, set by quant rules, not by Claude" style={{ fontSize: '11px', fontWeight: 700, color: pick.dcf_recommendation === 'Strong Buy' || pick.dcf_recommendation === 'Buy' ? C.green : C.yellow, background: '#ffffff10', borderRadius: '5px', padding: '2px 7px' }}>
+                DCF: {pick.dcf_recommendation}
               </span>
             )}
           </div>

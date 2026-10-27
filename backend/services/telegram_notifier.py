@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 _API_BASE = "https://api.telegram.org"
 _TIMEOUT_SECONDS = 10
 _MAX_LINES = 10
+_MAX_BODY_CHARS = 220
+_MAX_MESSAGE_CHARS = 4000
 
 
 def telegram_configured() -> bool:
@@ -69,6 +71,14 @@ def notify_new_alerts(alerts) -> bool:
 
     Accepts ChallengeAlert rows or plain dicts with title, body, ticker,
     and severity. Returns False for an empty batch.
+
+    The message carries the full instruction, not just a pointer to it:
+    each alert's body follows its title line, so the shares, entry, stop,
+    and target the Challenge service already computed are in the message
+    and the user does not have to open the app to learn what to do.
+    Bodies are truncated to _MAX_BODY_CHARS and the whole message is
+    capped at _MAX_MESSAGE_CHARS, so one long body can never push the
+    batch over Telegram's limit.
     """
     alerts = list(alerts or [])
     if not alerts:
@@ -82,7 +92,16 @@ def notify_new_alerts(alerts) -> bool:
             lines.append(f"- [{severity}] {ticker}: {title}")
         else:
             lines.append(f"- [{severity}] {title}")
+        body = _alert_field(alert, "body")
+        if body:
+            flat = " ".join(str(body).split())
+            if len(flat) > _MAX_BODY_CHARS:
+                flat = flat[:_MAX_BODY_CHARS].rstrip() + "..."
+            lines.append(f"  {flat}")
     extra = len(alerts) - _MAX_LINES
     if extra > 0:
         lines.append(f"and {extra} more")
-    return send_telegram_message("\n".join(lines))
+    text = "\n".join(lines)
+    if len(text) > _MAX_MESSAGE_CHARS:
+        text = text[:_MAX_MESSAGE_CHARS].rstrip() + "..."
+    return send_telegram_message(text)

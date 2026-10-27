@@ -47,20 +47,10 @@ def _clean_json(text: str) -> str:
     return text
 
 
-def _valid_expiry_dates(n: int = 6) -> list[str]:
-    """Return the next n upcoming Friday dates that are at least 5 calendar days away.
-    These are real tradeable weekly/monthly expiries."""
-    today = datetime.now(timezone.utc).date()
-    days_to_friday = (4 - today.weekday()) % 7  # weekday 4 = Friday
-    # Ensure at least 5 calendar days gap so we're not expiring imminently
-    if days_to_friday < 5:
-        days_to_friday += 7
-    fridays = []
-    d = today + timedelta(days=days_to_friday)
-    for _ in range(n):
-        fridays.append(d.strftime("%Y-%m-%d"))
-        d += timedelta(weeks=1)
-    return fridays
+# Pure date math lives in services.ai_boundary now, so the live path
+# can use tradeable expiries without touching a model. Kept as an
+# alias because other explain-only callers in this file use it.
+from services.ai_boundary import valid_expiry_dates as _valid_expiry_dates  # noqa: E402,F401
 
 
 # ------------------------------------------------------------------
@@ -247,186 +237,7 @@ class ClaudeAnalyst:
 
         return ""
 
-    # ------------------------------------------------------------------
-    # Options analysis
-    # ------------------------------------------------------------------
-    def analyze_options(self, news_bullets: str, technical_data: str, market_context: str,
-                        quant_scores: dict | None = None) -> list[dict]:
-        system = (
-            "You are a professional options trader and technical analyst with 20+ years of experience. "
-            "You have deep expertise in single-leg options, iron condors, bull put spreads, bear call "
-            "spreads, and debit spreads. You select the BEST strategy structure for each setup:\n"
-            "  - single_leg CALL/PUT: strong directional momentum or BB squeeze breakout\n"
-            "  - iron_condor: range-bound price with high IV (sell premium both sides)\n"
-            "  - bull_put_spread: mildly bullish with high IV (credit spread)\n"
-            "  - bear_call_spread: mildly bearish with high IV (credit spread)\n"
-            "  - bull_call_spread: moderately bullish with lower IV (debit spread)\n"
-            "  - bear_put_spread: moderately bearish with lower IV (debit spread)\n"
-            "Respond ONLY with a valid JSON array — no prose, no markdown fences."
-        )
 
-        quant_ctx = ""
-        if quant_scores:
-            lines = []
-            for ticker, qs in quant_scores.items():
-                comp  = qs.get("composite", 50)
-                ee    = qs.get("entry_exit", {})
-                strat = qs.get("recommended_strategy", "single_leg")
-                ml    = qs.get("multi_leg", {})
-                if strat == "single_leg":
-                    lines.append(
-                        f"  {ticker}: quant={comp}/100 | strategy={strat} | "
-                        f"underlying entry=${ee.get('underlying_entry','?')} "
-                        f"target=${ee.get('underlying_target','?')} "
-                        f"stop=${ee.get('underlying_stop','?')} | "
-                        f"suggested strike=${ee.get('suggested_strike','?')} "
-                        f"BS-premium-est entry=${ee.get('entry_premium_est','?')} "
-                        f"target=${ee.get('target_premium_est','?')} "
-                        f"stop=${ee.get('stop_premium_est','?')}"
-                    )
-                else:
-                    sc = ml.get("short_call_strike","?")
-                    lc = ml.get("long_call_strike","?")
-                    sp = ml.get("short_put_strike","?")
-                    lp = ml.get("long_put_strike","?")
-                    lines.append(
-                        f"  {ticker}: quant={comp}/100 | strategy={strat} | "
-                        f"strikes SC={sc} LC={lc} SP={sp} LP={lp} | "
-                        f"BS-credit-est=${ml.get('net_credit','?')} "
-                        f"max_profit=${ml.get('max_profit','?')} "
-                        f"max_loss=${ml.get('max_loss','?')}"
-                    )
-            quant_ctx = (
-                "\nQuantitative analysis with Black-Scholes estimated premiums "
-                "(use these as realistic anchors — adjust based on your judgment):\n"
-                + "\n".join(lines) + "\n"
-            )
-
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        valid_expiries = _valid_expiry_dates(6)
-        expiry_list = ", ".join(valid_expiries)
-        # Use nearest and second-nearest as concrete examples in the schema
-        ex_expiry1 = valid_expiries[0]
-        ex_expiry2 = valid_expiries[1] if len(valid_expiries) > 1 else valid_expiries[0]
-
-        user = (
-            f"Today's date (UTC): {today_str}\n"
-            f"Valid option expiry dates — YOU MUST use one of these exact dates for every expiry field: "
-            f"{expiry_list}\n"
-            f"IMPORTANT: Never use a date not in the list above. Never use example dates from the schema.\n\n"
-            f"{market_context}\n"
-            f"{quant_ctx}\n"
-            f"Recent news:\n{news_bullets}\n\n"
-            f"Technical data (RSI, MACD, Bollinger, MAs, Fibonacci, ATR, VWAP, volume):\n"
-            f"{technical_data}\n\n"
-            "Instructions:\n"
-            "- Select the strategy_type that best fits the technical setup (use the suggestions above "
-            "as a starting point but override if the setup calls for it)\n"
-            "- For single_leg: set option_type (CALL/PUT), strike, entry_price, exit_price, stop_loss, "
-            "underlying_entry, underlying_target, underlying_stop\n"
-            "- For multi-leg (iron_condor, spreads): set the appropriate strikes from "
-            "short_call_strike, long_call_strike, short_put_strike, long_put_strike, "
-            "net_credit (positive=credit received, negative=debit paid), max_profit, max_loss, "
-            "breakeven_low, breakeven_high. Also set expiry.\n"
-            "- Cite specific indicator readings in your explanation\n"
-            "- Your qual_score is your qualitative judgment (0-100)\n\n"
-            "Return a JSON array of exactly 5 objects. For single_leg:\n"
-            f'  {{"rank":1,"ticker":"AAPL","strategy_type":"single_leg","option_type":"CALL",'
-            f'"strike":195.0,"expiry":"{ex_expiry1}","entry_price":2.40,"exit_price":4.80,'
-            '"stop_loss":1.20,"underlying_entry":192.5,"underlying_target":198.0,'
-            '"underlying_stop":189.0,"qual_score":82,"score":87,"grade":"B",'
-            '"explanation":"RSI 32 oversold, bouncing off Fib 61.8%..."}}\n\n'
-            "For iron_condor:\n"
-            f'  {{"rank":2,"ticker":"SPY","strategy_type":"iron_condor","option_type":"N/A",'
-            f'"expiry":"{ex_expiry2}","short_call_strike":512.0,"long_call_strike":515.0,'
-            '"short_put_strike":490.0,"long_put_strike":487.0,"net_credit":1.85,'
-            '"max_profit":185.0,"max_loss":115.0,"breakeven_low":488.15,'
-            '"breakeven_high":513.85,"qual_score":79,"score":83,"grade":"B",'
-            '"explanation":"RSI neutral at 52, BB %B at 0.45 range-bound, IV rank 48..."}}\n\n'
-            "For spreads (bull_put_spread example):\n"
-            f'  {{"rank":3,"ticker":"MSFT","strategy_type":"bull_put_spread","option_type":"N/A",'
-            f'"expiry":"{ex_expiry1}","short_put_strike":380.0,"long_put_strike":375.0,'
-            '"net_credit":1.20,"max_profit":120.0,"max_loss":380.0,"breakeven_low":378.80,'
-            '"qual_score":85,"score":88,"grade":"B",'
-            '"explanation":"Strong uptrend above MA50+200, Fib 61.8% support at 381..."}}\n\n'
-            "Scoring rubric for qual_score and score (0-100):\n"
-            "- Technical setup quality (RSI, MACD, Fib, MA alignment): 35%\n"
-            "- Catalyst/news strength: 25%\n"
-            "- IV environment and premium value: 20%\n"
-            "- Risk/reward of chosen structure: 20%\n"
-            "Grade: A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
-        )
-        raw = self._call(system, user)
-        return self._parse(raw)
-
-    # ------------------------------------------------------------------
-    # Wheel strategy analysis
-    # ------------------------------------------------------------------
-    def analyze_wheel(self, news_bullets: str, screening_data: str,
-                      quant_scores: dict | None = None) -> list[dict]:
-        system = (
-            "You are a professional options income trader specialising in the Wheel Strategy. "
-            "You use technical analysis to identify the safest put-selling opportunities: "
-            "stocks in uptrends (above MA50 and MA200), with elevated IV rank for premium, "
-            "and put strikes placed below strong Fibonacci or moving average support. "
-            "Respond ONLY with a valid JSON array — no prose, no markdown fences."
-        )
-        quant_ctx = ""
-        if quant_scores:
-            lines = []
-            for ticker, qs in quant_scores.items():
-                comp = qs.get("composite", 50)
-                ee = qs.get("entry_exit", {})
-                lines.append(
-                    f"  {ticker}: quant_score={comp}/100 | "
-                    f"suggested_strike=${ee.get('suggested_put_strike','?')} "
-                    f"pct_otm={ee.get('pct_otm','?')}%"
-                )
-            quant_ctx = "\nPre-computed quantitative scores:\n" + "\n".join(lines) + "\n"
-
-        valid_expiries = _valid_expiry_dates(6)
-        expiry_list = ", ".join(valid_expiries)
-        ex_expiry1 = valid_expiries[0]
-
-        user = (
-            f"Current date/time (UTC): {datetime.now(timezone.utc).isoformat()}\n"
-            f"Valid option expiry dates — YOU MUST use one of these exact dates for every expiry field: "
-            f"{expiry_list}\n"
-            f"IMPORTANT: Never use a date not in the list above.\n\n"
-            f"{quant_ctx}\n"
-            f"Recent market news:\n{news_bullets}\n\n"
-            f"Technical screening data:\n{screening_data}\n\n"
-            "Selection criteria — prioritise stocks where:\n"
-            "1. Price is above MA50 AND MA200 (uptrend — safer to own if assigned)\n"
-            "2. RSI is between 40-65 (not overbought, not in freefall)\n"
-            "3. Put strike can be placed at or below a Fibonacci support level\n"
-            "4. IV is elevated (better premium) but stock is fundamentally sound\n"
-            "5. Volume trend is normal or high (liquid, active stock)\n"
-            "6. Avoid stocks in death cross (MA50 < MA200) or with RSI below 30\n\n"
-            "In your explanation, state: the trend, the support level where you'd place the put, "
-            "and why IV makes it attractive right now.\n"
-            "Your 'qual_score' is your qualitative judgment (0-100) incorporating stock quality, "
-            "news context, and willingness-to-own assessment.\n\n"
-            "For assignment_chance_pct: estimate the probability the put gets assigned "
-            "(roughly delta × 100 — e.g. a 30-delta put = 30%). "
-            "Set assignment_risk to 'LOW' if <25%, 'MODERATE' if 25-40%, 'HIGH' if >40%.\n\n"
-            "Return a JSON array of exactly 5 objects:\n"
-            "[\n"
-            f'  {{"rank":1,"ticker":"MSFT","put_strike":380.0,"put_expiry":"{ex_expiry1}",'
-            '"put_premium":4.20,"iv_rank":52,"assignment_chance_pct":28,"assignment_risk":"MODERATE",'
-            '"qual_score":88,"score":91,"grade":"A",'
-            '"explanation":"3-4 sentences citing trend, support level, and IV context"}}\n'
-            "]\n\n"
-            "Scoring rubric for qual_score and score (0-100):\n"
-            "- Technical trend strength (MA, Fib support quality): 30%\n"
-            "- IV rank / premium yield: 25%\n"
-            "- Stock quality / willingness to own: 25%\n"
-            "- Assignment risk (lower = better for conservative wheel): 10%\n"
-            "- RSI and momentum safety: 10%\n"
-            "Grade: A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
-        )
-        raw = self._call(system, user)
-        return self._parse(raw)
 
     # ------------------------------------------------------------------
     # Long-term growth & income analysis
@@ -486,63 +297,6 @@ class ClaudeAnalyst:
         raw = self._call(system, user)
         return self._parse(raw)
 
-    # ------------------------------------------------------------------
-    # Covered call suggestion for assigned wheel position
-    # ------------------------------------------------------------------
-    def generate_call_suggestion(
-        self,
-        ticker: str,
-        cost_basis: float,
-        current_price: float,
-        assigned_date: str,
-        iv_rank: float | None,
-        earnings_date: str | None,
-        news_bullets: str,
-        technicals: dict | None = None,
-    ) -> dict:
-        system = (
-            "You are a professional options income trader. Generate an optimal weekly covered "
-            "call recommendation using technical analysis to select the best strike. "
-            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
-        )
-
-        tech_str = ""
-        if technicals:
-            ma = technicals.get("moving_averages", {})
-            fib = technicals.get("fibonacci", {})
-            rsi = technicals.get("rsi", "?")
-            bb = technicals.get("bollinger", {})
-            tech_str = (
-                f"\nTechnical context:\n"
-                f"RSI={rsi} | MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')}\n"
-                f"Bollinger upper={bb.get('upper','?')} middle={bb.get('middle','?')}\n"
-                f"Fib resistance levels: 23.6%={fib.get('fib_236','?')} 38.2%={fib.get('fib_382','?')}\n"
-                f"ATR={technicals.get('atr','?')} (daily expected move)"
-            )
-
-        valid_expiries = _valid_expiry_dates(4)
-        expiry_list = ", ".join(valid_expiries)
-        ex_expiry1 = valid_expiries[0]
-
-        user = (
-            f"Today's date (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n"
-            f"Valid expiry dates — use one of these exactly: {expiry_list}\n\n"
-            f"I own 100 shares of {ticker} at cost basis ${cost_basis:.2f}/share "
-            f"(assigned on {assigned_date}).\n"
-            f"Current price: ${current_price:.2f}\n"
-            f"IV rank: {iv_rank if iv_rank else 'unknown'}\n"
-            f"Earnings date: {earnings_date if earnings_date else 'none known — avoid selling through earnings'}\n"
-            f"{tech_str}\n\n"
-            f"Recent news for {ticker}:\n{news_bullets}\n\n"
-            "Select the call strike at a Fibonacci resistance level or near the Bollinger upper band "
-            "where price is likely to stall. Do NOT go below cost basis. "
-            "Use ATR to estimate realistic premium. Use the nearest date from the valid expiry list above.\n\n"
-            "Return JSON:\n"
-            f'{{"call_strike":195.0,"call_expiry":"{ex_expiry1}",'
-            '"estimated_premium":1.85,"rationale":"cite the specific technical level used"}}'
-        )
-        raw = self._call(system, user, max_tokens=1024)
-        return self._parse(raw)
 
     # ------------------------------------------------------------------
     # On-demand single-stock analysis (Stock Lookup tab)
@@ -809,6 +563,133 @@ class ClaudeAnalyst:
         except Exception as e:
             logger.warning("explain_directional_candidates failed: %s", e)
             return []
+
+    # ------------------------------------------------------------------
+    # AI boundary: explain-only methods for the live path.
+    # Quant decides, Claude explains. Each method below receives
+    # candidates that code has already ranked and priced, and returns
+    # text only: {"ticker": ..., "explanation": ...} (or thesis fields
+    # for discovery). They never return a strike, entry, stop, rank,
+    # score, or recommendation, and the callers drop any such field
+    # if one ever appears. A failure here returns [] and the caller
+    # uses a quant-derived fallback, so the decision still fires.
+    # ------------------------------------------------------------------
+    def _explain_list(self, system: str, user: str, max_tokens: int = 1500) -> list[dict]:
+        try:
+            raw = self._call(system, user, max_tokens=max_tokens)
+            result = self._parse(raw)
+            if isinstance(result, list):
+                return [r for r in result if isinstance(r, dict)]
+            return []
+        except Exception as e:
+            logger.warning("Claude explanation failed: %s", e)
+            return []
+
+    def explain_options(self, picks: list[dict]) -> list[dict]:
+        """Explain quant-decided options picks. Text only, no numbers set."""
+        if not picks:
+            return []
+        system = (
+            "You are an options trading coach explaining setups that code has "
+            "already selected, ranked, and priced. Your only job is to write a "
+            "clear 2-3 sentence explanation per pick: why the quant setup scored "
+            "well, what the key risk is, and what price action invalidates it. "
+            "Cite only the numbers given to you. Do not suggest a different "
+            "strike, entry, exit, stop, rank, or score. Do not re-rank or drop "
+            "any pick. Respond ONLY with a valid JSON array."
+        )
+        user = (
+            "Write plain-language explanations for these quant-decided options picks, "
+            "in the same order:\n"
+            '[{"ticker":"AAPL","explanation":"2-3 sentence plain explanation."}, ...]\n\n'
+            f"Picks:\n{json.dumps(picks, indent=2)}"
+        )
+        return self._explain_list(system, user)
+
+    def explain_wheel(self, picks: list[dict]) -> list[dict]:
+        """Explain quant-decided wheel picks. Text only, no numbers set."""
+        if not picks:
+            return []
+        system = (
+            "You are an options income coach explaining wheel put sales that code "
+            "has already selected, ranked, and priced from the listed chain. "
+            "Your only job is to write a clear 2-3 sentence explanation per pick: "
+            "the trend, the support level under the put, and why the premium is "
+            "attractive right now, plus the assignment risk in plain words. "
+            "Cite only the numbers given to you. Do not suggest a different "
+            "strike, expiry, premium, rank, or score. Do not re-rank or drop "
+            "any pick. Respond ONLY with a valid JSON array."
+        )
+        user = (
+            "Write plain-language explanations for these quant-decided wheel picks, "
+            "in the same order:\n"
+            '[{"ticker":"MSFT","explanation":"2-3 sentence plain explanation."}, ...]\n\n'
+            f"Picks:\n{json.dumps(picks, indent=2)}"
+        )
+        return self._explain_list(system, user)
+
+    def explain_discovery(self, picks: list[dict], category: str) -> list[dict]:
+        """Write theses for quant-decided discovery picks. Text only.
+
+        The picks arrive in quant rank order and stay in that order.
+        No selection, no DCF parameters, no recommendation. Each item
+        returns thesis, bull_case, bear_case, key_metric, catalyst,
+        and risk, all text.
+        """
+        if not picks:
+            return []
+        system = (
+            "You are an elite hedge fund analyst writing theses for long-term "
+            "stock picks that code has already ranked with a multi-factor model. "
+            "Your only job is to write, per pick, a 2-3 sentence thesis, a bull "
+            "case, a bear case, the single most compelling metric, a near-term "
+            "catalyst, and the main risk, all referencing the specific numbers "
+            "given to you. Do not select, re-rank, drop, or add any pick. Do not "
+            "set DCF parameters, a recommendation, a price target, or a score. "
+            "Respond ONLY with a valid JSON array."
+        )
+        user = (
+            f"Write theses for these quant-decided {category} picks, in the same order:\n"
+            '[{"ticker":"XXXX","thesis":"...","bull_case":"...","bear_case":"...",'
+            '"key_metric":"...","catalyst":"...","risk":"..."}]\n\n'
+            f"Picks:\n{json.dumps(picks, indent=2)}"
+        )
+        return self._explain_list(system, user, max_tokens=8000)
+
+    def explain_dcf_commentary(self, profile: dict) -> dict:
+        """Write DCF commentary only: reasoning and confidence, no numbers.
+
+        Scenario parameters are set by the mechanical rules in
+        dcf_service, never here. Returns {"reasoning": ..., "confidence": ...}
+        or {} on failure, and the caller never lets a failure change the
+        DCF prices.
+        """
+        try:
+            system = (
+                "You are a buy-side equity analyst commenting on a DCF model whose "
+                "scenario parameters were set by mechanical rules from historical "
+                "growth and margins. Your only job is to write 2-3 sentences of "
+                "commentary: what the key assumptions rest on, and where the model "
+                "is most uncertain. Do not set or suggest scenario parameters, "
+                "growth rates, margins, discount rates, or price targets. "
+                "Respond ONLY with a valid JSON object."
+            )
+            user = (
+                "Write DCF commentary for this company, using only the facts given:\n"
+                f"{json.dumps(profile, indent=2)}\n\n"
+                'Return JSON: {"reasoning":"...","confidence":"high"|"medium"|"low"}'
+            )
+            raw = self._call(system, user, max_tokens=600)
+            result = self._parse(raw)
+            if isinstance(result, dict):
+                return {
+                    "reasoning": str(result.get("reasoning", "") or ""),
+                    "confidence": str(result.get("confidence", "") or ""),
+                }
+            return {}
+        except Exception as e:
+            logger.warning("Claude DCF commentary failed: %s", e)
+            return {}
 
     # ------------------------------------------------------------------
     # Watchlist multi-strategy scoring

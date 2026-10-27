@@ -671,7 +671,11 @@ def _gen_position_reviews(db: Session, account, existing, today_str: str) -> int
                     source_id=t.id, ticker=t.symbol, severity="action",
                     dedupe_key=f"position_review:{t.id}:pnl_up:{today_str}",
                     title=f"{t.symbol}: up {round(ratio * 100)}% of planned risk",
-                    body="Unrealized gain has reached 75% of the planned max loss. Review the position: take profit, trail the stop, or hold with intent.",
+                    body=(
+                        f"Unrealized gain has reached 75% of the planned max loss. "
+                        f"Trail the stop to your entry price of ${t.entry_price:.2f} now, "
+                        f"so this trade can no longer lose money."
+                    ),
                 )
             elif ratio <= -0.75:
                 created += _create_alert(
@@ -680,7 +684,11 @@ def _gen_position_reviews(db: Session, account, existing, today_str: str) -> int
                     source_id=t.id, ticker=t.symbol, severity="action",
                     dedupe_key=f"position_review:{t.id}:pnl_down:{today_str}",
                     title=f"{t.symbol}: down {abs(round(ratio * 100))}% of planned risk",
-                    body="Unrealized loss is near the planned max loss. Review the exit before the plan is breached.",
+                    body=(
+                        f"Unrealized loss is at 75% of your planned max loss of "
+                        f"${t.planned_max_loss_cents / 100:.2f}. Exit the position now, "
+                        f"at the planned max loss, before the loss grows past it."
+                    ),
                 )
         if t.asset_kind in ("call", "put", "spread") and t.expiry_date:
             days = (t.expiry_date - today).days
@@ -691,7 +699,11 @@ def _gen_position_reviews(db: Session, account, existing, today_str: str) -> int
                     source_id=t.id, ticker=t.symbol, severity="warning",
                     dedupe_key=f"position_review:{t.id}:expiry:{today_str}",
                     title=f"{t.symbol}: expires in {days} day{'s' if days != 1 else ''}",
-                    body="This option or spread expires within 3 days. Decide the exit now, not at the close on expiry day.",
+                    body=(
+                        f"This option or spread expires in {days} day"
+                        f"{'s' if days != 1 else ''}. Close the position today, "
+                        f"before expiry. Do not hold into expiry day."
+                    ),
                 )
         if t.asset_kind == "stock" and t.target_price:
             if abs(mark - t.target_price) / t.target_price <= 0.10:
@@ -701,7 +713,11 @@ def _gen_position_reviews(db: Session, account, existing, today_str: str) -> int
                     source_id=t.id, ticker=t.symbol, severity="info",
                     dedupe_key=f"position_review:{t.id}:target:{today_str}",
                     title=f"{t.symbol}: within 10% of your target",
-                    body=f"Mark is ${mark:.2f} against a target of ${t.target_price:.2f}. Decide the exit before it gets there.",
+                    body=(
+                        f"Mark is ${mark:.2f} against a target of ${t.target_price:.2f}. "
+                        f"Exit at the target price of ${t.target_price:.2f} when the mark "
+                        f"reaches it. Do not hold past the target."
+                    ),
                 )
     return created
 
@@ -752,7 +768,11 @@ def _gen_drawdown(db: Session, account, stage, state, existing, today_str: str) 
             stage_id=stage.id if stage else None, severity="warning",
             dedupe_key=f"drawdown:stage{stage_id}:half:{today_str}",
             title="Drawdown past half your pause line",
-            body=f"Down {dd}% from peak. Your pause rule trips at {pause:g}%. Consider smaller size until the curve turns.",
+            body=(
+                f"Down {dd}% from peak. Your pause rule trips at {pause:g}%. "
+                f"Cut per-trade risk in half, to a $25 max loss per trade, "
+                f"until the drawdown recovers below half the pause line."
+            ),
         )
     return 0
 

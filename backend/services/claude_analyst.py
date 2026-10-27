@@ -242,162 +242,12 @@ class ClaudeAnalyst:
     # ------------------------------------------------------------------
     # Long-term growth & income analysis
     # ------------------------------------------------------------------
-    def analyze_longterm(self, news_bullets: str, fundamental_data: str,
-                         quant_scores: dict | None = None) -> list[dict]:
-        system = (
-            "You are a fundamental equity analyst and portfolio manager with expertise in "
-            "long-term investing (12+ month horizon). You combine fundamental analysis with "
-            "long-term technical trend analysis: stocks must be in structural uptrends (above MA200), "
-            "ideally with a golden cross (MA50 > MA200), and showing accumulation in volume trends. "
-            "Respond ONLY with a valid JSON array — no prose, no markdown fences."
-        )
-        quant_ctx = ""
-        if quant_scores:
-            lines = []
-            for ticker, qs in quant_scores.items():
-                comp = qs.get("composite", 50)
-                ee = qs.get("entry_exit", {})
-                lines.append(
-                    f"  {ticker}: quant_score={comp}/100 | "
-                    f"buy_zone=${ee.get('buy_zone_low','?')}-${ee.get('buy_zone_high','?')} "
-                    f"stop=${ee.get('invalidation_stop','?')}"
-                )
-            quant_ctx = "\nPre-computed quantitative scores:\n" + "\n".join(lines) + "\n"
+    # W8 (P2): analyze_longterm and analyze_stock were deleted here.
+    # They had no callers (dead code) and Claude decided rating,
+    # score, direction, and price targets in them. If Stock Lookup is
+    # ever re-wired, it must go through services.quant_picks first,
+    # with Claude writing explanations only.
 
-        user = (
-            f"Current date/time (UTC): {datetime.now(timezone.utc).isoformat()}\n"
-            f"{quant_ctx}\n"
-            f"Recent news and sentiment:\n{news_bullets}\n\n"
-            f"Fundamental + technical data:\n{fundamental_data}\n\n"
-            "Selection criteria:\n"
-            "- Growth picks: strong revenue/EPS growth, above MA200, ideally golden cross, "
-            "RSI not above 75 (avoid buying at peak)\n"
-            "- Income picks: dividend yield >2%, above MA200 for capital preservation, "
-            "low RSI volatility, stable volume trend\n"
-            "- Avoid stocks in death cross or below MA200 (structural downtrend)\n"
-            "- Note the 52-week range position to assess entry quality\n\n"
-            "In your explanation, cite: the fundamental thesis, the technical trend status "
-            "(MA50/200 relationship), and the key risk.\n"
-            "Your 'qual_score' is your qualitative judgment (0-100) incorporating fundamental "
-            "quality, competitive moat, and macro tailwinds beyond the math.\n"
-            "Also provide buy_zone_low, buy_zone_high (ideal entry price range), and "
-            "invalidation_stop (price below which the thesis is broken).\n\n"
-            "Return a JSON array of exactly 5 objects:\n"
-            "[\n"
-            '  {"rank":1,"ticker":"NVDA","investment_type":"growth","target_price":1200.0,'
-            '"time_horizon":"18-24 months","buy_zone_low":850.0,"buy_zone_high":920.0,'
-            '"invalidation_stop":780.0,"qual_score":91,"score":94,"grade":"A",'
-            '"explanation":"3-4 sentences on fundamentals, trend, catalyst, and risk"}\n'
-            "]\n\n"
-            "Scoring rubric for qual_score and score (0-100):\n"
-            "Growth: earnings growth 30% + technical trend 25% + market position 25% + valuation 20%.\n"
-            "Income: dividend yield+safety 35% + technical trend 25% + balance sheet 25% + sector 15%.\n"
-            "Grade: A=90-100, B=80-89, C=70-79, D=60-69, F=below 60."
-        )
-        raw = self._call(system, user)
-        return self._parse(raw)
-
-
-    # ------------------------------------------------------------------
-    # On-demand single-stock analysis (Stock Lookup tab)
-    # ------------------------------------------------------------------
-    def analyze_stock(
-        self,
-        ticker: str,
-        current_price: float,
-        technicals: dict,
-        fundamentals: dict,
-        news_bullets: str,
-    ) -> dict:
-        system = (
-            "You are a senior equity analyst combining technical analysis, fundamental research, "
-            "and market sentiment to produce actionable stock ratings. "
-            "Respond ONLY with a valid JSON object — no prose, no markdown fences."
-        )
-
-        # Enrich news context with real-time web search
-        company_name = (fundamentals or {}).get("company_name", "")
-        try:
-            web_news = self._fetch_stock_news(ticker, company_name)
-            if web_news:
-                news_bullets = (
-                    f"[Live web search — real-time news]\n{web_news}\n\n"
-                    f"[Background news provided]\n{news_bullets}"
-                )
-                logger.info("Web search enrichment succeeded for %s", ticker)
-        except Exception as exc:
-            logger.warning("Web search failed for %s: %s", ticker, exc)
-
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        ma = technicals.get("moving_averages", {})
-        fib = technicals.get("fibonacci", {})
-        bb = technicals.get("bollinger", {})
-        macd = technicals.get("macd", {})
-
-        tech_str = (
-            f"Price: ${current_price} | RSI={technicals.get('rsi','?')} | "
-            f"ATR={technicals.get('atr','?')} | VWAP={technicals.get('vwap','?')}\n"
-            f"MA20={ma.get('ma20','?')} MA50={ma.get('ma50','?')} MA200={ma.get('ma200','?')}\n"
-            f"Bollinger: upper={bb.get('upper','?')} mid={bb.get('middle','?')} lower={bb.get('lower','?')} "
-            f"%B={bb.get('pct_b','?')}\n"
-            f"MACD={macd.get('macd','?')} signal={macd.get('signal','?')} "
-            f"hist={macd.get('histogram','?')} [{macd.get('crossover','?')}]\n"
-            f"Fib levels (from recent swing): "
-            f"23.6%={fib.get('fib_236','?')} 38.2%={fib.get('fib_382','?')} "
-            f"50%={fib.get('fib_500','?')} 61.8%={fib.get('fib_618','?')}\n"
-            f"5d change: {technicals.get('change_5d_pct','?')}% | "
-            f"Vol vs avg: {technicals.get('volume_trend', {}).get('ratio','?')}x"
-        )
-
-        fund_str = ""
-        if fundamentals:
-            fund_str = (
-                f"\nFundamentals: PE={fundamentals.get('pe_ratio','?')} | "
-                f"EPS growth={fundamentals.get('eps_growth_ttm','?')} | "
-                f"Revenue growth={fundamentals.get('revenue_growth_ttm','?')} | "
-                f"Div yield={fundamentals.get('div_yield','?')} | "
-                f"Sector={fundamentals.get('sector','?')}"
-            )
-
-        user = (
-            f"Today: {today_str}\n"
-            f"Analyze {ticker} and produce a structured buy/sell/hold rating with price predictions.\n\n"
-            f"Technical indicators:\n{tech_str}\n"
-            f"{fund_str}\n\n"
-            f"Recent news and sentiment:\n{news_bullets}\n\n"
-            "Produce a comprehensive analysis covering:\n"
-            "- Overall rating: BUY, SELL, or HOLD\n"
-            "- Conviction: HIGH, MEDIUM, or LOW\n"
-            "- Short-term outlook (1-4 weeks): direction, price target, key catalyst\n"
-            "- Long-term outlook (3-12 months): direction, price target, thesis\n"
-            "- Key support levels (2-3 price levels where buyers likely step in)\n"
-            "- Key resistance levels (2-3 price levels where sellers likely emerge)\n"
-            "- Main upside catalysts (2-3 bullet points)\n"
-            "- Main risks (2-3 bullet points)\n"
-            "- Technical summary: cite RSI, MACD status, MA alignment, Bollinger position\n"
-            "- Score 0-100 for overall confidence\n\n"
-            "Return JSON:\n"
-            '{"ticker":"AAPL","rating":"BUY","conviction":"HIGH","score":84,"grade":"B",'
-            '"current_price":192.50,'
-            '"short_term":{"direction":"bullish","price_target":205.0,'
-            '"timeframe":"2-3 weeks","catalyst":"RSI bounce from oversold, MACD crossover imminent"},'
-            '"long_term":{"direction":"bullish","price_target":240.0,'
-            '"timeframe":"6-9 months","thesis":"AI integration across product line drives margin expansion"},'
-            '"support_levels":[188.0,182.5,175.0],'
-            '"resistance_levels":[198.0,205.0,215.0],'
-            '"upside_catalysts":["iPhone supercycle","Services revenue acceleration","India expansion"],'
-            '"risks":["China demand slowdown","Valuation premium at risk if rates rise","Regulatory headwinds"],'
-            '"technical_summary":"RSI at 38 approaching oversold; price below MA50 but above MA200 — '
-            'dip within uptrend. MACD histogram turning less negative. BB %B at 0.15 near lower band.",'
-            '"explanation":"2-3 sentence overall thesis combining technical and fundamental view"}'
-        )
-        raw = self._call(system, user, max_tokens=2048)
-        return self._parse(raw)
-
-    # ------------------------------------------------------------------
-    # On-demand Wheel Strategy custom analysis (user enters any ticker)
-    # ------------------------------------------------------------------
     def analyze_wheel_custom(
         self,
         ticker: str,
@@ -689,6 +539,129 @@ class ClaudeAnalyst:
             return {}
         except Exception as e:
             logger.warning("Claude DCF commentary failed: %s", e)
+            return {}
+
+    def explain_champions(self, picks: list[dict]) -> list[dict]:
+        """Explain quant-picked champions. Text only, no pick or score."""
+        if not picks:
+            return []
+        system = ("You are an options trading coach explaining champions that code has "
+                  "already picked by a written quant score. Write 2-3 sentences per pick: "
+                  "why it scored well, the key risk, and what invalidates it. Cite only "
+                  "the numbers given. Do not pick, re-rank, or score anything. "
+                  "Respond ONLY with a valid JSON array.")
+        user = ("Write plain-language explanations for these quant-picked champions, "
+                "in the same order:\n"
+                '[{"ticker":"AAPL","explanation":"..."}, ...]\n\n'
+                f"Picks:\n{json.dumps(picks, indent=2)}")
+        return self._explain_list(system, user)
+
+    def explain_day_trades(self, plays: list[dict]) -> list[dict]:
+        """Explain quant-built day-trade plays. Text only."""
+        if not plays:
+            return []
+        system = ("You are a day-trading coach explaining plays that code has already "
+                  "built from quant rules and the listed chain. Write 2-3 sentences per "
+                  "play: the setup, the key risk, and what invalidates it. Cite only "
+                  "the numbers given. Do not pick, re-rank, or set a strike, entry, "
+                  "target, or stop. Respond ONLY with a valid JSON array.")
+        user = ("Write plain-language explanations for these quant-built day trades, "
+                "in the same order:\n"
+                '[{"ticker":"AAPL","explanation":"..."}, ...]\n\n'
+                f"Plays:\n{json.dumps(plays, indent=2)}")
+        return self._explain_list(system, user)
+
+    def explain_flow(self, alerts: list[dict]) -> list[dict]:
+        """Explain quant-verdict flow alerts. Text only."""
+        if not alerts:
+            return []
+        system = ("You are an options-flow analyst explaining unusual-flow alerts that "
+                  "code has already scored by a written verdict rule. Write 1-2 sentences "
+                  "per alert: what the flow shows and the key risk. Cite only the numbers "
+                  "given. Do not set a verdict, confidence, target, or recommendation. "
+                  "Respond ONLY with a valid JSON array.")
+        user = ("Write plain-language interpretations for these flow alerts, "
+                "in the same order:\n"
+                '[{"ticker":"AAPL","interpretation":"..."}, ...]\n\n'
+                f"Alerts:\n{json.dumps(alerts, indent=2)}")
+        return self._explain_list(system, user)
+
+    def explain_watchlist(self, ticker: str, scores: dict) -> dict:
+        """Write watchlist notes for quant scores. Text only, no scores."""
+        system = ("You are a portfolio coach explaining quant scores that code has "
+                  "already computed. Write one sentence per strategy and a 2-3 sentence "
+                  "summary, in plain English. Cite only the numbers given. Do not set "
+                  "or change any score, grade, or best strategy. "
+                  "Respond ONLY with a valid JSON object.")
+        user = (f"Write notes for {ticker} with these quant scores:\n"
+                f"{json.dumps(scores, indent=2)}\n\n"
+                'Return JSON: {"wheel_note":"...","options_note":"...",'
+                '"longterm_note":"...","summary":"..."}')
+        try:
+            raw = self._call(system, user, max_tokens=600)
+            result = self._parse(raw)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.warning("Claude watchlist explanation failed: %s", e)
+            return {}
+
+    def explain_covered_calls(self, ticker: str, tiers: dict) -> dict:
+        """Explain covered-call tiers from the listed chain. Text only."""
+        system = ("You are an options income coach explaining covered-call tiers that "
+                  "code has already priced from the listed chain and checked against "
+                  "written threshold and calendar rules. Write plain-English text per "
+                  "tier: what the holder collects, what happens if called away, and "
+                  "who it is best for. Cite only the numbers given. Do not set a "
+                  "strike, premium, call-away chance, or recommended tier. "
+                  "Respond ONLY with a valid JSON object.")
+        user = (f"Explain covered-call tiers for {ticker}:\n"
+                f"{json.dumps(tiers, indent=2)}\n\n"
+                'Return JSON: {"iv_environment":"...","tiers":[{"tier":"balanced",'
+                '"premium_plain":"...","callaway_plain":"...","if_called_plain":"...",'
+                '"if_not_called_plain":"...","best_for":"..."}]}')
+        try:
+            raw = self._call(system, user, max_tokens=2500)
+            result = self._parse(raw)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.warning("Claude covered-call explanation failed: %s", e)
+            return {}
+
+    def explain_roll(self, roll: dict) -> dict:
+        """Explain a quant roll decision. Text only, no decision."""
+        system = ("You are a wheel coach explaining a roll decision that code has "
+                  "already made from written management rules and computed roll nets. "
+                  "Write 2-3 sentences: the rationale and what happens if no action "
+                  "is taken. Cite only the numbers given. Do not set should_roll, "
+                  "urgency, strike, or expiry. Respond ONLY with a valid JSON object.")
+        user = (f"Explain this quant roll decision:\n{json.dumps(roll, indent=2)}\n\n"
+                'Return JSON: {"rationale":"...","action_plain":"...","if_no_action":"..."}')
+        try:
+            raw = self._call(system, user, max_tokens=600)
+            result = self._parse(raw)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.warning("Claude roll explanation failed: %s", e)
+            return {}
+
+    def explain_wheel_custom(self, ticker: str, quant: dict, tiers: dict) -> dict:
+        """Explain a quant wheel analysis. Text only, no score or tier."""
+        system = ("You are a wheel coach explaining an analysis that code has already "
+                  "scored from quant rules and the listed chain. Write plain-English "
+                  "text: company assessment, technicals, IV environment, and per-tier "
+                  "notes. Cite only the numbers given. Do not set a score, grade, "
+                  "rating, or recommended tier. Respond ONLY with a valid JSON object.")
+        user = (f"Explain this quant wheel analysis for {ticker}:\n"
+                f"Quant: {json.dumps(quant, indent=2)}\n"
+                f"Tiers: {json.dumps(tiers, indent=2)}\n\n"
+                'Return JSON: {"company_assessment":"...","technicals_plain":"...",'
+                '"iv_environment_plain":"...","overall_verdict":"..."}')
+        try:
+            raw = self._call(system, user, max_tokens=1500)
+            result = self._parse(raw)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.warning("Claude wheel custom explanation failed: %s", e)
             return {}
 
     # ------------------------------------------------------------------

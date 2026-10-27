@@ -187,6 +187,14 @@ def get_wheel_recommendations(db: Session = Depends(get_db)):
 def accept_wheel_recommendation(
     rec_id: int, body: AcceptWheelBody, db: Session = Depends(get_db)
 ):
+    # W9 (P2): WheelEngine is RESEARCH_ONLY. Its recommendations cannot
+    # open a live position. Canonical wheel positions come from the
+    # wheel scanner (backend/services/wheel_scanner_service.py).
+    raise HTTPException(
+        status_code=410,
+        detail="WheelEngine recommendations are research only and cannot be accepted. "
+        "Use a wheel scanner candidate instead.",
+    )
     rec = db.get(WheelRecommendation, rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
@@ -429,23 +437,37 @@ def custom_analyze_wheel(req: CustomAnalyzeRequest, db: Session = Depends(get_db
     except Exception:
         news_bullets = "News unavailable — base analysis on technicals."
 
+    # W8 (P2): quant scores, Claude explains only. Score, grade, rating,
+    # and recommended tier come from services.quant_picks.wheel_custom_quant.
+    # A Claude failure never blocks the analysis: quant fields are
+    # returned with a fallback note.
+    from services.quant_picks import wheel_custom_quant
+    from services.ai_boundary import quant_fallback_explanation
+    quant = wheel_custom_quant(tech, put_tiers)
+    result = {
+        "ticker": ticker,
+        "current_price": current_price,
+        "data_source": put_tiers.get("data_source", "last_trade"),
+        "put_tiers_raw": put_tiers,
+        "wheel_score": quant["wheel_score"],
+        "wheel_grade": quant["wheel_grade"],
+        "wheel_rating": quant["wheel_rating"],
+        "recommended_tier": quant["recommended_tier"],
+    }
     try:
-        result = analyst.analyze_wheel_custom(
-            ticker=ticker,
-            current_price=current_price,
-            put_tiers=put_tiers,
-            fundamentals=fundamentals,
-            technicals=tech,
-            news_bullets=news_bullets,
-        )
-        result["ticker"] = ticker
-        result["current_price"] = current_price
-        result["data_source"] = put_tiers.get("data_source", "last_trade")
-        result["put_tiers_raw"] = put_tiers
-        return result
+        notes = analyst.explain_wheel_custom(ticker, quant, put_tiers)
+        result.update({
+            "company_assessment": notes.get("company_assessment") or quant_fallback_explanation(ticker),
+            "technicals_plain": notes.get("technicals_plain") or quant_fallback_explanation(ticker),
+            "iv_environment_plain": notes.get("iv_environment_plain") or quant_fallback_explanation(ticker),
+            "overall_verdict": notes.get("overall_verdict") or quant_fallback_explanation(ticker),
+        })
     except Exception as e:
-        logger.error("Wheel custom analysis failed for %s: %s", ticker, e)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        logger.warning("Wheel custom explainer failed for %s: %s", ticker, e)
+        note = quant_fallback_explanation(ticker)
+        result.update({"company_assessment": note, "technicals_plain": note,
+                       "iv_environment_plain": note, "overall_verdict": note})
+    return result
 
 
 @router.get("/positions/{pos_id}/roll-alert")
@@ -532,22 +554,58 @@ def get_roll_suggestion(pos_id: int, db: Session = Depends(get_db)):
             detail="Options chain unavailable. Markets may be closed — try again during trading hours."
         )
 
-    analyst = ClaudeAnalyst()
+    # W8 (P2): quant decides the roll, Claude explains only. should_roll,
+    # urgency, new strike, and new expiry come from
+    # services.quant_picks.roll_quant, which uses management guidance
+    # and computed roll nets (new bid minus buyback ask). A Claude
+    # failure never blocks the suggestion.
+    from services.claude_analyst import compute_roll_net, fetch_open_put_buyback
+    from services.quant_picks import roll_quant
+    from services.ai_boundary import quant_fallback_explanation
+    buyback_ask = None
+    for key in ("buyback_ask", "open_put_ask", "current_put_ask"):
+        val = (put_tiers or {}).get(key)
+        if val is not None and float(val) > 0:
+            buyback_ask = round(float(val), 2)
+            break
+    if buyback_ask is None:
+        try:
+            fetched = fetch_open_put_buyback(pos.ticker, pos.put_strike, pos.put_expiry)
+            if fetched and fetched.get("ask"):
+                buyback_ask = fetched["ask"]
+        except Exception:
+            buyback_ask = None
+    computed_nets = {}
+    for name in ("likely", "moderate", "unlikely"):
+        t = (put_tiers or {}).get(name)
+        computed_nets[name] = compute_roll_net(t.get("bid") if t else None, buyback_ask) if buyback_ask else None
+    quant = roll_quant(pos, current_price, put_tiers, computed_nets)
+    pct_from_strike = round((current_price - pos.put_strike) / pos.put_strike * 100, 1)
+    result = {
+        "should_roll": quant["should_roll"],
+        "urgency": quant["urgency"],
+        "action": quant["action"],
+        "new_strike": quant["new_strike"],
+        "new_expiry": quant["new_expiry"],
+        "estimated_net": quant["roll_net"],
+        "roll_net": quant["roll_net"],
+        "pct_from_strike": pct_from_strike,
+        "current_price": current_price,
+        "data_source": put_tiers.get("data_source", "last_trade"),
+        "guidance_title": quant["guidance_title"],
+    }
     try:
-        result = analyst.suggest_roll(
-            ticker=pos.ticker,
-            current_price=current_price,
-            put_strike=pos.put_strike,
-            put_expiry=pos.put_expiry,
-            premium_received=pos.put_premium_rcvd,
-            put_tiers=put_tiers,
-        )
-        result["current_price"] = current_price
-        result["data_source"] = put_tiers.get("data_source", "last_trade")
-        return result
+        from services.claude_analyst import ClaudeAnalyst
+        notes = ClaudeAnalyst().explain_roll(result)
+        result["rationale"] = notes.get("rationale") or quant["guidance_reason"] or quant_fallback_explanation(pos.ticker)
+        result["action_plain"] = notes.get("action_plain") or (quant["guidance_title"] or "")
+        result["if_no_action"] = notes.get("if_no_action") or ""
     except Exception as e:
-        logger.error("Roll suggestion failed for pos %d: %s", pos_id, e)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+        logger.warning("Roll explainer failed for pos %d: %s", pos_id, e)
+        result["rationale"] = quant["guidance_reason"] or quant_fallback_explanation(pos.ticker)
+        result["action_plain"] = quant["guidance_title"] or ""
+        result["if_no_action"] = ""
+    return result
 
 
 @router.post("/refresh")

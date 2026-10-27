@@ -455,7 +455,7 @@ def apply_snaps(plays: list[dict], top: list[dict], snap_fn=None) -> tuple[list[
         # Claude's target/stop are estimates, labelled as such. The stop
         # is a 50% of entry convention, not a market level.
         snapped["target_premium"] = op.get("target_premium")
-        snapped["target_premium_source"] = "claude_estimate"
+        snapped["target_premium_source"] = op.get("target_premium_source", "quant_estimate")
         snapped["stop_premium"] = op.get("stop_premium")
         snapped["stop_note"] = "50% of entry, hardcoded convention, not a computed market level"
         snapped.pop("likelihood", None)
@@ -513,8 +513,25 @@ def run_scan() -> dict:
         except Exception:
             c["news"] = []
 
-    analyst = ClaudeAnalyst()
-    plays = analyst.scan_day_trades(top, spy_change=spy_change)
+    # W8 (P2): quant builds the plays, Claude explains only. Direction
+    # is the sign of the day's change, entry/target/stop come from
+    # quant_scorer.compute_entry_exit_options, confidence is a written
+    # rule on vol_ratio and change. A Claude failure never changes the
+    # plays: they keep a quant-derived explanation.
+    from services.quant_picks import day_trade_quant_plays
+    from services.ai_boundary import explain_or_fallback
+    plays = day_trade_quant_plays(top, spy_change=spy_change)
+    try:
+        analyst = ClaudeAnalyst()
+        explanations = analyst.explain_day_trades(plays)
+        by_ticker = {e.get("ticker"): e.get("explanation", "") for e in explanations or []}
+        for play in plays:
+            if by_ticker.get(play.get("ticker")):
+                play["reasoning"] = by_ticker[play["ticker"]]
+            else:
+                play["reasoning"] = explain_or_fallback([play], "day_trades")[0].get("explanation", "")
+    except Exception as e:
+        logger.warning("day scan explainer failed: %s", e)
 
     # Snap each option suggestion to the real chain. Plays whose snap
     # fails are dropped, never shown with an invented premium.

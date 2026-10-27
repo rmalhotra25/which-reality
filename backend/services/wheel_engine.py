@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 WHEEL_UNIVERSE = DEFAULT_UNIVERSE
 TOP_N = 5
+# W9: research view only. The canonical wheel system is the wheel
+# scanner. This engine never fires alerts, never notifies, and no
+# longer runs on the scheduler (the weekly call-suggestion job
+# was removed in P2). Manual refresh only. Its
+# generate_call_suggestion / refresh_all_call_suggestions methods are
+# position management for already-open positions, not a pick system.
+RESEARCH_ONLY = True
+CANONICAL_SYSTEM = "wheel_scanner"
 
 
 def _format_news(items) -> str:

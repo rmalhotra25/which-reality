@@ -434,7 +434,7 @@ export default function MarketPulseTab() {
       <SectionHeader
         icon="⚡"
         title="Day Trade Plays"
-        subtitle="Polygon batch snapshots · RSI-14 · ATR-14 · Claude play selection · Options prices 15-min delayed, last trade, no live quote"
+        subtitle="Polygon batch snapshots · RSI-14 · ATR-14 · Quant play selection, Claude explains only · Research only, does not fire alerts · Options prices 15-min delayed, last trade, no live quote"
         rightContent={scanResult?.data_note && <span style={{ fontSize: '11px', color: '#4a5568', fontStyle: 'italic' }}>{scanResult.data_note}</span>}
       />
 
@@ -481,7 +481,7 @@ export default function MarketPulseTab() {
       <SectionHeader
         icon="🌊"
         title="Unusual Options Flow"
-        subtitle="Polygon options chain · Vol/OI ratio · Greeks · Claude interpretation"
+        subtitle="Polygon options chain · Vol/OI ratio · Greeks · Quant verdict, Claude explains only · Research only, does not fire alerts"
       />
 
       {flowError && <div style={{ color: '#fc8181', background: '#2d1515', border: '1px solid #742a2a', borderRadius: '8px', padding: '14px 16px', fontSize: '14px', margin: '16px 0' }}>⚠ {flowError}</div>}

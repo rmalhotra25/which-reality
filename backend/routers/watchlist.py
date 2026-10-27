@@ -86,6 +86,40 @@ def remove_ticker(ticker: str, db: Session = Depends(get_db)):
     return {"deleted": ticker}
 
 
+def _quant_watchlist_result(ticker: str, info: dict) -> dict:
+    """Quant watchlist score plus Claude notes (explain only)."""
+    from services.quant_picks import watchlist_quant
+    from services.ai_boundary import quant_fallback_explanation
+    try:
+        from services.stock_data import StockDataService
+        svc = StockDataService()
+        tech = svc.get_price_and_technicals(ticker) or {}
+        fund_map = svc.get_fundamentals([ticker]) or {}
+        fundamentals = fund_map.get(ticker) or {}
+    except Exception:
+        tech, fundamentals = {}, {}
+    if not tech:
+        tech = {"price": info.get("price"), "rsi": info.get("rsi")}
+    result = watchlist_quant(tech, fundamentals)
+    result["earnings_date"] = info.get("earnings_date")
+    result["earnings_warning"] = None
+    try:
+        from services.claude_analyst import ClaudeAnalyst
+        notes = ClaudeAnalyst().explain_watchlist(ticker, result)
+        result["wheel_note"] = notes.get("wheel_note") or quant_fallback_explanation(ticker)
+        result["options_note"] = notes.get("options_note") or quant_fallback_explanation(ticker)
+        result["longterm_note"] = notes.get("longterm_note") or quant_fallback_explanation(ticker)
+        result["summary"] = notes.get("summary") or quant_fallback_explanation(ticker)
+    except Exception as e:
+        logger.warning("Claude unavailable for %s watchlist notes: %s", ticker, e)
+        note = quant_fallback_explanation(ticker)
+        result["wheel_note"] = note
+        result["options_note"] = note
+        result["longterm_note"] = note
+        result["summary"] = note
+    return result
+
+
 @router.post("/{ticker}/quick-score")
 def quick_score_ticker(ticker: str):
     """Score any ticker without requiring it to be on the watchlist — no DB writes."""
@@ -99,13 +133,11 @@ def quick_score_ticker(ticker: str):
         logger.error("stock info failed for %s: %s", ticker, e)
         raise HTTPException(500, str(e))
 
-    try:
-        from services.claude_analyst import ClaudeAnalyst
-        result = ClaudeAnalyst().score_watchlist_ticker(ticker, info)
-    except Exception as e:
-        logger.warning("Claude unavailable for %s quick score: %s", ticker, e)
-        return {"ticker": ticker, "ai_unavailable": True}
-
+    # W8 (P2): quant scores, Claude notes only. Scores come from
+    # services.quant_picks.watchlist_quant; a Claude failure keeps the
+    # scores and returns quant fallback notes, never ai_unavailable.
+    from services.quant_picks import watchlist_quant
+    result = _quant_watchlist_result(ticker, info)
     return {
         "ticker": ticker,
         "wheel_score": result.get("wheel_score"),
@@ -138,12 +170,9 @@ def score_ticker(ticker: str, db: Session = Depends(get_db)):
         logger.error("stock info failed for %s: %s", ticker, e)
         raise HTTPException(500, str(e))
 
-    try:
-        from services.claude_analyst import ClaudeAnalyst
-        result = ClaudeAnalyst().score_watchlist_ticker(ticker, info)
-    except Exception as e:
-        logger.warning("Claude unavailable for %s watchlist score: %s", ticker, e)
-        raise HTTPException(503, "AI scoring is temporarily unavailable. Try again later.")
+    # W8 (P2): quant scores, Claude notes only. A Claude failure never
+    # blocks the score: the quant scores are stored with fallback notes.
+    result = _quant_watchlist_result(ticker, info)
 
     item.wheel_score = result.get("wheel_score")
     item.wheel_grade = result.get("wheel_grade")

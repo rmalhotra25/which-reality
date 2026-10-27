@@ -103,6 +103,7 @@ def _indicators(df) -> Optional[dict]:
             return None
 
         ma20 = closes.rolling(20).mean()
+        ma20_lag20 = ma20.shift(20)
         ma50 = closes.rolling(50).mean()
         ma50_lag20 = ma50.shift(20)
         ma200 = closes.rolling(200).mean()
@@ -136,10 +137,13 @@ def _indicators(df) -> Optional[dict]:
         log_ret = np.log(closes / closes.shift(1))
         hv30 = log_ret.rolling(30).std() * np.sqrt(252)
 
-        # Bullish engulfing: today opens below prior close and closes above prior open
+        # Bullish engulfing, per the Trend Pullback recipe: today opens
+        # below prior close, closes above prior open, and closes above
+        # today's open. All three conditions are required.
         bullish_engulf = (
             (opens.iloc[-1] < closes.iloc[-2]) &
-            (closes.iloc[-1] > opens.iloc[-2])
+            (closes.iloc[-1] > opens.iloc[-2]) &
+            (closes.iloc[-1] > opens.iloc[-1])
         )
 
         return {
@@ -148,11 +152,13 @@ def _indicators(df) -> Optional[dict]:
             "prev_open": float(opens.iloc[-2]) if n > 1 else None,
             "open_today": float(opens.iloc[-1]),
             "ma20": float(ma20.iloc[-1]) if not np.isnan(ma20.iloc[-1]) else None,
+            "ma20_lag20": float(ma20_lag20.iloc[-1]) if not np.isnan(ma20_lag20.iloc[-1]) else None,
             "ma50": float(ma50.iloc[-1]) if not np.isnan(ma50.iloc[-1]) else None,
             "ma50_lag20": float(ma50_lag20.iloc[-1]) if not np.isnan(ma50_lag20.iloc[-1]) else None,
             "ma200": float(ma200.iloc[-1]) if not np.isnan(ma200.iloc[-1]) else None,
             "ma200_lag20": float(ma200_lag20.iloc[-1]) if not np.isnan(ma200_lag20.iloc[-1]) else None,
             "rsi": float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None,
+            "rsi_prev": float(rsi.iloc[-2]) if not np.isnan(rsi.iloc[-2]) else None,
             "rsi_was_high": bool(rsi_was_high.iloc[-1]) if not np.isnan(rsi_was_high.iloc[-1]) else False,
             "volume": float(vols.iloc[-1]),
             "vol20": float(vol20.iloc[-1]) if not np.isnan(vol20.iloc[-1]) else None,
@@ -204,8 +210,7 @@ QP_RSI_EXIT = 68
 QP_TIME_STOP_DAYS = 30
 PAS_NEAR_MA_PCT = 0.02
 PAS_IV_PCT_MIN = 67
-PAS_HV_PROXY_PCT = 30
-PAS_TARGET_DTE = 37
+PAS_TARGET_DTE = 21
 PAS_TIME_STOP_DAYS = 30
 VB_PRIOR_HIGH_DAYS = 55
 VB_VOL_MULT = 1.5
@@ -217,6 +222,7 @@ OB_TIME_STOP_DAYS = 30
 TPR_NEAR_MA_PCT = 0.01
 TPR_RSI_BAND_LOW = 40
 TPR_RSI_BAND_HIGH = 55
+TPR_RSI_PREV_LT = 50
 TPR_ATR_TARGET_MULT = 2.0
 TPR_TIME_STOP_DAYS = 15
 PED_GAP_HOLD_PCT = 0.005
@@ -533,21 +539,15 @@ def _eval_premium_at_support(ind: dict, earnings_days_val: Optional[int], iv_pct
     cond["ma200_rising"] = ma200_rising
     cond["ma200"] = round(ma200, 2) if ma200 else None
 
-    # IV percentile in top third (above 67th percentile)
-    # Fall back to HV percentile rank if no live IV store yet
+    # IV percentile in top third (above 67th percentile), from the IV
+    # store only. W5: HV is not an IV proxy. Unknown IV blocks, fail-closed,
+    # the same as unknown earnings and unknown SPY trend.
     iv_source = "iv_store"
     iv_high = False
     if iv_pct is not None:
         iv_high = iv_pct >= PAS_IV_PCT_MIN
         cond["iv_percentile"] = round(iv_pct, 1)
         cond["iv_source"] = "iv_store"
-    elif hv30 is not None:
-        # Use HV as a rough proxy -- flag as approximate
-        iv_high = hv30 > (PAS_HV_PROXY_PCT / 100.0)  # annualised HV above 30% as a rough high-IV threshold
-        cond["iv_percentile"] = None
-        cond["hv30_approx"] = round(hv30 * 100, 1)
-        cond["iv_source"] = "hv_approx"
-        iv_source = "hv_approx"
     else:
         cond["iv_percentile"] = None
         cond["iv_source"] = "unavailable"
@@ -678,19 +678,36 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
     cond = {}
     p = ind["price"]
     ma20 = ind.get("ma20")
+    ma20_lag20 = ind.get("ma20_lag20")
     ma50 = ind.get("ma50")
+    ma50_lag20 = ind.get("ma50_lag20")
     rsi = ind.get("rsi")
-    prev_rsi_est = rsi  # we don't store yesterday's RSI in real time; note limitation
+    rsi_prev = ind.get("rsi_prev")
 
+    # W4: turning up means RSI rose day over day, from below 50, and
+    # today is in the 40-55 band. A falling RSI passing through the band
+    # no longer fires. MAs must be rising, today above 20 sessions ago,
+    # the same pattern Quality Pullback and Volume Breakout use.
+    ma20_rising = (
+        ma20 is not None and ma20_lag20 is not None and ma20 > ma20_lag20
+    )
+    ma50_rising = (
+        ma50 is not None and ma50_lag20 is not None and ma50 > ma50_lag20
+    )
     in_uptrend = (
         ma20 is not None and ma50 is not None
         and p > ma20 and p > ma50
+        and ma20_rising and ma50_rising
     )
     near_ma = (
         (ma20 is not None and abs(p - ma20) / ma20 <= TPR_NEAR_MA_PCT) or
         (ma50 is not None and abs(p - ma50) / ma50 <= TPR_NEAR_MA_PCT)
     )
-    rsi_turning_up = (rsi is not None and TPR_RSI_BAND_LOW <= rsi <= TPR_RSI_BAND_HIGH)
+    rsi_turning_up = (
+        rsi is not None and rsi_prev is not None
+        and rsi > rsi_prev and rsi_prev < TPR_RSI_PREV_LT
+        and TPR_RSI_BAND_LOW <= rsi <= TPR_RSI_BAND_HIGH
+    )
     bullish_engulf = ind.get("bullish_engulf", False)
     reversal = rsi_turning_up or bullish_engulf
     # No earnings within 5 days (fail-closed: unknown blocks)
@@ -700,6 +717,9 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
     cond["ma20"] = round(ma20, 2) if ma20 else None
     cond["ma50"] = round(ma50, 2) if ma50 else None
     cond["rsi"] = round(rsi, 1) if rsi is not None else None
+    cond["rsi_prev"] = round(rsi_prev, 1) if rsi_prev is not None else None
+    cond["ma20_rising"] = ma20_rising
+    cond["ma50_rising"] = ma50_rising
     cond["in_uptrend"] = in_uptrend
     cond["near_ma"] = near_ma
     cond["rsi_turning_up"] = rsi_turning_up
@@ -719,45 +739,27 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
 
 def _eval_post_earnings_drift(ind: dict, earnings_days_val: Optional[int]) -> tuple[bool, dict]:
     """
-    Post-Earnings Drift: we can only check gap-held and IV crush from
-    price data; earnings beat/guidance raised requires a news/data feed
-    that is not reliably available. Fires on price/IV conditions only
-    and notes the limitation in the conditions snapshot.
+    Post-Earnings Drift: RETIRED, research only, never fires.
+
+    W4: the recipe requires an earnings beat and raised guidance, and
+    no reliable source for either exists in this repo (no Finnhub
+    actual-vs-estimate fields are read anywhere, no guidance endpoint
+    exists, IV crush was proxied by HV). Firing on gap-held plus HV
+    below 35% was firing on half the recipe on any ordinary up day.
+    This function now returns False unconditionally, and the setup is
+    removed from _SETUP_EVALUATORS and set RETIRED in both registries.
     """
     cond = {}
-    p = ind["price"]
-    prev_close = ind.get("prev_close")
-    hv30 = ind.get("hv30")
-
-    # Proxy check: IV crush means current HV is notably lower than historical norm.
-    # Without live IV history this is approximate.
-    iv_crushed = (hv30 is not None and hv30 < (PED_HV_CRUSH_PCT / 100.0))  # below 35% annualised
-
-    # Gap held: today's price above yesterday's close
-    gap_held = (prev_close is not None and p > prev_close * (1 + PED_GAP_HOLD_PCT))
-
-    cond["price"] = round(p, 2)
-    cond["prev_close"] = round(prev_close, 2) if prev_close else None
-    cond["gap_held"] = gap_held
-    cond["hv30"] = round(hv30 * 100, 1) if hv30 else None
-    cond["iv_crushed_approx"] = iv_crushed
-    cond["earnings_beat_guidance_raised"] = "not_checked_requires_news_feed"
-    cond["note"] = "earnings beat and guidance check requires live news data; not evaluated here"
-    # Earnings gate (fail-closed): this setup previously ignored the
-    # earnings calendar entirely, so a Finnhub failure could not even be
-    # seen. Unknown earnings date now blocks, and earnings within 5 days
-    # blocks, the same as the other five evaluators.
-    no_earnings = _earnings_ok(earnings_days_val)
-    _earnings_cond(cond, earnings_days_val)
-    cond["would_fire_without_earnings_gate"] = gap_held and iv_crushed
-    cond["earnings_gate_blocked"] = bool(
-        cond["would_fire_without_earnings_gate"] and not no_earnings
+    cond["price"] = round(ind["price"], 2)
+    cond["retired_reason"] = (
+        "no reliable earnings-beat/guidance feed; research only"
     )
-
-    # This setup is intentionally conservative: only shadow until a real
-    # news feed validates beat+guidance.
-    fires = gap_held and iv_crushed and no_earnings
-    return fires, cond
+    cond["earnings_beat_guidance_raised"] = "retired_no_reliable_feed"
+    _earnings_cond(cond, earnings_days_val)
+    # Retired setups never fire, so the earnings gate never blocks them.
+    cond["would_fire_without_earnings_gate"] = False
+    cond["earnings_gate_blocked"] = False
+    return False, cond
 
 
 # ---------------------------------------------------------------------------
@@ -872,81 +874,61 @@ def _build_stock_action(ind: dict, setup_key: str,
     }
 
 
-def _build_options_action(ind: dict, db) -> dict | None:
+def _build_options_action(ticker: str, ind: dict, db) -> tuple[dict | None, str | None]:
     """
-    Build a defined-max-loss options action for the wheel setup.
-    Returns None with a reason string if a defined max loss cannot be computed.
-    Uses Black-Scholes via the existing options engine helpers.
+    Build a defined-max-loss options action for the wheel setup, from
+    the listed chain only (W5).
+
+    Strike, expiry, and premium come from the wheel scanner's listed
+    put tiers (StockDataService.get_put_tiers, moderate ~0.30 delta,
+    expiry nearest PAS_TARGET_DTE), priced at the bid. No strike is
+    guessed, no expiry is invented, no Black-Scholes premium is used.
+    Returns (None, reason) when no listed chain is available, so the
+    candidate is suppressed with that reason instead of firing on a
+    modelled price.
     """
     try:
+        from services.wheel_scanner_service import get_listed_put
         p = ind["price"]
-        hv30 = ind.get("hv30") or 0.25
-        atr = ind.get("atr14") or (p * 0.02)
-
-        # 30-delta CSP: strike ~ 0.95 * price for typical 30-delta approx
-        strike = round(p * 0.95, 0)
-        if strike <= 0:
-            return None, "Strike price is zero or negative"
-
-        # Target 37 DTE expiry
-        target_dte = PAS_TARGET_DTE
-        expiry_date = date.today() + timedelta(days=target_dte)
-        expiry_str = expiry_date.isoformat()
-
-        # Black-Scholes premium estimate (ATM put)
-        import math
-        try:
-            from services.stock_data import _ncdf
-            T = max(target_dte, 1) / 365.0
-            iv = max(hv30, 0.05)
-            r = 0.045
-            sq = iv * math.sqrt(T)
-            d1 = (math.log(p / strike) + (r + 0.5 * iv ** 2) * T) / sq
-            d2 = d1 - sq
-            premium = max(strike * math.exp(-r * T) * _ncdf(-d2) - p * _ncdf(-d1), 0.01)
-        except Exception:
-            # Fallback: rough premium from HV
-            premium = round(p * hv30 * (target_dte / 365) ** 0.5 * 0.4, 2)
-
-        premium = round(max(premium, 0.05), 2)
-        premium_with_haircut = round(premium * 0.95, 2)  # 5% spread haircut
-
-        # Defined max loss for a CSP: strike - premium received (per share)
-        max_loss_per_share = round(strike - premium_with_haircut, 2)
-        # Per contract (100 shares)
+        tier, reason = get_listed_put(ticker, target_dte=PAS_TARGET_DTE)
+        if tier is None:
+            return None, reason or "no listed chain"
+        strike = float(tier["strike"])
+        expiry_str = str(tier["expiry"])
+        premium = float(tier["sale_price"])
+        if strike <= 0 or premium <= 0:
+            return None, "no listed chain"
+        spread_pct = tier.get("spread_pct")
+        spread_known = tier.get("spread_known", False)
+        max_loss_per_share = round(strike - premium, 2)
         max_loss_per_contract = round(max_loss_per_share * 100, 2)
-
         if max_loss_per_contract <= 0:
-            return None, f"Max loss non-positive (strike={strike}, premium={premium_with_haircut})"
-
-        # Default position size: 1 contract
+            return None, f"Max loss non-positive (strike={strike}, premium={premium})"
         position_size = 1
         max_loss_position = max_loss_per_contract * position_size
-
         summary = (
-            f"Sell {expiry_str} ${strike:.0f} put, ~${premium_with_haircut:.2f} credit. "
+            f"Sell {expiry_str} ${strike:.0f} put, ${premium:.2f} credit (listed bid). "
             f"Max loss ${max_loss_per_contract:.0f}/contract. "
             f"Close at 50% profit or 21 DTE."
         )
-
         return {
             "action": "SELL_PUT",
             "contract_type": "PUT",
-            "strike": float(strike),
+            "strike": strike,
             "expiry": expiry_str,
-            "premium": premium_with_haircut,
+            "premium": premium,
             "max_loss_per_contract": max_loss_per_contract,
             "max_loss_per_position": max_loss_position,
             "position_size_contracts": position_size,
             "max_loss": max_loss_position,
             "action_summary": summary,
             "entry_price": p,
-            # Entry here is the underlying close; the premium is a
-            # Black-Scholes estimate from HV, labelled as such, not a
-            # listed-chain price (audit W5: listed chain or suppress is
-            # still open work; this label keeps the estimate honest).
-            "entry_source": "black_scholes_hv_proxy",
-            "invalidation_price": round(p * 0.93, 2),  # stop the underlying below 200 MA
+            "entry_source": "listed_chain_bid",
+            "spread_pct": spread_pct,
+            "spread_quality": (
+                f"spread {spread_pct}%" if spread_known and spread_pct is not None else "spread unknown"
+            ),
+            "invalidation_price": round(p * 0.93, 2),
             "target_price": None,
             "exit_rule": "Close at 50% profit or 21 DTE.",
         }, None
@@ -1002,7 +984,7 @@ def _build_alert(
         }
 
     if setup_key == "premium_at_support":
-        action_data, fail_reason = _build_options_action(ind, db)
+        action_data, fail_reason = _build_options_action(ticker, ind, db)
         if action_data is None:
             return {
                 "setup_key": setup_key,
@@ -1011,7 +993,7 @@ def _build_alert(
                 "setup_status": setup_status,
                 "ticker": ticker,
                 "is_suppressed": True,
-                "suppressed_reason": f"options action failed: {fail_reason}",
+                "suppressed_reason": fail_reason,
                 "conditions": cond,
                 "action": None,
             }
@@ -1061,7 +1043,7 @@ def _build_alert(
         **action_data,
         "earnings_in_window": (earnings_days_val is not None and earnings_days_val <= 14),
         "iv_percentile": iv_pct,
-        "spread_quality": "estimated" if setup_key == "premium_at_support" else None,
+        "spread_quality": action_data.get("spread_quality") if setup_key == "premium_at_support" else None,
         "invalidation_text": invalidation_text,
         "reason": build_reason(setup_key, cond),
     }
@@ -1094,7 +1076,8 @@ _SETUP_EVALUATORS = {
     "volume_breakout":        (_eval_volume_breakout,        "directional"),
     "oversold_bounce":        (_eval_oversold_bounce,        "buy_and_hold"),
     "trend_pullback_reversal":(_eval_trend_pullback_reversal,"directional"),
-    "post_earnings_drift":    (_eval_post_earnings_drift,    "directional"),
+    # post_earnings_drift is RETIRED (W4): removed from the evaluator
+    # map so it cannot fire even if a registry row is flipped back.
 }
 
 

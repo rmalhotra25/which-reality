@@ -102,8 +102,6 @@ def is_trading_day(d: date | None = None) -> bool:
 
 def run_all_analyses() -> None:
     from database import SessionLocal
-    from services.options_engine import OptionsEngine
-    from services.wheel_engine import WheelEngine
     from services.run_receipts import job_receipt, JOB_ANALYSIS
 
     today_eastern = date.today()   # server runs in UTC; check via pytz below
@@ -125,8 +123,11 @@ def run_all_analyses() -> None:
                 return
 
             logger.info("Scheduler: starting all analysis pipelines for %s", today_eastern)
-            OptionsEngine(db).run()
-            WheelEngine(db).run()
+            # W9: OptionsEngine and WheelEngine are research views only.
+            # They no longer run on the scheduler. The canonical systems
+            # are DirectionalEngine (directional_daily, 16:30) and the
+            # wheel scanner (10:30 and 14:00). Research engines run only
+            # on a manual refresh, and never fire alerts or notify.
 
             # Snap ATM IV for the universe after each analysis run
             db2 = SessionLocal()
@@ -322,20 +323,35 @@ def run_wheel_scanner_job() -> None:
                 return
 
             logger.info("Scheduler: running wheel scanner")
+            from services.wheel_modes import HARVEST_MODE, WHEEL_MODE
             from services.wheel_scanner_service import run_put_scanner, run_call_scanner
-            put_result = run_put_scanner(db)
+            # W9: both put modes run on the scheduler. Harvest used to
+            # fill only on a manual tab refresh, so it was stale until
+            # someone opened the tab. Call scanner is mode-independent.
+            put_result = run_put_scanner(db, mode=WHEEL_MODE)
+            harvest_result = run_put_scanner(db, mode=HARVEST_MODE)
             call_result = run_call_scanner(db)
             put_candidates = put_result.get("candidates", []) or []
             put_excluded = put_result.get("excluded", []) or []
+            harvest_candidates = harvest_result.get("candidates", []) or []
+            harvest_excluded = harvest_result.get("excluded", []) or []
             call_candidates = call_result.get("candidates", []) or []
             call_excluded = call_result.get("excluded", []) or []
             counts["tickers_evaluated"] = (
                 len(put_candidates) + len(put_excluded)
+                + len(harvest_candidates) + len(harvest_excluded)
                 + len(call_candidates) + len(call_excluded)
             )
-            counts["alerts_fired"] = len(put_candidates) + len(call_candidates)
-            counts["suppressed"] = len(put_excluded) + len(call_excluded)
-            logger.info("Scheduler: wheel scanner complete")
+            counts["alerts_fired"] = (
+                len(put_candidates) + len(harvest_candidates) + len(call_candidates)
+            )
+            counts["suppressed"] = (
+                len(put_excluded) + len(harvest_excluded) + len(call_excluded)
+            )
+            logger.info(
+                "Scheduler: wheel scanner complete: classic %d, harvest %d, calls %d",
+                len(put_candidates), len(harvest_candidates), len(call_candidates),
+            )
     except Exception as e:
         logger.error("Wheel scanner failed: %s", e, exc_info=True)
         import services.run_status as run_status
@@ -402,29 +418,38 @@ def run_challenge_alerts_job() -> None:
         db.close()
 
 
-def refresh_call_suggestions() -> None:
-    from database import SessionLocal
-    from services.wheel_engine import WheelEngine
-    from services.run_receipts import job_receipt, JOB_CALL_SUGGESTIONS
+def run_directional_job() -> None:
+    """Run DirectionalEngine once daily after the close (W9).
+
+    16:30 ET, Mon-Fri: after the 16:00 close, so end-of-day prices, the
+    listed chain, and earnings data are final, and before the 17:15
+    Challenge snapshot and the 17:30 alert engine. DirectionalEngine
+    writes its own persistent run receipt, so this wrapper must not
+    wrap it in job_receipt or each run would write two receipts.
+    """
     import datetime as _dt
+    from database import SessionLocal
 
     today_eastern = _dt.datetime.now(EASTERN).date()
-
+    if not is_trading_day(today_eastern):
+        logger.info("Scheduler: skipping directional -- not a trading day")
+        return
+    logger.info("Scheduler: running directional engine")
     db = SessionLocal()
     try:
-        with job_receipt(db, JOB_CALL_SUGGESTIONS) as counts:
-            if not is_trading_day(today_eastern):
-                counts["state"] = "skipped"
-                counts["errors"] = [f"not a trading day: {today_eastern}"]
-                logger.info("Scheduler: skipping call suggestion refresh - not a trading day")
-                return
-
-            logger.info("Scheduler: refreshing weekly call suggestions")
-            WheelEngine(db).refresh_all_call_suggestions()
+        from services.directional_engine import DirectionalEngine
+        DirectionalEngine(db).run()
     except Exception as e:
-        logger.error("Call suggestion refresh failed: %s", e, exc_info=True)
+        logger.error("Directional engine failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("directional", str(e))
     finally:
         db.close()
+
+
+# W9 (P2): refresh_call_suggestions was deleted here. It ran
+# WheelEngine.refresh_all_call_suggestions on the scheduler; WheelEngine
+# is research only. Use the covered-calls router on demand instead.
 
 
 def describe_jobs(scheduler) -> list[dict]:
@@ -475,6 +500,16 @@ def start_scheduler() -> BackgroundScheduler:
         run_discovery_scan_job,
         CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=EASTERN),
         id="discovery_scan_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 16:30 ET -- DirectionalEngine, the canonical directional
+    # system (W9). Manual refresh stays available as a backfill path.
+    scheduler.add_job(
+        run_directional_job,
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=30, timezone=EASTERN),
+        id="directional_daily",
         replace_existing=True,
         misfire_grace_time=1800,
     )
@@ -544,14 +579,10 @@ def start_scheduler() -> BackgroundScheduler:
         misfire_grace_time=1800,
     )
 
-    # Weekly Tuesday 9:05 AM Eastern — refresh covered call suggestions
-    # (Monday could be a holiday, so Tuesday is safer)
-    scheduler.add_job(
-        refresh_call_suggestions,
-        CronTrigger(day_of_week="tue", hour=9, minute=5, timezone=EASTERN),
-        id="call_suggestions_weekly",
-        replace_existing=True,
-    )
+    # W9 (P2): no weekly WheelEngine call-suggestion job. WheelEngine is
+    # research only and never runs on the scheduler. Covered-call
+    # suggestions for assigned positions are generated on demand by the
+    # covered-calls router (quant tier pick from the listed chain).
 
     scheduler.start()
     logger.info(

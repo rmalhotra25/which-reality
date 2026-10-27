@@ -42,7 +42,6 @@ THRESHOLD_CHECKS = {
         "earnings_block_days": ("services.alert_engine", "EARNINGS_BLOCK_DAYS"),
         "near_ma_pct": ("services.alert_engine", "PAS_NEAR_MA_PCT"),
         "iv_pct_min": ("services.alert_engine", "PAS_IV_PCT_MIN"),
-        "hv_proxy_pct": ("services.alert_engine", "PAS_HV_PROXY_PCT"),
         "target_dte": ("services.alert_engine", "PAS_TARGET_DTE"),
         "time_stop_days": ("services.alert_engine", "PAS_TIME_STOP_DAYS"),
         "cooldown_days": ("services.alert_engine", "ALERT_DEDUPE_COOLDOWN_DAYS"),
@@ -70,6 +69,7 @@ THRESHOLD_CHECKS = {
         "near_ma_pct": ("services.alert_engine", "TPR_NEAR_MA_PCT"),
         "rsi_band_low": ("services.alert_engine", "TPR_RSI_BAND_LOW"),
         "rsi_band_high": ("services.alert_engine", "TPR_RSI_BAND_HIGH"),
+        "rsi_prev_lt": ("services.alert_engine", "TPR_RSI_PREV_LT"),
         "atr_target_mult": ("services.alert_engine", "TPR_ATR_TARGET_MULT"),
         "time_stop_days": ("services.alert_engine", "TPR_TIME_STOP_DAYS"),
         "cooldown_days": ("services.alert_engine", "ALERT_DEDUPE_COOLDOWN_DAYS"),
@@ -118,20 +118,22 @@ _RULES = [
         "category": "setup",
         "trigger_text": (
             "Price within 2% of the 50-day MA, 200-day MA rising, IV percentile "
-            "at or above 67 (HV above 30% used as proxy, labelled approximate), "
-            "no earnings within 5 days."
+            "at or above 67 from the IV store only (unknown IV blocks, no HV "
+            "proxy), no earnings within 5 days. Put priced from the listed "
+            "chain at the bid, nearest 21 DTE, ~0.30 delta; suppressed as "
+            "'no listed chain' when no listed chain is available."
         ),
         "trigger_json": {
-            "near_ma_pct": 0.02, "iv_pct_min": 67, "hv_proxy_pct": 30,
-            "target_dte": 37, "close_profit_pct": 50, "close_dte": 21,
+            "near_ma_pct": 0.02, "iv_pct_min": 67,
+            "target_dte": 21, "close_profit_pct": 50, "close_dte": 21,
             "earnings_block_days": 5, "time_stop_days": 30,
         },
         "universe": "S&P 500 + Dividend Achievers (same quality filter as Quality Pullback)",
-        "action_template": "Sell {units} {expiry} ${strike} put(s) for ~${premium} credit.",
+        "action_template": "Sell {units} {expiry} ${strike} put(s) for ${premium} credit (listed bid).",
         "size_rule": "1% of account equity risked, sized by max loss per contract.",
         "size_fallback": "suppress",
         "invalidation": "Close below the 200-day MA; 30-day time stop.",
-        "expiry": "Target 37 DTE; close at 50% profit or 21 DTE.",
+        "expiry": "Listed expiry nearest 21 DTE; close at 50% profit or 21 DTE.",
         "cooldown_days": 1,
         "dedupe_key_format": "setup:ticker:signal-date",
         "status": "SHADOW",
@@ -166,9 +168,12 @@ _RULES = [
         "name": "Directional Options alert",
         "category": "setup",
         "trigger_text": (
-            "DirectionalEngine builds one candidate per ticker from the listed "
-            "21 DTE chain, ranked by expiry-consistent EV per dollar risked. "
-            "Negative payoff at target suppresses the candidate."
+            "Canonical directional system: DirectionalEngine, scheduled "
+            "weekdays 16:30 ET (job directional_daily). It builds one candidate "
+            "per ticker from the listed 21 DTE chain, ranked by "
+            "expiry-consistent EV per dollar risked. Negative payoff at target "
+            "suppresses the candidate. OptionsEngine is research only and "
+            "never fires an alert."
         ),
         "trigger_json": {
             "dte": 21, "premium_stop_pct": 50, "time_stop_days": 21,
@@ -189,9 +194,10 @@ _RULES = [
         "name": "Champions AI Picks alert",
         "category": "setup",
         "trigger_text": (
-            "Champions engine prescreens a universe and the engine picks 3 per run, "
-            "settled on a fixed calendar horizon by strategy (30 / 21 / 90 days) "
-            "on the underlying stock move."
+            "Champions prescreens a universe and a written quant score "
+            "(services.quant_picks.champion_score) picks 3 per run, settled "
+            "on a fixed calendar horizon by strategy (30 / 21 / 90 days) on "
+            "the underlying stock move. The model writes explanations only."
         ),
         "trigger_json": {
             "picks_per_run": 3, "horizons_days": [30, 21, 90],
@@ -259,13 +265,15 @@ _RULES = [
         "name": "Trend Pullback Reversal alert",
         "category": "setup",
         "trigger_text": (
-            "Price above rising 20-day and 50-day MAs, pullback to within 1% of "
-            "the 20-day or 50-day MA, reversal confirmation: RSI(14) turning up "
-            "from below 50 OR bullish engulfing candle at the MA level, no "
-            "earnings within 5 days."
+            "Price above rising 20-day and 50-day MAs (today above 20 sessions "
+            "ago), pullback to within 1% of the 20-day or 50-day MA, reversal "
+            "confirmation: RSI(14) today above yesterday's RSI, yesterday's RSI "
+            "below 50, today's RSI 40-55, OR bullish engulfing candle at the MA "
+            "level, no earnings within 5 days."
         ),
         "trigger_json": {
             "near_ma_pct": 0.01, "rsi_band_low": 40, "rsi_band_high": 55,
+            "rsi_prev_lt": 50,
             "atr_target_mult": 2.0, "earnings_block_days": 5,
             "time_stop_days": 15, "risk_pct": 1.0,
         },
@@ -285,25 +293,23 @@ _RULES = [
         "name": "Post-Earnings Drift alert",
         "category": "setup",
         "trigger_text": (
-            "Second day after the earnings gap: gap holds (second-day close "
-            "above first-day close), IV crush confirmed (HV below 35% "
-            "annualised). Earnings beat and raised guidance are NOT checked "
-            "here (no live news feed); this setup stays SHADOW until a real "
-            "news feed validates them."
+            "RETIRED, research only: the recipe requires an earnings beat and "
+            "raised guidance, and no reliable source for either exists in "
+            "this repo. The setup never fires."
         ),
         "trigger_json": {
             "gap_hold_pct": 0.005, "hv_crush_pct": 35, "target_pct": 0.10,
             "earnings_block_days": 5, "time_stop_days": 15, "risk_pct": 1.0,
         },
-        "universe": "Any liquid name that reports earnings with a beat and raised guidance",
-        "action_template": "Buy {units} shares of {ticker} at the second session close ~${entry}.",
+        "universe": "Retired: no universe, never evaluated",
+        "action_template": "Research only: no trade action.",
         "size_rule": "1% of account equity risked, sized by stop distance (entry minus gap-day close).",
         "size_fallback": "suppress",
         "invalidation": "Gap fills: close below the gap-day close.",
         "expiry": "Signal date plus 15 days (time stop); target is 10% above entry, per the recipe.",
         "cooldown_days": 1,
         "dedupe_key_format": "setup:ticker:signal-date",
-        "status": "SHADOW",
+        "status": "RETIRED",
         "source_function": "services.alert_engine._eval_post_earnings_drift",
     },
     {
@@ -491,6 +497,20 @@ def seed_rule_registry(db) -> None:
                     defn["rule_key"], existing.status, status,
                 )
                 existing.status = status
+            # P2: sync the written rule itself, not just status, so a
+            # threshold or trigger edit reaches a live DB, not only a
+            # fresh one. Without this, a stale row could drift silently.
+            new_trigger_json = json.dumps(defn["trigger_json"])
+            if existing.trigger_text != defn["trigger_text"]:
+                existing.trigger_text = defn["trigger_text"]
+            if (existing.trigger_json or "") != new_trigger_json:
+                existing.trigger_json = new_trigger_json
+            if existing.action_template != defn["action_template"]:
+                existing.action_template = defn["action_template"]
+            if existing.expiry != defn["expiry"]:
+                existing.expiry = defn["expiry"]
+            if existing.universe != defn["universe"]:
+                existing.universe = defn["universe"]
             continue
         row = RuleRegistry(
             rule_key=defn["rule_key"],

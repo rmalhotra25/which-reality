@@ -132,6 +132,10 @@ def is_live(db, setup_key: str) -> bool:
 # Registry definitions
 # ---------------------------------------------------------------------------
 
+# Setups retired by a deliberate decision, not by a backtest file.
+# seed_registry and reenforce_statuses never revive these rows.
+RETIRED_SETUP_KEYS = {"post_earnings_drift"}
+
 _SETUPS = [
     {
         "setup_key": "quality_pullback",
@@ -163,13 +167,17 @@ _SETUPS = [
             "  - Price within 2% of the 50-day MA (above or below)\n"
             "  - 200-day MA rising\n"
             "  - IV percentile in the top third of the trailing 252-session history\n"
-            "    (HV used as IV proxy until live IV history is deep enough; labeled as approximate)\n"
+            "    (IV percentile from the IV store only; unknown IV blocks, no HV proxy)\n"
             "  - No earnings within 5 days\n"
             "Entry: next session open for the stock signal.\n"
-            "Options trade: sell a 30-delta cash-secured put, targeting 37 DTE; close at 50% "
-            "profit or 21 DTE; model assignment if the put expires ITM.\n"
+            "Options trade: sell a 30-delta cash-secured put from the listed chain "
+            "at the bid, nearest 21 DTE; close at 50% profit or 21 DTE; "
+            "suppressed as 'no listed chain' when no listed chain is available.\n"
             "Stock exit: stop on close below 200-day MA; 30-day time stop.\n"
-            "Note: all options P&L figures are modeled using Black-Scholes with HV as the IV proxy."
+            "Note: live alerts are priced from the listed chain only. The "
+            "backtest still models with Black-Scholes and HV, so live and "
+            "backtest P&L are not on the same basis; do not promote on the "
+            "backtest alone."
         ),
         "backtest_file": "backtests/premium_at_support.md",
     },
@@ -197,6 +205,9 @@ _SETUPS = [
         "job": "directional",
         "recipe": (
             "Universe: app directional universe (DEFAULT_UNIVERSE in stock_data.py).\n"
+            "Canonical directional system: DirectionalEngine, scheduled "
+            "weekdays 16:30 ET (job directional_daily). OptionsEngine is "
+            "research only and never fires an alert.\n"
             "Signal: DirectionalEngine builds one candidate per ticker from the "
             "listed 21 DTE chain, ranked by expiry-consistent EV per $ risked.\n"
             "P(profit) is P(stock finishes past breakeven) from the contract IV.\n"
@@ -214,9 +225,10 @@ _SETUPS = [
         "name": "Champions AI Picks",
         "job": "directional",
         "recipe": (
-            "Daily AI picks (wheel / options / longterm strategies) from the "
-            "Champions engine: a prescreened universe passed to Claude in one "
-            "batched call, three picks per run, settled on a fixed calendar "
+            "Daily picks (wheel / options / longterm strategies) from the "
+            "Champions engine: a prescreened universe scored by a written "
+            "quant rule (services.quant_picks.champion_score), three picks "
+            "per run, Claude writes explanations only, settled on a fixed calendar "
             "horizon by strategy (30 / 21 / 90 days) on the underlying stock "
             "move, because no contract is recorded at pick time.\n"
             "Status SHADOW until the picks pass the same harness as the stock "
@@ -277,8 +289,7 @@ _SETUPS = [
             "yesterday's close; today's close above yesterday's open)\n"
             "  - No earnings within 5 days\n"
             "Entry: next session open.\n"
-            "Exit: stop below the low of the signal candle (defined risk); target at prior "
-            "swing high; 15-day time stop.\n"
+            "Exit: stop below the low of the signal candle (defined risk); target at entry plus 2x ATR(14); 15-day time stop.\n"
             "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
         ),
         "backtest_file": None,
@@ -298,7 +309,9 @@ _SETUPS = [
             "Entry: second session close after the earnings gap.\n"
             "Exit: target at prior high or 10% above entry; stop at the gap open (first-day "
             "open); 15-day time stop.\n"
-            "Note: no backtest completed yet; status SHADOW until real-data PASSES on file."
+            "Note: RETIRED, research only. The recipe requires an earnings beat "
+            "and raised guidance and no reliable source for either exists in "
+            "this repo, so the setup never fires."
         ),
         "backtest_file": None,
     },
@@ -370,9 +383,18 @@ def seed_registry(db) -> None:
             .first()
         )
         if existing:
+            if defn["setup_key"] in RETIRED_SETUP_KEYS and existing.status != "RETIRED":
+                existing.status = "RETIRED"
+                logger.info(
+                    "setup_registry: retiring '%s' (deliberate decision, W4)",
+                    defn["setup_key"],
+                )
             continue
 
-        status, verdict, data_source = resolve_status_from_file(defn["backtest_file"])
+        if defn["setup_key"] in RETIRED_SETUP_KEYS:
+            status, verdict, data_source = "RETIRED", None, None
+        else:
+            status, verdict, data_source = resolve_status_from_file(defn["backtest_file"])
         row = SetupRegistry(
             setup_key=defn["setup_key"],
             name=defn["name"],

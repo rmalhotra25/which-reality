@@ -124,7 +124,7 @@ from auth import AuthMiddleware  # noqa: E402
 app.add_middleware(AuthMiddleware)
 
 from routers import options, wheel  # noqa: E402
-from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book, challenge, rules  # noqa: E402
+from routers import market, account, performance, watchlist, champions, covered_calls, scanner, options_flow, discovery, dcf, cef, dividend_path, twelve_step, iv_history, alerts, book, challenge, rules, lookup  # noqa: E402
 
 app.include_router(options.router, prefix="/api/options", tags=["Options"])
 app.include_router(wheel.router, prefix="/api/wheel", tags=["Wheel Strategy"])
@@ -146,6 +146,7 @@ app.include_router(alerts.router)
 app.include_router(book.router)
 app.include_router(challenge.router)
 app.include_router(rules.router)
+app.include_router(lookup.router)
 
 
 @app.get("/api/health", tags=["Health"])

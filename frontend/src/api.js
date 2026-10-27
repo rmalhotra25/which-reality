@@ -124,6 +124,10 @@ export const api = {
     getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),
     screener: (filters) => request('/api/twelve-step/screener', { method: 'POST', body: filters }),
   },
+  lookup: {
+    get: (ticker, explain = false) =>
+      request(`/api/lookup/${encodeURIComponent(ticker)}${explain ? '?explain=true' : ''}`),
+  },
   challenge: {
     getState: () => request('/api/challenge'),
     initAccount: (body) => request('/api/challenge/account', { method: 'POST', body }),

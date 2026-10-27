@@ -133,42 +133,85 @@ export default function IncomeTab() {
   const [divData, setDivData]   = useState(null)
   const [cefData, setCefData]   = useState(null)
   const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState(null)
+  const [divError, setDivError] = useState(null)
+  const [cefError, setCefError] = useState(null)
+  const [scanRunning, setScanRunning] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   const [startCap, setStartCap]     = useState(61000)
   const [weeklyDca, setWeeklyDca]   = useState(500)
+  // Monthly contribution slider for the income projection, $100-$2,000/month.
+  const [monthly, setMonthly]       = useState(500)
+  const [projData, setProjData]     = useState(null)
+  const [projLoading, setProjLoading] = useState(false)
 
   async function loadData(startingCapital = startCap, wdca = weeklyDca) {
-    setLoading(true); setError(null)
-    try {
-      const [div, cef] = await Promise.all([
-        api.dividendPath.recommend(startingCapital, wdca),
-        api.cef.scan(),
-      ])
-      setDivData(div)
-      setCefData(cef)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+    setLoading(true); setDivError(null); setCefError(null); setScanRunning(false)
+    // Load the two sources independently: one failing must not kill the
+    // whole tab, and a cold cache returns 202 scan_running, not data.
+    const [divRes, cefRes] = await Promise.allSettled([
+      api.dividendPath.recommend(startingCapital, wdca),
+      api.cef.scan(),
+    ])
+    if (divRes.status === 'fulfilled') {
+      if (divRes.value?.status === 'scan_running') {
+        setScanRunning(true)
+        setDivError('Dividend scan is running in the background. Try again shortly.')
+      } else {
+        setDivData(divRes.value)
+      }
+    } else {
+      setDivError(divRes.reason?.message || 'Dividend data failed to load.')
     }
+    if (cefRes.status === 'fulfilled') {
+      if (cefRes.value?.status === 'scan_running') {
+        setScanRunning(true)
+        setCefError('CEF scan is running in the background. Try again shortly.')
+      } else {
+        setCefData(cefRes.value)
+      }
+    } else {
+      setCefError(cefRes.reason?.message || 'CEF data failed to load.')
+    }
+    setLoading(false)
   }
 
   useEffect(() => { loadData() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-project from the cached portfolio whenever the slider or the
+  // starting capital changes. The backend reuses its own projection
+  // model and assumptions, so the slider never invents its own math.
+  useEffect(() => {
+    if (!divData) return
+    setProjLoading(true)
+    const t = setTimeout(async () => {
+      try {
+        const p = await api.dividendPath.project(startCap, monthly)
+        if (p?.status === 'scan_running') {
+          setProjData(null)
+          setScanRunning(true)
+        } else if (p?.projection) {
+          setProjData(p)
+        }
+      } catch (e) {
+        // Keep the last good projection on screen; the base data is intact.
+      } finally {
+        setProjLoading(false)
+      }
+    }, 400)
+    return () => clearTimeout(t)
+  }, [monthly, startCap, divData]) // eslint-disable-line react-hooks/exhaustive-deps
+
   async function handleRefresh() {
     setRefreshing(true)
     try {
-      await Promise.all([
+      await Promise.allSettled([
         api.dividendPath.refresh(startCap, weeklyDca),
         api.cef.refresh(),
       ])
       // Give backends a moment to start, then reload
       await new Promise(r => setTimeout(r, 1200))
       await loadData()
-    } catch (e) {
-      setError(e.message)
     } finally {
       setRefreshing(false)
     }
@@ -180,6 +223,20 @@ export default function IncomeTab() {
     const invested = h.dollar_amount ?? (startCap * (h.allocation_pct || 0) / 100)
     return sum + (invested && h.annual_yield_pct > 0 ? invested * h.annual_yield_pct / 100 / 12 : 0)
   }, 0)
+
+  // The displayed projection is the slider projection when available, and
+  // falls back to the base scan projection. Every access is guarded, so a
+  // missing dividend payload can never crash this tab again.
+  const display = projData || divData
+  const assumptions = display?.projection_assumptions
+  const goalLabel = g => (g ? `${g.month_label} (Year ${g.year})` : 'Not in 10 years')
+  const incomeAt = (snaps, month) => {
+    if (!snaps || snaps.length === 0) return null
+    const exact = snaps.find(s => s.month === month)
+    if (exact) return exact.monthly_income
+    const before = snaps.filter(s => s.month <= month)
+    return (before[before.length - 1] || snaps[snaps.length - 1]).monthly_income
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -229,13 +286,23 @@ export default function IncomeTab() {
         </div>
       </div>
 
-      {error && (
+      {scanRunning && (
+        <div style={{ background: '#1a2744', border: `1px solid ${C.blue}`, borderRadius: '10px', padding: '16px', color: C.blue }}>
+          Scan running in the background. Your last saved results will show below once they are ready. Try Refresh in a moment.
+        </div>
+      )}
+      {divError && !scanRunning && (
         <div style={{ background: '#2d1515', border: `1px solid ${C.red}`, borderRadius: '10px', padding: '16px', color: C.red }}>
-          {error}
+          Dividend data: {divError}
+        </div>
+      )}
+      {cefError && !scanRunning && (
+        <div style={{ background: '#2d1515', border: `1px solid ${C.red}`, borderRadius: '10px', padding: '16px', color: C.red }}>
+          CEF data: {cefError}
         </div>
       )}
 
-      {loading && !divData && (
+      {loading && !divData && !cefData && (
         <div style={{ textAlign: 'center', padding: '60px', color: C.muted }}>
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
           <div>Loading income data...</div>
@@ -253,19 +320,57 @@ export default function IncomeTab() {
         </div>
       )}
 
-      {/* Path to $1,000/month projection */}
-      {divData.projection_assumptions && (
+      {/* Path to $1,000/month projection, driven by the slider */}
+      {display?.projection_assumptions && (
         <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '20px' }}>
-          <h2 style={{ fontSize: '17px', fontWeight: 800, color: C.text, margin: '0 0 12px' }}>Path to $1,000/month</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(165px, 1fr))', gap: '12px' }}>
-            <StatBox label="Base case goal" value={divData.reached_goal_at ? `${divData.reached_goal_at.month_label} (${divData.reached_goal_at.year})` : 'Not in 10 years'} color={C.green} />
-            <StatBox label="Bear case goal" value={divData.reached_goal_at_bear ? `${divData.reached_goal_at_bear.month_label} (${divData.reached_goal_at_bear.year})` : 'Not in 10 years'} color={C.yellow} />
-            <StatBox label="Mo. income at 10y (base)" value={fmt$d(divData.projection?.[divData.projection.length - 1]?.monthly_income)} color={C.green} />
-            <StatBox label="Mo. income at 10y (bear)" value={fmt$d(divData.projection_bear?.[divData.projection_bear.length - 1]?.monthly_income)} color={C.yellow} />
-          </div>
-          <p style={{ fontSize: '12px', color: C.muted, margin: '12px 0 0', lineHeight: 1.5 }}>
-            10-year projection. Starting yield {divData.projection_assumptions.starting_yield_pct}%, dividend growth {divData.projection_assumptions.base_dividend_growth_pct}% base / {divData.projection_assumptions.bear_dividend_growth_pct}% bear, ${divData.projection_assumptions.monthly_contribution}/month added. {divData.projection_assumptions.excluded_note}
+          <h2 style={{ fontSize: '17px', fontWeight: 800, color: C.text, margin: '0 0 4px' }}>Path to $1,000/month, then $2,000/month</h2>
+          <p style={{ fontSize: '12px', color: C.muted, margin: '0 0 16px' }}>
+            Move the slider to see what a different monthly contribution does. Projections, not guarantees.
           </p>
+
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+              <label style={{ fontSize: '13px', fontWeight: 700, color: C.text }}>Monthly contribution</label>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: C.green }}>{fmt$(monthly)} / month</span>
+            </div>
+            <input
+              type="range" min={100} max={2000} step={50} value={monthly}
+              onChange={e => setMonthly(Number(e.target.value))}
+              style={{ width: '100%', accentColor: '#48bb78' }}
+              aria-label="Monthly contribution"
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: C.muted }}>
+              <span>$100 / month</span>
+              <span>$2,000 / month</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(165px, 1fr))', gap: '12px' }}>
+            <StatBox label="Mo. income at 1y (base)" value={fmt$d(incomeAt(display?.projection, 12))} color={C.green} />
+            <StatBox label="Mo. income at 5y (base)" value={fmt$d(incomeAt(display?.projection, 60))} color={C.green} />
+            <StatBox label="Mo. income at 10y (base)" value={fmt$d(incomeAt(display?.projection, 120))} color={C.green} />
+            <StatBox label="Mo. income at 10y (bear)" value={fmt$d(incomeAt(display?.projection_bear, 120))} color={C.yellow} />
+            <StatBox label="$1,000/mo goal (base)" value={goalLabel(display?.reached_goal_at)} color={C.green} />
+            <StatBox label="$2,000/mo goal (base)" value={goalLabel(display?.reached_goal_at_2000)} color={C.green} />
+            <StatBox label="$1,000/mo goal (bear)" value={goalLabel(display?.reached_goal_at_bear)} color={C.yellow} />
+            <StatBox label="$2,000/mo goal (bear)" value={goalLabel(display?.reached_goal_at_bear_2000)} color={C.yellow} />
+          </div>
+          {projLoading && <p style={{ fontSize: '12px', color: C.muted, margin: '12px 0 0' }}>Updating projection...</p>}
+          <p style={{ fontSize: '12px', color: C.muted, margin: '12px 0 0', lineHeight: 1.5 }}>
+            10-year projection. Starting yield {assumptions?.starting_yield_pct}%, dividend growth {assumptions?.base_dividend_growth_pct}% base / {assumptions?.bear_dividend_growth_pct}% bear, ${assumptions?.monthly_contribution}/month added. {assumptions?.excluded_note} Projections assume the same portfolio and yields as the scan above, and are not guarantees.
+          </p>
+
+          {portfolio.length > 0 && (
+            <div style={{ marginTop: '16px', borderTop: `1px solid ${C.bdr}`, paddingTop: '12px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: C.text, marginBottom: '8px' }}>Where the {fmt$(monthly)} / month goes</div>
+              {portfolio.map(h => (
+                <div key={h.ticker} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', color: C.sub, padding: '3px 0' }}>
+                  <span><b style={{ color: C.text }}>{h.ticker}</b> {h.name} ({h.allocation_pct}% at {fmtP(h.annual_yield_pct)} yield)</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>{fmt$d(monthly * (h.allocation_pct || 0) / 100)} / mo</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -302,7 +407,7 @@ export default function IncomeTab() {
         </div>
       )}
 
-      {!loading && !divData && !error && (
+      {!loading && !divData && !cefData && !divError && !cefError && (
         <div style={{ textAlign: 'center', padding: '40px', color: C.muted }}>
           No income data. Click Refresh to run a scan.
         </div>

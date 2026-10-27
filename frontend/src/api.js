@@ -115,6 +115,8 @@ export const api = {
   dividendPath: {
     recommend: (startCap = 61000, weeklyDca = 500) =>
       request(`/api/dividend-path/recommend?starting_capital=${startCap}&weekly_dca=${weeklyDca}`),
+    project: (startCap = 61000, monthly = 500) =>
+      request(`/api/dividend-path/project?starting_capital=${startCap}&monthly_contribution=${monthly}`),
     refresh: (startCap = 61000, weeklyDca = 500) =>
       request(`/api/dividend-path/refresh?starting_capital=${startCap}&weekly_dca=${weeklyDca}`, { method: 'POST' }),
   },

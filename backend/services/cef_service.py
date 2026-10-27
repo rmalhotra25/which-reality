@@ -7,18 +7,25 @@ Score (0-100):
   Dividend Streak    : 20 pts  (months of consistent monthly distributions)
   Yield Momentum     : 10 pts  (yield rising vs 6 months ago — discount widening)
 
-Cache TTL: 4 hours (/tmp/cache_cef_scan.json)
+Cache: persistent scan_cache table in the app database (Postgres on Render,
+SQLite locally), 4-hour TTL. The old /tmp file cache was wiped on every
+Render redeploy, so the Income tab timed out after a deploy (Oct 27 2026).
 """
-import json
 import logging
-import os
 import time
 from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-_CACHE_FILE = "/tmp/cache_cef_scan.json"
 _CACHE_TTL = 4 * 3600
+_CACHE_KEY = "cef_scan"
+
+from services.scan_cache import get_cache, set_cache
+
+
+def peek_cached() -> dict | None:
+    """Return the cached CEF scan result, or None."""
+    return get_cache(_CACHE_KEY, _CACHE_TTL)
 
 _CEF_UNIVERSE = [
     # PIMCO income
@@ -241,32 +248,10 @@ def analyze_cef(ticker: str) -> dict:
     }
 
 
-def _cache_read() -> dict | None:
-    try:
-        if not os.path.exists(_CACHE_FILE):
-            return None
-        with open(_CACHE_FILE) as f:
-            data = json.load(f)
-        if time.time() - data.get("cached_at", 0) > _CACHE_TTL:
-            return None
-        return data
-    except Exception:
-        return None
-
-
-def _cache_write(data: dict) -> None:
-    try:
-        data["cached_at"] = time.time()
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.warning("CEF cache write failed: %s", e)
-
-
 def scan_universe(force: bool = False) -> dict:
-    """Scan all CEFs and return sorted results. Uses 4-hour file cache."""
+    """Scan all CEFs and return sorted results. Uses 4-hour persistent cache."""
     if not force:
-        cached = _cache_read()
+        cached = peek_cached()
         if cached:
             logger.info("CEF scan: returning cached results")
             return cached
@@ -292,6 +277,6 @@ def scan_universe(force: bool = False) -> dict:
         "all": results,
         "errors": errors,
     }
-    _cache_write(output)
+    set_cache(_CACHE_KEY, output)
     logger.info("CEF scan complete: %d scored, %d errors", len(results), len(errors))
     return output

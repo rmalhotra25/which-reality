@@ -292,6 +292,33 @@ def run_challenge_snapshot_job() -> None:
         db.close()
 
 
+def run_challenge_alerts_job() -> None:
+    """Generate Challenge alerts after the alert engine has run.
+
+    The 17:15 snapshot generates alerts from the setups fired up to
+    yesterday, because the alert engine does not run until 17:30. This
+    17:35 pass lets the same evening's LIVE setups alert the same day.
+    Dedupe keys in generate_challenge_alerts make the second pass safe:
+    alerts created at 17:15 are not recreated here. No snapshot is taken
+    in this job, so the 17:15 snapshot time is unchanged.
+    """
+    from database import SessionLocal
+
+    logger.info("Scheduler: running challenge alerts after alert engine")
+    db = SessionLocal()
+    try:
+        from services import challenge_service
+        if challenge_service.get_account(db) is None:
+            logger.info("Scheduler: challenge account not initialized -- skipping")
+            return
+        created = challenge_service.generate_challenge_alerts(db)
+        logger.info("Scheduler: challenge alerts after engine complete: %d new", created)
+    except Exception as e:
+        logger.error("Challenge alerts after engine failed: %s", e, exc_info=True)
+    finally:
+        db.close()
+
+
 def refresh_call_suggestions() -> None:
     from database import SessionLocal
     from services.wheel_engine import WheelEngine
@@ -414,6 +441,17 @@ def start_scheduler() -> BackgroundScheduler:
         run_challenge_snapshot_job,
         CronTrigger(day_of_week="mon-fri", hour=17, minute=15, timezone=EASTERN),
         id="challenge_snapshot_daily",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Daily 17:35 ET -- Challenge alerts after the alert engine (17:30),
+    # so the same evening's LIVE setups can alert the same day instead of
+    # waiting for the next 17:15 snapshot. Dedupe makes this pass safe.
+    scheduler.add_job(
+        run_challenge_alerts_job,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=35, timezone=EASTERN),
+        id="challenge_alerts_after_engine",
         replace_existing=True,
         misfire_grace_time=1800,
     )

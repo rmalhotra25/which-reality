@@ -399,7 +399,15 @@ def get_financials(ticker: str) -> dict:
 
 
 def get_news(ticker: str | None = None, limit: int = 5) -> list[dict]:
-    """Recent news articles, returned as plain dicts."""
+    """Recent news articles, returned as plain dicts.
+
+    Each dict carries title, published_at (ISO string, or None when
+    Polygon gives no timestamp), publisher, and url. Callers that
+    only need a headline still read title, as before. A title alone
+    cannot prove freshness or source, so callers that use news as
+    evidence must check published_at and publisher, and treat an
+    article with no timestamp as unverifiable, not as fresh.
+    """
     c = _client()
     kwargs = {"limit": limit, "order": "desc"}
     if ticker:
@@ -407,7 +415,17 @@ def get_news(ticker: str | None = None, limit: int = 5) -> list[dict]:
     articles = c.list_ticker_news(**kwargs)
     result = []
     for n in (articles or []):
-        result.append({"title": getattr(n, "title", "") or ""})
+        published = getattr(n, "published_utc", "") or ""
+        publisher = ""
+        pub = getattr(n, "publisher", None)
+        if pub is not None:
+            publisher = getattr(pub, "name", "") or ""
+        result.append({
+            "title": getattr(n, "title", "") or "",
+            "published_at": published or None,
+            "publisher": publisher or None,
+            "url": getattr(n, "article_url", "") or "",
+        })
         if len(result) >= limit:
             break
     return result

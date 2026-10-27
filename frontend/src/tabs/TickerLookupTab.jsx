@@ -65,6 +65,35 @@ const S = {
     background: '#0f1520', border: '1px solid #2b6cb0', borderRadius: '8px',
     padding: '12px 14px', fontSize: '13px', color: '#a0aec0', lineHeight: 1.6, marginTop: '8px',
   },
+  verdictCard: (tone) => ({
+    background: tone === 'buy' ? '#12261a' : '#1d1a12',
+    border: tone === 'buy' ? '1px solid #276749' : '1px solid #975a16',
+    borderRadius: '12px', padding: '20px',
+  }),
+  verdictBig: (tone) => ({
+    fontSize: '30px', fontWeight: 800, letterSpacing: '0.01em',
+    color: tone === 'buy' ? '#68d391' : '#f6e05e', lineHeight: 1.2,
+  }),
+  verdictReason: { fontSize: '15px', color: '#e2e8f0', lineHeight: 1.5, marginTop: '8px' },
+  verdictList: { fontSize: '13px', color: '#a0aec0', lineHeight: 1.7, margin: '10px 0 0', paddingLeft: '18px' },
+  verdictNote: { fontSize: '13px', color: '#a0aec0', lineHeight: 1.5, marginTop: '12px' },
+  optionRow: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: '12px', marginTop: '16px',
+  },
+  optionBox: {
+    background: '#131825', border: '1px solid #2d3748', borderRadius: '10px', padding: '14px',
+  },
+  optionTitle: (tone) => ({
+    fontSize: '17px', fontWeight: 800,
+    color: tone === 'buy' ? '#68d391' : tone === 'sell' ? '#68d391' : '#a0aec0',
+  }),
+  optionLine: { fontSize: '13px', color: '#e2e8f0', lineHeight: 1.6, marginTop: '6px' },
+  optionSub: { fontSize: '12px', color: '#718096', lineHeight: 1.5, marginTop: '6px' },
+  details: {
+    background: '#131825', border: '1px solid #2d3748', borderRadius: '10px', padding: '16px',
+  },
+  summary: { fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#a0aec0', textTransform: 'uppercase', cursor: 'pointer' },
   note: { fontSize: '12px', color: '#718096', lineHeight: 1.5 },
 }
 
@@ -135,10 +164,12 @@ export default function TickerLookupTab() {
   return (
     <div style={S.root}>
       <div style={S.banner}>
-        Ticker Lookup is a query. It runs the same rule registry check the alert engine runs,
-        for one ticker, at the data timestamp shown. Same ticker, same data timestamp, same
-        answer as the live run would give. No alert fires, no journal row is created, no
-        notification is sent, and a passing setup is a rule result, not a trade recommendation.
+        Type a ticker, get a clear answer first: Buy the stock or Don't Buy the stock, Sell the
+        Put or Don't Sell a Put, Buy the Call or Don't Buy the Call. The answer comes from the
+        same rule registry check the alert engine runs, for one ticker, at the data timestamp
+        shown, plus the latest company news and the next earnings date. No alert fires, no
+        journal row is created, no notification is sent. The full rule check and the full
+        option chain are below, closed by default, for anyone who wants the audit trail.
       </div>
 
       <form onSubmit={runLookup} style={S.form}>
@@ -169,8 +200,101 @@ export default function TickerLookupTab() {
         </div>
       )}
 
-      {result && (
+      {result && result.verdict && (
         <>
+          <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : 'hold')}>
+            <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : 'hold')}>
+              {result.verdict.stock.label}
+            </div>
+            <div style={S.verdictReason}>{result.verdict.stock.reason}</div>
+            <div style={{ fontSize: '15px', color: '#e2e8f0', marginTop: '6px' }}>
+              {result.ticker} at ${val(result.price)}
+              {result.verdict.stock.invalidation_price != null && (
+                <span> | Wrong if it closes below ${val(result.verdict.stock.invalidation_price)}</span>
+              )}
+            </div>
+            <ul style={S.verdictList}>
+              {result.verdict.stock.reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+            <div style={S.verdictNote}>What would change this: {result.verdict.stock.what_would_change}</div>
+            <div style={S.verdictNote}>{result.verdict.stock.positive_note}</div>
+
+            <div style={S.optionRow}>
+              <div style={S.optionBox}>
+                <div style={S.optionTitle(result.verdict.put.decision === 'sell' ? 'sell' : 'hold')}>
+                  {result.verdict.put.label}
+                </div>
+                <div style={S.optionLine}>{result.verdict.put.reason}</div>
+                {result.verdict.put.decision === 'sell' && (
+                  <>
+                    <div style={S.optionSub}>
+                      Strike ${val(result.verdict.put.strike)} | Expiry {val(result.verdict.put.expiry)} ({val(result.verdict.put.dte)} days) |
+                      Premium ${val(result.verdict.put.premium_per_contract)} per contract (bid)
+                    </div>
+                    <div style={S.optionSub}>
+                      Breakeven ${val(result.verdict.put.breakeven)} | You buy at ${val(result.verdict.put.assignment_price)} if assigned |
+                      Most you can lose ${val(result.verdict.put.max_loss_per_contract)} per contract
+                    </div>
+                    <div style={S.optionSub}>{result.verdict.put.why}</div>
+                  </>
+                )}
+              </div>
+              <div style={S.optionBox}>
+                <div style={S.optionTitle(result.verdict.call.decision === 'buy' ? 'buy' : 'hold')}>
+                  {result.verdict.call.label}
+                </div>
+                <div style={S.optionLine}>{result.verdict.call.reason}</div>
+                {result.verdict.call.decision === 'buy' && (
+                  <>
+                    <div style={S.optionSub}>
+                      Strike ${val(result.verdict.call.strike)} | Expiry {val(result.verdict.call.expiry)} ({val(result.verdict.call.dte)} days) |
+                      Premium ${val(result.verdict.call.premium_per_contract)} per contract ({val(result.verdict.call.premium_source)})
+                    </div>
+                    <div style={S.optionSub}>
+                      Breakeven ${val(result.verdict.call.breakeven)} | Most you can lose ${val(result.verdict.call.max_loss_per_contract)} per contract |
+                      Wrong if the stock closes below ${val(result.verdict.call.invalidation_price)}
+                    </div>
+                    <div style={S.optionSub}>{result.verdict.call.why}</div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sectionLabel}>Why, in plain language</div>
+            <div style={{ ...S.note, marginTop: '6px' }}>
+              <strong style={{ color: '#e2e8f0' }}>What supported this: </strong>
+              {result.verdict.conviction.supports.length > 0
+                ? result.verdict.conviction.supports.join(' ')
+                : 'Nothing supported a buy today.'}
+            </div>
+            <div style={{ ...S.note, marginTop: '6px' }}>
+              <strong style={{ color: '#e2e8f0' }}>What was against it: </strong>
+              {result.verdict.conviction.against.length > 0
+                ? result.verdict.conviction.against.join(' ')
+                : 'Nothing was against it.'}
+            </div>
+            <div style={{ ...S.note, marginTop: '6px' }}>
+              <strong style={{ color: '#e2e8f0' }}>What was missing: </strong>
+              {result.verdict.conviction.missing.join(' ')}
+            </div>
+            <div style={{ ...S.note, marginTop: '10px' }}>
+              <strong style={{ color: '#e2e8f0' }}>News: </strong>
+              {result.news ? result.news.note : 'No fresh company news could be verified.'}
+              {result.news && result.news.latest && result.news.latest.published_date && (
+                <span> ({val(result.news.latest.published_date)}, {val(result.news.latest.publisher)})</span>
+              )}
+            </div>
+            <div style={{ ...S.note, marginTop: '6px' }}>
+              <strong style={{ color: '#e2e8f0' }}>Earnings: </strong>
+              {result.verdict.earnings.anticipated_date
+                ? `Next report ${val(result.verdict.earnings.anticipated_date)}, ${val(result.verdict.earnings.days_away)} days away. `
+                : 'Next earnings date is unknown. '}
+              No consensus estimate and no reported beat or miss is available, so nothing is guessed there.
+            </div>
+          </div>
+
           <div style={S.card}>
             <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline', flexWrap: 'wrap' }}>
               <span style={S.tickerBig}>{result.ticker}</span>
@@ -223,8 +347,9 @@ export default function TickerLookupTab() {
             <div style={{ ...S.note, marginTop: '10px' }}>{result.quality.note}</div>
           </div>
 
-          <div style={S.card}>
-            <div style={S.sectionLabel}>Rule registry check</div>
+          <details style={S.details}>
+            <summary style={S.summary}>Rule registry check, full detail (closed by default)</summary>
+            <div style={{ marginTop: '12px' }}>
             {result.setups.map((s) => (
               <div key={s.setup_key} style={{ marginBottom: '16px' }}>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -268,10 +393,12 @@ export default function TickerLookupTab() {
                 )}
               </div>
             ))}
-          </div>
+            </div>
+          </details>
 
-          <div style={S.card}>
-            <div style={S.sectionLabel}>Listed option chain, nearest 21 DTE</div>
+          <details style={S.details}>
+            <summary style={S.summary}>Listed option chain, nearest 21 DTE (closed by default)</summary>
+            <div style={{ marginTop: '12px' }}>
             {result.chain.available ? (
               <>
                 <div style={{ ...S.note, marginBottom: '10px' }}>
@@ -289,7 +416,8 @@ export default function TickerLookupTab() {
                 named reason instead of a guessed price.
               </div>
             )}
-          </div>
+            </div>
+          </details>
 
           <div style={S.card}>
             <div style={S.sectionLabel}>

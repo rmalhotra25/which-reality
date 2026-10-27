@@ -172,6 +172,41 @@ def _earnings_days(ticker: str) -> Optional[int]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Earnings gate (fail-closed, W2)
+# ---------------------------------------------------------------------------
+# A setup must never fire when the next earnings date is unknown. The old
+# code treated None as "no earnings within 5 days", so a Finnhub failure
+# green-lit a trade the rule would have blocked. Unknown now blocks, the
+# same as the SPY gate below: a missing feed is a suppressed candidate
+# with a reason, never a pass.
+EARNINGS_BLOCK_DAYS = 5
+EARNINGS_UNKNOWN_REASON = "earnings_unknown"
+
+
+def _earnings_ok(earnings_days_val: Optional[int]) -> bool:
+    """True only when an earnings date is known and more than 5 days away."""
+    return earnings_days_val is not None and earnings_days_val > EARNINGS_BLOCK_DAYS
+
+
+def _earnings_gate(earnings_days_val: Optional[int]) -> str:
+    """Named gate outcome: pass, block_within_5d, or block_unknown."""
+    if earnings_days_val is None:
+        return "block_unknown"
+    if earnings_days_val <= EARNINGS_BLOCK_DAYS:
+        return "block_within_5d"
+    return "pass"
+
+
+def _earnings_cond(cond: dict, earnings_days_val: Optional[int]) -> dict:
+    """Record the fail-closed earnings check on a conditions dict."""
+    cond["earnings_days"] = earnings_days_val
+    cond["no_earnings_within_5d"] = _earnings_ok(earnings_days_val)
+    cond["earnings_unknown"] = earnings_days_val is None
+    cond["earnings_gate"] = _earnings_gate(earnings_days_val)
+    return cond
+
+
 def _iv_percentile(db, ticker: str) -> Optional[float]:
     try:
         from services.iv_snapshot_service import get_iv_percentile
@@ -400,10 +435,9 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
     quiet_volume = (vol20 is not None and vol < vol20)
     cond["quiet_volume"] = quiet_volume
 
-    # No earnings within 5 days
-    no_earnings = (earnings_days_val is None or earnings_days_val > 5)
-    cond["earnings_days"] = earnings_days_val
-    cond["no_earnings_within_5d"] = no_earnings
+    # No earnings within 5 days (fail-closed: unknown blocks)
+    no_earnings = _earnings_ok(earnings_days_val)
+    _earnings_cond(cond, earnings_days_val)
 
     # SPY above-200-day market gate (fail-closed: unknown blocks)
     spy_ok = (spy_gate is True)
@@ -424,6 +458,16 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
     )
     cond["would_fire_without_spy_gate"] = fires_without_gate
     cond["spy_gate_blocked"] = bool(fires_without_gate and not spy_ok)
+    cond["would_fire_without_earnings_gate"] = (
+        near_ma
+        and ma200_rising
+        and cond["rsi_lt_55"]
+        and rsi_was_high
+        and quiet_volume
+    )
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     fires = fires_without_gate and spy_ok
     return fires, cond
@@ -470,10 +514,15 @@ def _eval_premium_at_support(ind: dict, earnings_days_val: Optional[int], iv_pct
     cond["iv_high"] = iv_high
     cond["iv_source"] = iv_source
 
-    # No earnings within 5 days
-    no_earnings = (earnings_days_val is None or earnings_days_val > 5)
-    cond["earnings_days"] = earnings_days_val
-    cond["no_earnings_within_5d"] = no_earnings
+    # No earnings within 5 days (fail-closed: unknown blocks)
+    no_earnings = _earnings_ok(earnings_days_val)
+    _earnings_cond(cond, earnings_days_val)
+    cond["would_fire_without_earnings_gate"] = (
+        near_ma50 and ma200_rising and iv_high
+    )
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     fires = near_ma50 and ma200_rising and iv_high and no_earnings
     return fires, cond
@@ -524,10 +573,15 @@ def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int],
     cond["ma50_rising"] = ma50_rising
     cond["ma50_lag20"] = round(ma50_lag20, 2) if ma50_lag20 else None
 
-    # No earnings within 5 days
-    no_earnings = (earnings_days_val is None or earnings_days_val > 5)
-    cond["earnings_days"] = earnings_days_val
-    cond["no_earnings_within_5d"] = no_earnings
+    # No earnings within 5 days (fail-closed: unknown blocks)
+    no_earnings = _earnings_ok(earnings_days_val)
+    _earnings_cond(cond, earnings_days_val)
+    cond["would_fire_without_earnings_gate"] = (
+        above_55d_high and vol_confirmed and above_ma50 and ma50_rising
+    )
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     # SPY above-200-day market gate (fail-closed: unknown blocks)
     spy_ok = (spy_gate is True)
@@ -558,7 +612,8 @@ def _eval_oversold_bounce(ind: dict, earnings_days_val: Optional[int]) -> tuple[
     rsi_oversold = (rsi is not None and rsi < 30)
     above_ma200 = (ma200 is not None and p > ma200)
     ma200_rising = (ma200 is not None and ma200_lag is not None and ma200 > ma200_lag)
-    no_earnings = (earnings_days_val is None or earnings_days_val > 5)
+    # No earnings within 5 days (fail-closed: unknown blocks)
+    no_earnings = _earnings_ok(earnings_days_val)
 
     cond["rsi"] = round(rsi, 1) if rsi is not None else None
     cond["rsi_lt_30"] = rsi_oversold
@@ -566,8 +621,13 @@ def _eval_oversold_bounce(ind: dict, earnings_days_val: Optional[int]) -> tuple[
     cond["ma200"] = round(ma200, 2) if ma200 else None
     cond["above_ma200"] = above_ma200
     cond["ma200_rising"] = ma200_rising
-    cond["earnings_days"] = earnings_days_val
-    cond["no_earnings_within_5d"] = no_earnings
+    _earnings_cond(cond, earnings_days_val)
+    cond["would_fire_without_earnings_gate"] = (
+        rsi_oversold and above_ma200 and ma200_rising
+    )
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     fires = rsi_oversold and above_ma200 and ma200_rising and no_earnings
     return fires, cond
@@ -592,7 +652,8 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
     rsi_turning_up = (rsi is not None and 40 <= rsi <= 55)
     bullish_engulf = ind.get("bullish_engulf", False)
     reversal = rsi_turning_up or bullish_engulf
-    no_earnings = (earnings_days_val is None or earnings_days_val > 5)
+    # No earnings within 5 days (fail-closed: unknown blocks)
+    no_earnings = _earnings_ok(earnings_days_val)
 
     cond["price"] = round(p, 2)
     cond["ma20"] = round(ma20, 2) if ma20 else None
@@ -603,8 +664,13 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
     cond["rsi_turning_up"] = rsi_turning_up
     cond["bullish_engulf"] = bool(bullish_engulf)
     cond["reversal_confirmed"] = reversal
-    cond["earnings_days"] = earnings_days_val
-    cond["no_earnings_within_5d"] = no_earnings
+    _earnings_cond(cond, earnings_days_val)
+    cond["would_fire_without_earnings_gate"] = (
+        in_uptrend and near_ma and reversal
+    )
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     fires = in_uptrend and near_ma and reversal and no_earnings
     return fires, cond
@@ -636,10 +702,20 @@ def _eval_post_earnings_drift(ind: dict, earnings_days_val: Optional[int]) -> tu
     cond["iv_crushed_approx"] = iv_crushed
     cond["earnings_beat_guidance_raised"] = "not_checked_requires_news_feed"
     cond["note"] = "earnings beat and guidance check requires live news data; not evaluated here"
+    # Earnings gate (fail-closed): this setup previously ignored the
+    # earnings calendar entirely, so a Finnhub failure could not even be
+    # seen. Unknown earnings date now blocks, and earnings within 5 days
+    # blocks, the same as the other five evaluators.
+    no_earnings = _earnings_ok(earnings_days_val)
+    _earnings_cond(cond, earnings_days_val)
+    cond["would_fire_without_earnings_gate"] = gap_held and iv_crushed
+    cond["earnings_gate_blocked"] = bool(
+        cond["would_fire_without_earnings_gate"] and not no_earnings
+    )
 
     # This setup is intentionally conservative: only shadow until a real
     # news feed validates beat+guidance.
-    fires = gap_held and iv_crushed
+    fires = gap_held and iv_crushed and no_earnings
     return fires, cond
 
 
@@ -955,7 +1031,10 @@ def _evaluate_setup(setup_row, db, account_equity: float | None = None,
             if not fires:
                 # A setup that would have fired but for the SPY gate is
                 # recorded as suppressed, so the block is visible instead
-                # of silently dropping the candidate.
+                # of silently dropping the candidate. Same for the
+                # earnings gate: a would-fire candidate blocked because
+                # the earnings date is unknown, or earnings are within
+                # 5 days, is recorded with the named reason.
                 if cond.get("spy_gate_blocked"):
                     if spy_gate is False:
                         pct = spy_vs_200ma_pct
@@ -968,6 +1047,24 @@ def _evaluate_setup(setup_row, db, account_equity: float | None = None,
                         reason = (
                             "SPY trend unknown (market data missing or stale); "
                             "market gate blocks new longs"
+                        )
+                    suppressed.append(_build_alert(
+                        key, setup_row.name, setup_row.status,
+                        ticker, ind, cond, db,
+                        is_suppressed=True, suppressed_reason=reason,
+                    ))
+                elif cond.get("earnings_gate_blocked"):
+                    if cond.get("earnings_gate") == "block_unknown":
+                        reason = (
+                            "earnings_unknown: earnings date unknown "
+                            "(no date on the calendar); earnings gate "
+                            "blocks the trade"
+                        )
+                    else:
+                        reason = (
+                            f"earnings within 5 days: earnings in "
+                            f"{cond.get('earnings_days')} days; earnings "
+                            f"gate blocks trades within 5 days of earnings"
                         )
                     suppressed.append(_build_alert(
                         key, setup_row.name, setup_row.status,
@@ -1000,6 +1097,52 @@ def _evaluate_setup(setup_row, db, account_equity: float | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Dedupe and cooldown (W1)
+# ---------------------------------------------------------------------------
+# One alert per setup + ticker per calendar day (UTC signal date). A second
+# run the same day inserts nothing for the same setup and ticker; a
+# different setup, or the same setup on a new day, still fires. A closed
+# (settled) alert does not block a re-fire: the price re-entering after
+# invalidation is a new signal. The cooldown is the calendar day itself,
+# so ALERT_DEDUPE_COOLDOWN_DAYS is 1 and the dedupe key carries the date.
+ALERT_DEDUPE_COOLDOWN_DAYS = 1
+
+
+def _dedupe_key(setup_key: str, ticker: str, signal_date: date) -> str:
+    """Dedupe key for one alert: setup:ticker:signal-date."""
+    return f"{setup_key}:{ticker}:{signal_date.isoformat()}"
+
+
+def _open_alert_exists(db, setup_key: str, ticker: str, signal_date: date) -> bool:
+    """True when an open, non-suppressed alert for this setup and ticker
+    already fired on signal_date. The session is flushed first so rows
+    added earlier in this run are visible even when the session was
+    created with autoflush off."""
+    from models.setup_alert import SetupAlert
+    try:
+        db.flush()
+    except Exception:
+        pass
+    day_start = datetime(
+        signal_date.year, signal_date.month, signal_date.day, tzinfo=timezone.utc
+    )
+    day_end = day_start + timedelta(days=ALERT_DEDUPE_COOLDOWN_DAYS)
+    return (
+        db.query(SetupAlert)
+        .filter(
+            SetupAlert.setup_key == setup_key,
+            SetupAlert.ticker == ticker,
+            SetupAlert.is_suppressed.is_(False),
+            SetupAlert.is_open.is_(True),
+            SetupAlert.fired_at >= day_start,
+            SetupAlert.fired_at < day_end,
+        )
+        .first()
+        is not None
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main run function (called by scheduler)
 # ---------------------------------------------------------------------------
 
@@ -1027,6 +1170,8 @@ def run_alert_engine(db) -> dict:
     total_alerts = 0
     total_shadow = 0
     total_suppressed = 0
+    total_duplicates = 0
+    duplicate_keys: list[str] = []
     all_errors = []
     fired_at = datetime.now(timezone.utc)
 
@@ -1039,6 +1184,23 @@ def run_alert_engine(db) -> dict:
         all_errors.extend(result["errors"])
 
         for alert_dict in result["alerts"] + result["suppressed"]:
+            if not alert_dict["is_suppressed"]:
+                # Dedupe (W1): one open alert per setup + ticker per day.
+                # A second run the same day inserts nothing for the same
+                # setup and ticker. The skip is counted and logged, not
+                # silent: it is in the run summary and run status.
+                key = _dedupe_key(
+                    alert_dict["setup_key"], alert_dict["ticker"],
+                    fired_at.date(),
+                )
+                if _open_alert_exists(
+                    db, alert_dict["setup_key"], alert_dict["ticker"],
+                    fired_at.date(),
+                ):
+                    total_duplicates += 1
+                    duplicate_keys.append(key)
+                    logger.info("alert_engine: duplicate suppressed: %s", key)
+                    continue
             row = SetupAlert(
                 setup_key=alert_dict["setup_key"],
                 setup_name=alert_dict["setup_name"],
@@ -1111,6 +1273,8 @@ def run_alert_engine(db) -> dict:
         "alerts_fired": total_alerts,
         "shadow_hits": total_shadow,
         "suppressed": total_suppressed,
+        "duplicates_suppressed": total_duplicates,
+        "duplicate_keys": duplicate_keys[:50],
         "errors": len(all_errors),
         "duration_seconds": duration,
     }

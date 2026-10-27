@@ -5,16 +5,15 @@ For a given ticker:
   1. Fetches fundamentals + beta from Finnhub
   2. Derives CAPM-based WACC from beta
   3. Computes reverse DCF (implied growth rate priced in at current market cap)
-  4. Calls Claude to set bear / base / bull scenario parameters based on the
-     company's actual competitive position and industry dynamics
+  4. Asks Claude for commentary only (reasoning and confidence),
+     never for scenario parameters. A commentary failure changes
+     nothing: the mechanical scenarios still run.
   5. Runs forward 10-year FCF DCF and returns per-share price targets
 
 This is the same model used in the discovery picks but with a dedicated
 Claude call focused entirely on scenario-setting for one company.
 """
-import json
 import logging
-import re
 
 from services.finnhub_client import get_basic_financials, get_company_profile
 from services.discovery_engine import _wacc_from_beta, _reverse_dcf, _run_dcf
@@ -100,101 +99,33 @@ def _build_fundamentals(ticker: str) -> dict | None:
     }
 
 
-def _claude_dcf_params(d: dict, implied_growth_pct: float, wacc_pct: float, fcf_0: float = 0.0) -> dict:
-    """
-    Ask Claude to set bull / base / bear scenario parameters for this specific
-    company based on industry knowledge, competitive position, and current metrics.
-    Returns a dict of scenario params or {} on failure.
+
+
+def _claude_dcf_commentary(d: dict) -> dict:
+    """Ask Claude for DCF commentary only, never for numbers.
+
+    Returns {"reasoning": ..., "confidence": ...} or {} on failure.
+    Scenario parameters are mechanical; this text is labelled as
+    commentary in the output and cannot move a price.
     """
     try:
         from services.claude_analyst import ClaudeAnalyst
         analyst = ClaudeAnalyst()
-
-        rev_g = d.get("revenue_growth") or 0
-        rev_q = d.get("revenue_growth_q")
-        accel = ""
-        if rev_q is not None:
-            diff = rev_q - rev_g
-            accel = f" (recent quarter: {round(rev_q, 1)}%, {'accelerating ↑' if diff > 3 else 'decelerating ↓' if diff < -3 else 'stable'})"
-
-        gross_margin_note = d.get("gross_margin_note", "reported")
-
-        profile_str = (
-            f"Company: {d['name']} ({d['ticker']})\n"
-            f"Sector: {d['sector']}\n"
-            f"Market Cap: ${round((d.get('market_cap') or 0) / 1000, 1)}B\n"
-            f"Revenue Growth (TTM): {round(rev_g, 1)}%{accel}\n"
-            f"Gross Margin: {round(d.get('gross_margin') or 0, 1)}%\n"
-            f"gross_margin_data_quality: {gross_margin_note}\n"
-            f"Operating Margin: {round(d.get('operating_margin') or 0, 1)}%\n"
-            f"Net Margin: {round(d.get('net_margin') or 0, 1)}%\n"
-            f"FCF Margin: {round(max((d.get('fcf_margin') or 0) / 100, fcf_0) * 100, 1)}%\n"
-            f"P/E: {round(d.get('pe'), 1) if (d.get('pe') or 0) > 0 else 'n/a'}\n"
-            f"P/S: {round(d.get('ps'), 1) if d.get('ps') else 'n/a'}\n"
-            f"ROE: {round(d.get('roe') or 0, 1)}%\n"
-            f"ROIC: {round(d.get('roic') or 0, 1)}%\n"
-            f"Beta: {round(d.get('beta') or 1, 2)}\n"
-            f"WACC (CAPM): {wacc_pct}%\n"
-            f"Reverse DCF implied growth (priced in): {implied_growth_pct}%/yr\n"
-            f"1-yr price return: {round(d.get('return_1y') or 0, 1)}%"
-        )
-
-        system = (
-            "You are a buy-side equity analyst building a DCF model. "
-            "Your job is to set realistic bear, base, and bull scenario inputs "
-            "based on deep knowledge of the company's competitive position, "
-            "industry dynamics, and comparable companies. "
-            "Do NOT use mechanical multipliers of historical growth. "
-            "Think about: What is the realistic TAM growth? Can this company "
-            "take/defend share? Where will margins land at maturity given "
-            "competition and cost structure? What could go wrong? "
-            "Respond ONLY with a valid JSON object — no prose, no markdown. "
-            "When gross_margin_data_quality indicates the gross margin is unreliable, "
-            "ignore the gross margin field entirely. Derive FCF margin assumptions from "
-            "operating_margin, net_margin, and your knowledge of the sector's typical "
-            "capital structure and capex intensity."
-        )
-
-        user = (
-            f"{profile_str}\n\n"
-            "Set DCF scenario parameters for a 10-year model.\n"
-            "g1 = annual revenue growth rate years 1-5 (decimal, e.g. 0.25 = 25%)\n"
-            "g2 = annual revenue growth rate years 6-10 (decimal)\n"
-            "fcf = steady-state FCF margin by year 10 (decimal)\n"
-            "tg = terminal growth rate after year 10 (typically 0.02-0.035)\n\n"
-            "Constraints: bull > base > bear for g1, g2, and fcf.\n"
-            "Also return:\n"
-            "- reasoning: 2-3 sentences explaining your key assumptions\n"
-            "- confidence: 'high' | 'medium' | 'low' (data quality / predictability)\n"
-            "- platform_lock_in: 'strong' / 'moderate' / 'weak' "
-            "(does this company have strong switching costs or platform lock-in?)\n"
-            "- tam_expanding: 'yes' / 'no' "
-            "(is the TAM expanding rapidly due to a structural shift — AI, energy transition, demographics, etc?)\n"
-            "- network_effects: 'yes' / 'no' "
-            "(does this company benefit from network effects or a proprietary data advantage that compounds with scale?)\n"
-            "- event_risk_discount: float 0.0–0.60. Assess active binary risk events that discount ALL DCF scenarios:\n"
-            "  0.00 = None (normal business risks only)\n"
-            "  0.10 = Low (minor litigation or regulatory uncertainty)\n"
-            "  0.25 = Moderate (significant litigation, active investigation, major integration risk)\n"
-            "  0.40 = High (existential litigation, SEC charges, or forced equity issuance likely)\n"
-            "  0.60 = Severe (near-term solvency risk)\n"
-            "- event_risk_reason: one sentence explanation (empty string if discount is 0.0)\n\n"
-            "Return JSON:\n"
-            '{"bull":{"g1":0.35,"g2":0.18,"fcf":0.32,"tg":0.035},'
-            '"base":{"g1":0.22,"g2":0.12,"fcf":0.26,"tg":0.030},'
-            '"bear":{"g1":0.08,"g2":0.05,"fcf":0.18,"tg":0.020},'
-            '"reasoning":"...","confidence":"medium",'
-            '"platform_lock_in":"moderate","tam_expanding":"yes","network_effects":"no",'
-            '"event_risk_discount":0.0,"event_risk_reason":""}'
-        )
-
-        raw = analyst._call(system, user, max_tokens=1100)
-        clean = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
-        clean = re.sub(r'\n?```$', '', clean.strip()).strip()
-        parsed = json.loads(clean)
-        return parsed if isinstance(parsed, dict) else {}
+        profile = {
+            "ticker": d.get("ticker"),
+            "name": d.get("name"),
+            "sector": d.get("sector"),
+            "revenue_growth_pct": round(d.get("revenue_growth") or 0, 1),
+            "gross_margin_pct": round(d.get("gross_margin") or 0, 1),
+            "operating_margin_pct": round(d.get("operating_margin") or 0, 1),
+            "net_margin_pct": round(d.get("net_margin") or 0, 1),
+            "fcf_margin_pct": round(d.get("fcf_margin") or 0, 1),
+            "pe": round(d.get("pe"), 1) if (d.get("pe") or 0) > 0 else None,
+            "beta": round(d.get("beta") or 1, 2),
+        }
+        return analyst.explain_dcf_commentary(profile) or {}
     except Exception as e:
-        logger.warning("Claude DCF params failed for %s: %s", d.get("ticker"), e)
+        logger.warning("Claude DCF commentary failed for %s: %s", d.get("ticker"), e)
         return {}
 
 
@@ -376,22 +307,23 @@ def analyze(ticker: str) -> dict:
     # Reverse DCF
     implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
 
-    # Claude scenario params — pass fcf_0 so the prompt shows a floor FCF even when Finnhub's field is empty
-    cp = _claude_dcf_params(d, implied_growth_pct, wacc_pct, fcf_0=fcf_0)
-    used_claude = bool(cp and "bull" in cp and "base" in cp and "bear" in cp)
-    if not used_claude:
-        cp = _mechanial_scenarios(d)
+    # Scenario parameters are mechanical only (_mechanial_scenarios,
+    # same inputs every time). Claude is asked for commentary only,
+    # and a commentary failure never changes the DCF prices.
+    cp = _mechanial_scenarios(d)
+    used_claude = False
+    try:
+        commentary = _claude_dcf_commentary(d)
+    except Exception as e:
+        logger.warning("Claude DCF commentary failed for %s: %s", d.get("ticker"), e)
+        commentary = {}
+    scenario_reasoning = commentary.get("reasoning", "")
+    scenario_confidence = commentary.get("confidence", "")
 
-    # Event risk — discount FCF margins and optionally raise WACC
-    event_risk_discount = float(cp.get("event_risk_discount") or 0.0)
-    event_risk_reason = (cp.get("event_risk_reason") or "").strip() or None
-    full_discount = event_risk_discount >= 0.50
-
-    # High event risk raises the discount rate by 1.5pp
-    if event_risk_discount >= 0.40:
-        dr = min(dr + 0.015, 0.15)
-        wacc_pct = round(dr * 100, 1)
-        implied_growth_pct = _reverse_dcf(market_cap, revenue_0, fcf_0, dr)
+    # No event-risk discount: it was a Claude-set number that moved
+    # FCF margins and WACC, so it is out of the verdict math.
+    event_risk_discount = 0.0
+    event_risk_reason = None
 
     scenarios = {
         "bull": dict(g1=cp["bull"]["g1"], g2=cp["bull"]["g2"],
@@ -401,16 +333,6 @@ def analyze(ticker: str) -> dict:
         "bear": dict(g1=cp["bear"]["g1"], g2=cp["bear"]["g2"],
                      fm=cp["bear"]["fcf"], tg=cp["bear"].get("tg", 0.020)),
     }
-
-    # Apply event risk FCF discount: bear gets half unless discount >= 0.50
-    if event_risk_discount > 0:
-        for label in ("bull", "base", "bear"):
-            factor = 1.0 - (event_risk_discount if (label != "bear" or full_discount)
-                            else event_risk_discount * 0.5)
-            scenarios[label]["fm"] = max(0.01, scenarios[label]["fm"] * factor)
-        # Re-clamp ordering after asymmetric discounting
-        scenarios["bear"]["fm"] = min(scenarios["bear"]["fm"], scenarios["base"]["fm"])
-        scenarios["base"]["fm"] = min(scenarios["base"]["fm"], scenarios["bull"]["fm"])
 
     dcf = _run_dcf(revenue_0, fcf_0, dr, scenarios, market_cap)
 
@@ -457,8 +379,8 @@ def analyze(ticker: str) -> dict:
         "wacc_pct": wacc_pct,
         "implied_growth_pct": implied_growth_pct,
         "used_claude_params": used_claude,
-        "scenario_reasoning": cp.get("reasoning", ""),
-        "scenario_confidence": cp.get("confidence", ""),
+        "scenario_reasoning": scenario_reasoning,
+        "scenario_confidence": scenario_confidence,
         # Scenario parameters used (for transparency)
         "bull_g1_pct": round(scenarios["bull"]["g1"] * 100, 1),
         "base_g1_pct": round(scenarios["base"]["g1"] * 100, 1),
@@ -478,10 +400,12 @@ def analyze(ticker: str) -> dict:
         "dcf_bear_price": price_targets.get("bear"),
         "recommendation": recommendation,
         "monte_carlo": mc,
-        # Paradigm factors — from Claude when available
-        "platform_lock_in": cp.get("platform_lock_in") if used_claude else None,
-        "tam_expanding": cp.get("tam_expanding") if used_claude else None,
-        "network_effects": cp.get("network_effects") if used_claude else None,
+        # Paradigm factors: retired as Claude inputs. The trigger
+        # service now scores these from written quant rules instead,
+        # so they are None here and never enter the DCF math.
+        "platform_lock_in": None,
+        "tam_expanding": None,
+        "network_effects": None,
         "revenue_growth_annual_pct": round(d["revenue_growth_annual"], 1) if d.get("revenue_growth_annual") is not None else None,
         # Event risk discount
         "event_risk_discount": round(event_risk_discount, 2) if event_risk_discount > 0 else None,

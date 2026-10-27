@@ -421,6 +421,29 @@ def recommend_strategy_type(technicals: dict) -> str:
     return "single_leg"
 
 
+def recommend_option_direction(technicals: dict) -> str:
+    """Deterministic CALL/PUT direction from RSI and MACD, no model.
+
+    PUT only when the setup is bearish on both readings that define
+    the strategy rules in recommend_strategy_type: RSI above 68 with
+    a bearish MACD crossover, RSI above 58 with a bearish crossover
+    or negative histogram, or RSI above 60 with a bearish crossover.
+    Everything else is CALL. The same inputs always give the same
+    direction, and a Claude direction that disagrees is dropped.
+    """
+    rsi = technicals.get("rsi") or 50
+    macd = technicals.get("macd") or {}
+    crossover = macd.get("crossover", "neutral")
+    histogram = macd.get("histogram", 0) or 0
+    if rsi > 68 and crossover == "bearish":
+        return "PUT"
+    if rsi > 58 and (crossover == "bearish" or histogram < -0.1):
+        return "PUT"
+    if rsi > 60 and crossover == "bearish":
+        return "PUT"
+    return "CALL"
+
+
 def compute_entry_exit_multi_leg(technicals: dict, strategy: str) -> dict:
     """
     Calculate strikes, max profit, max loss, and breakevens for multi-leg strategies.

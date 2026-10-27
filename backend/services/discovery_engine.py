@@ -299,13 +299,14 @@ def _run_dcf(revenue_0: float, fcf_0: float, dr: float, scenarios: dict,
     return out
 
 
-def _dcf_scenarios(d: dict, category: str, claude_params: dict | None = None) -> dict:
+def _dcf_scenarios(d: dict, category: str) -> dict:
     """
     3-scenario 10-year FCF DCF (bull / base / bear).
     Revenue is derived from market_cap ÷ P/S ratio (both from Finnhub).
     FCF margin is floored by a gross-margin proxy for pre-profit compounders.
     Uses CAPM-derived WACC from beta. Includes reverse DCF (implied growth priced in).
-    claude_params overrides mechanical scenario params when provided by _claude_picks.
+    Scenario parameters are mechanical only, derived from the same
+    fundamentals every time. No Claude parameters are accepted.
     """
     market_cap = d.get("market_cap") or 0
     ps = d.get("ps") or 0
@@ -323,28 +324,7 @@ def _dcf_scenarios(d: dict, category: str, claude_params: dict | None = None) ->
     dr = _wacc_from_beta(d.get("beta"), sector=d.get("sector"))
     wacc_pct = round(dr * 100, 1)
 
-    if claude_params:
-        scenarios = {
-            "bull": dict(
-                g1=claude_params.get("bull_g1", min(rev_growth, 0.80)),
-                g2=claude_params.get("bull_g2", 0.20),
-                fm=claude_params.get("bull_fcf", min(fcf_0 * 1.30, 0.55)),
-                tg=0.035,
-            ),
-            "base": dict(
-                g1=claude_params.get("base_g1", min(rev_growth * 0.70, 0.50)),
-                g2=claude_params.get("base_g2", 0.12),
-                fm=claude_params.get("base_fcf", fcf_0),
-                tg=0.030,
-            ),
-            "bear": dict(
-                g1=claude_params.get("bear_g1", max(rev_growth * 0.30, 0.03)),
-                g2=claude_params.get("bear_g2", 0.05),
-                fm=claude_params.get("bear_fcf", fcf_0 * 0.75),
-                tg=0.020,
-            ),
-        }
-    elif category == "compounder":
+    if category == "compounder":
         scenarios = {
             "bull": dict(g1=min(rev_growth,        0.80), g2=0.20, fm=min(fcf_0 * 1.30, 0.55), tg=0.035),
             "base": dict(g1=min(rev_growth * 0.70, 0.50), g2=0.12, fm=fcf_0,                    tg=0.030),
@@ -490,7 +470,86 @@ def _build_sleeper_scores(pool: list[dict]) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Claude thesis
+def _claude_theses(picks: list[dict], category: str) -> list[dict]:
+    """Write theses for quant-decided picks. Text only, no selection.
+
+    The picks arrive in quant rank order (top 10 by multi-factor
+    score) and stay in that order. Claude cannot select, re-rank,
+    drop, or add a pick, and cannot set DCF parameters or a
+    recommendation. A Claude failure, or a short return, is filled
+    with the quant fallback thesis, so the quant picks still publish.
+    """
+    fallback = _fallback_theses(picks)
+    if not picks:
+        return []
+    try:
+        import concurrent.futures as _cf
+        from services.claude_analyst import ClaudeAnalyst
+        analyst = ClaudeAnalyst()
+
+        # Fetch real-time web news for the picks in parallel before thesis writing
+        top_tickers = [d["ticker"] for d in picks[:15]]
+        web_news: dict[str, str] = {}
+        with _cf.ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [(t, pool.submit(analyst._fetch_stock_news, t)) for t in top_tickers]
+            for ticker, fut in futs:
+                try:
+                    news = fut.result(timeout=25)
+                    if news:
+                        web_news[ticker] = news
+                except Exception:
+                    pass
+
+        thesis_input = []
+        for d in picks:
+            item = dict(d)
+            if web_news.get(d["ticker"]):
+                item["web_news"] = web_news[d["ticker"]]
+            thesis_input.append(item)
+
+        written = analyst.explain_discovery(thesis_input, category) or []
+        by_ticker = {}
+        for item in written:
+            if isinstance(item, dict) and item.get("ticker"):
+                by_ticker[str(item["ticker"]).upper()] = item
+        result = []
+        for i, d in enumerate(picks):
+            got = by_ticker.get(str(d["ticker"]).upper())
+            if got:
+                merged = dict(fallback[i])
+                for key in ("thesis", "bull_case", "bear_case", "key_metric", "catalyst", "risk"):
+                    if str(got.get(key) or "").strip():
+                        merged[key] = got[key]
+                result.append(merged)
+            else:
+                result.append(fallback[i])
+        return result
+    except Exception as e:
+        logger.error("Claude theses failed for %s: %s", category, e)
+        return fallback
+
+
+def _fallback_theses(candidates: list[dict], n: int = 10) -> list[dict]:
+    """Quant-order fallback theses when Claude is unavailable.
+
+    The picks and their order are unchanged; only the text is a
+    placeholder stating the pick was ranked by the multi-factor model.
+    """
+    result = []
+    for d in candidates[:n]:
+        result.append({
+            "ticker": d["ticker"],
+            "name": d.get("name", d["ticker"]),
+            "thesis": "Ranked by multi-factor model (thesis unavailable - Claude API error).",
+            "bull_case": "",
+            "bear_case": "",
+            "key_metric": "",
+            "catalyst": "",
+            "risk": "",
+        })
+    return result
+
+# Candidate formatting for thesis prompts
 # ---------------------------------------------------------------------------
 
 def _fmt_candidates(candidates: list[dict]) -> str:
@@ -546,121 +605,8 @@ def _fmt_candidates(candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _claude_picks(candidates: list[dict], category: str) -> list[dict]:
-    """Call Claude to select top 10 picks and write a thesis for each."""
-    try:
-        import concurrent.futures as _cf
-        from services.claude_analyst import ClaudeAnalyst
-        analyst = ClaudeAnalyst()
-
-        # Fetch real-time web news for the top candidates in parallel before thesis writing
-        top_tickers = [d["ticker"] for d in candidates[:15]]
-        web_news: dict[str, str] = {}
-        with _cf.ThreadPoolExecutor(max_workers=4) as pool:
-            futs = [(t, pool.submit(analyst._fetch_stock_news, t)) for t in top_tickers]
-            for ticker, fut in futs:
-                try:
-                    news = fut.result(timeout=25)
-                    if news:
-                        web_news[ticker] = news
-                except Exception:
-                    pass
-
-        data_str = _fmt_candidates(candidates)
-        if web_news:
-            news_block = "\n\n".join(f"{t}:\n{n}" for t, n in web_news.items())
-            data_str += f"\n\nREAL-TIME WEB NEWS (use to enrich theses and catalysts):\n{news_block}"
-
-        if category == "compounder":
-            role = (
-                "You are identifying the NEXT NVIDIA or PALANTIR — a company with explosive "
-                "revenue growth, high gross margins (scalable model), and dominant position in "
-                "a massive expanding market. Key signals: revenue ACCELERATION (recent quarter "
-                "faster than TTM, marked [↑ACCEL]), strong price momentum (already moving), "
-                "and growth efficiency (high growth at reasonable P/S). Profitability is NOT "
-                "required. Focus on growth trajectory, market position, and long-term dominance."
-            )
-        else:
-            role = (
-                "You are identifying SLEEPER stocks — profitable, under-the-radar companies "
-                "with strong moats that Wall Street hasn't fully valued. Key signals: high ROE "
-                "and ROIC (management quality), strong FCF margin (real earnings), low P/E "
-                "relative to peers, and consistent revenue growth. Prioritize durable competitive "
-                "advantages: brand loyalty, switching costs, niche dominance, or network effects. "
-                "Positive price momentum rules out value traps."
-            )
-
-        user = (
-            f"CANDIDATES (pre-screened and ranked by multi-factor model):\n{data_str}\n\n"
-            f"{role}\n\n"
-            "Select the TOP 10 picks. Return a JSON array where each object has:\n"
-            "- thesis: 2-3 sentence thesis referencing specific metrics\n"
-            "- bull_case: 1-2 sentences on what drives the best-case outcome (5-10x in 3-5 years)\n"
-            "- bear_case: 1-2 sentences on what could kill this thesis\n"
-            "- key_metric: Single most compelling number e.g. '67% revenue growth [↑ACCEL]'\n"
-            "- catalyst: Specific near-term trigger that could re-rate the stock\n"
-            "- risk: Main risk in one short phrase\n"
-            "- long_term_rec: Exactly one of 'Strong Buy' | 'Buy' | 'Hold' | 'Pass'\n"
-            "- dcf_params: DCF scenario inputs based on your knowledge of this company's competitive\n"
-            "  position, industry dynamics, and realistic long-term trajectory. Do NOT use mechanical\n"
-            "  multipliers of TTM growth. Think: TAM size, share trajectory, margin at maturity.\n"
-            "  g1=annual rev growth yrs1-5, g2=yrs6-10, fcf=steady-state FCF margin at yr10.\n"
-            "  Enforce bull > base > bear for each parameter.\n"
-            "  Format: {bull_g1, bull_g2, bull_fcf, base_g1, base_g2, base_fcf, bear_g1, bear_g2, bear_fcf}\n\n"
-            "Return ONLY a JSON array:\n"
-            '[{"ticker":"XXXX","name":"Full Company Name",'
-            '"thesis":"...","bull_case":"...","bear_case":"...",'
-            '"key_metric":"...","catalyst":"...","risk":"...",'
-            '"long_term_rec":"Buy",'
-            '"dcf_params":{"bull_g1":0.30,"bull_g2":0.15,"bull_fcf":0.30,'
-            '"base_g1":0.20,"base_g2":0.10,"base_fcf":0.22,'
-            '"bear_g1":0.08,"bear_g2":0.04,"bear_fcf":0.15}}]'
-        )
-
-        system = (
-            "You are an elite hedge fund analyst identifying high-conviction long-term stock picks. "
-            "Be specific, data-driven, and contrarian where warranted. No generic platitudes. "
-            "Revenue acceleration and price momentum are strong signals — flag them explicitly. "
-            "For dcf_params: use real knowledge of each company — industry TAM, competitive moat, "
-            "cost structure, and comparable mature company margins. Not mechanical formulas. "
-            "Respond ONLY with a valid JSON array — no prose, no markdown fences."
-        )
-
-        raw = analyst._call(system, user, max_tokens=8000)
-
-        import re as _re
-        clean = _re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=_re.MULTILINE)
-        clean = _re.sub(r'\n?```$', '', clean.strip()).strip()
-
-        parsed = json.loads(clean)
-        if isinstance(parsed, list):
-            return parsed[:10]
-        if isinstance(parsed, dict):
-            for key in ("picks", "tickers", "results", "data"):
-                if isinstance(parsed.get(key), list):
-                    return parsed[key][:10]
-        return []
-    except Exception as e:
-        logger.error("Claude picks failed for %s: %s", category, e)
-        return []
 
 
-def _fallback_picks(candidates: list[dict], n: int = 10) -> list[dict]:
-    """Return top-n candidates as minimal picks when Claude call fails."""
-    result = []
-    for d in candidates[:n]:
-        result.append({
-            "ticker": d["ticker"],
-            "name": d.get("name", d["ticker"]),
-            "thesis": "Ranked by multi-factor model (thesis unavailable — Claude API error).",
-            "bull_case": "",
-            "bear_case": "",
-            "key_metric": "",
-            "catalyst": "",
-            "risk": "",
-            "long_term_rec": "",
-        })
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -758,12 +704,14 @@ def _run_scan() -> None:
         with _lock:
             _state["progress"] = 0.80
 
-        # Phase 4: Claude thesis (falls back to raw ranked candidates if Claude fails)
-        compounder_picks = _claude_picks(top_compounders, "compounder") or _fallback_picks(top_compounders)
+        # Phase 4: Claude theses for the quant-decided top 10.
+        # Quant already ranked the pools; Claude writes text only and
+        # cannot change the picks or their order.
+        compounder_picks = _claude_theses(top_compounders[:10], "compounder")
         with _lock:
             _state["progress"] = 0.90
 
-        sleeper_picks = _claude_picks(top_sleepers, "sleeper") or _fallback_picks(top_sleepers)
+        sleeper_picks = _claude_theses(top_sleepers[:10], "sleeper")
         with _lock:
             _state["progress"] = 0.95
 
@@ -777,8 +725,8 @@ def _run_scan() -> None:
                 d = fund_map.get(t, {})
                 rev_g = d.get("revenue_growth") or 0
                 rev_q = d.get("revenue_growth_q")
-                claude_params = p.get("dcf_params") or None
-                dcf = _dcf_scenarios(d, category, claude_params=claude_params)
+                # DCF is mechanical only: no Claude parameters are read here.
+                dcf = _dcf_scenarios(d, category)
                 enriched.append({
                     "ticker": t,
                     "name": p.get("name") or d.get("name", t),
@@ -819,10 +767,14 @@ def _run_scan() -> None:
                     "dcf_bull_price": dcf.get("bull_price"),
                     "dcf_base_price": dcf.get("base_price"),
                     "dcf_bear_price": dcf.get("bear_price"),
-                    # Qualitative bull/bear narrative + AI recommendation from Claude
+                    # Qualitative bull/bear narrative from Claude (text only).
+                    # The recommendation is the mechanical DCF recommendation
+                    # above; Claude sets no rating here.
                     "bull_case": p.get("bull_case", ""),
                     "bear_case": p.get("bear_case", ""),
-                    "long_term_rec": p.get("long_term_rec", ""),
+                    "decision_source": "quant",
+                    "ai_role": "explanation",
+                    "ai_dropped": ["selection", "dcf_params", "long_term_rec"],
                     "discovery_score": round(
                         compounder_scores.get(t, 0) if category == "compounder"
                         else sleeper_scores.get(t, 0), 1

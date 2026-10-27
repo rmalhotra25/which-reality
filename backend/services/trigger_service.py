@@ -304,6 +304,11 @@ def _calculate_paradigm_score(dcf: dict) -> tuple:
     """
     Returns (score, breakdown, label).
     Measures paradigm-shift characteristics that make DCF unreliable.
+    All five factors are written binary quant rules, one point each,
+    with fixed thresholds: revenue acceleration, durable returns
+    (ROIC above WACC), scalable model (gross margin >= 50%),
+    winner-take-most, and cash moat (FCF margin >= 20%). No Claude
+    judgement enters this score.
     """
     score = 0
     breakdown: dict = {}
@@ -326,26 +331,39 @@ def _calculate_paradigm_score(dcf: dict) -> tuple:
             reason = f"{rev_ttm}% TTM not accelerating vs {round(rev_annual, 1)}% annual"
         breakdown["revenue_accel"] = {"earned": 0, "detail": reason}
 
-    # ── 2. Platform Lock-in (Claude) ─────────────────────────────────────────
-    lock_in = (dcf.get("platform_lock_in") or "").lower()
-    if lock_in == "strong":
+    # ── 2. Durable returns (quant rule, 1 point) ─────────────────────────
+    # Written binary rule: ROIC above WACC earns the point. This replaces
+    # the old Claude "platform lock-in" judgement, which had no written
+    # threshold and could not be reproduced. A company earning above its
+    # cost of capital is the quant proxy for a durable advantage.
+    spread = dcf.get("roic_wacc_spread_pct")
+    if spread is not None and spread > 0:
         score += 1
-        breakdown["platform_lock_in"] = {"earned": 1, "detail": "Strong switching costs per Claude"}
+        breakdown["durable_returns"] = {
+            "earned": 1,
+            "detail": f"ROIC exceeds WACC by {round(spread, 1)}pp",
+        }
     else:
-        breakdown["platform_lock_in"] = {
+        breakdown["durable_returns"] = {
             "earned": 0,
-            "detail": f"{lock_in.capitalize()} lock-in per Claude" if lock_in else "Claude data unavailable",
+            "detail": f"ROIC-WACC spread {round(spread, 1)}pp (need > 0)" if spread is not None else "ROIC/WACC data unavailable",
         }
 
-    # ── 3. TAM Expansion (Claude) ────────────────────────────────────────────
-    tam = (dcf.get("tam_expanding") or "").lower()
-    if tam == "yes":
+    # ── 3. Scalable model (quant rule, 1 point) ───────────────────────────
+    # Written binary rule: gross margin at or above 50% earns the point.
+    # This replaces the old Claude "TAM expanding" judgement. A high
+    # gross margin is the quant proxy for a scalable, software-like model.
+    gross_margin = dcf.get("gross_margin_pct") or 0
+    if gross_margin >= 50:
         score += 1
-        breakdown["tam_expansion"] = {"earned": 1, "detail": "Structural TAM expansion per Claude"}
+        breakdown["scalable_model"] = {
+            "earned": 1,
+            "detail": f"Gross margin {round(gross_margin, 1)}% (scalable model)",
+        }
     else:
-        breakdown["tam_expansion"] = {
+        breakdown["scalable_model"] = {
             "earned": 0,
-            "detail": "No structural TAM shift per Claude" if tam == "no" else "Claude data unavailable",
+            "detail": f"Gross margin {round(gross_margin, 1)}% (need >= 50%)",
         }
 
     # ── 4. Winner-Take-Most ──────────────────────────────────────────────────
@@ -365,18 +383,21 @@ def _calculate_paradigm_score(dcf: dict) -> tuple:
             missing.append(f"growth {rev_g}% (need >25%)")
         breakdown["winner_take_most"] = {"earned": 0, "detail": ", ".join(missing) or "N/A"}
 
-    # ── 5. Network Effects / Data Moat (Claude) ──────────────────────────────
-    net_fx = (dcf.get("network_effects") or "").lower()
-    if net_fx == "yes":
+    # ── 5. Cash moat (quant rule, 1 point) ─────────────────────────────────
+    # Written binary rule: FCF margin at or above 20% earns the point.
+    # This replaces the old Claude "network effects" judgement. Real cash
+    # generation at scale is the quant proxy for a compounding moat.
+    fcf_margin = dcf.get("fcf_margin_pct")
+    if fcf_margin is not None and fcf_margin >= 20:
         score += 1
-        breakdown["network_effects"] = {
+        breakdown["cash_moat"] = {
             "earned": 1,
-            "detail": "Network effects or proprietary data moat per Claude",
+            "detail": f"FCF margin {round(fcf_margin, 1)}% (real cash generation)",
         }
     else:
-        breakdown["network_effects"] = {
+        breakdown["cash_moat"] = {
             "earned": 0,
-            "detail": "No significant network effects per Claude" if net_fx == "no" else "Claude data unavailable",
+            "detail": f"FCF margin {round(fcf_margin, 1)}% (need >= 20%)" if fcf_margin is not None else "FCF margin data unavailable",
         }
 
     if score >= 4:

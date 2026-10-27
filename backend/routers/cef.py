@@ -1,5 +1,6 @@
 import threading
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/cef", tags=["CEF Scanner"])
 
@@ -8,7 +9,31 @@ _scan_thread: threading.Thread | None = None
 
 @router.get("/scan")
 def get_scan(force: bool = False):
-    from services.cef_service import scan_universe
+    """Return the cached CEF scan, or 202 while a background scan runs.
+
+    A cold cache used to block the Income tab for a full live scan (over
+    25 seconds). Now a cold cache starts the scan in the background and
+    returns 202 immediately, so the tab never hangs waiting for it.
+    """
+    from services.cef_service import peek_cached, scan_universe
+
+    if not force:
+        cached = peek_cached()
+        if cached:
+            return cached
+        global _scan_thread
+        if not (_scan_thread and _scan_thread.is_alive()):
+            _scan_thread = threading.Thread(
+                target=scan_universe, kwargs={"force": True}, daemon=True, name="cef-scanner"
+            )
+            _scan_thread.start()
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "scan_running",
+                "detail": "CEF scan is running in the background. Try again shortly.",
+            },
+        )
     return scan_universe(force=force)
 
 
@@ -18,6 +43,7 @@ def refresh_scan():
     if _scan_thread and _scan_thread.is_alive():
         return {"status": "already_running"}
     from services.cef_service import scan_universe
+
     _scan_thread = threading.Thread(
         target=scan_universe, kwargs={"force": True}, daemon=True, name="cef-scanner"
     )
@@ -28,6 +54,7 @@ def refresh_scan():
 @router.get("/analyze/{ticker}")
 def analyze_ticker(ticker: str):
     from services.cef_service import analyze_cef
+
     try:
         return analyze_cef(ticker)
     except ValueError as e:
@@ -37,4 +64,5 @@ def analyze_ticker(ticker: str):
 @router.get("/universe")
 def get_universe():
     from services.cef_service import _CEF_UNIVERSE
+
     return {"tickers": _CEF_UNIVERSE, "count": len(_CEF_UNIVERSE)}

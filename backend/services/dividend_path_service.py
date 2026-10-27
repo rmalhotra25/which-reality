@@ -14,18 +14,96 @@ Scoring (0-100):
   Income Coverage : 15 pts  (years of consistent payments)
   Diversification : 10 pts  (category bonus - ensures mix of ETF/stock/REIT)
 
-Cache TTL: 6 hours
+Cache: persistent scan_cache table in the app database (Postgres on Render,
+SQLite locally), 6-hour TTL. The old /tmp file cache was wiped on every
+Render redeploy, so the Income tab timed out after a deploy (Oct 27 2026).
 """
 import json
 import logging
-import os
 import time
 from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-_CACHE_FILE = "/tmp/cache_dividend_path.json"
 _CACHE_TTL = 6 * 3600
+_CACHE_KEY_PREFIX = "dividend_path"
+
+from services.scan_cache import get_cache, set_cache
+
+
+def _cache_key(starting_capital: float, weekly_dca: float) -> str:
+    return f"{_CACHE_KEY_PREFIX}:{starting_capital:g}:{weekly_dca:g}"
+
+
+def peek_cached(starting_capital: float = 61000.0, weekly_dca: float = 500.0) -> dict | None:
+    """Return the cached dividend-path result for these params, or None."""
+    return get_cache(_cache_key(starting_capital, weekly_dca), _CACHE_TTL)
+
+
+def peek_any_cached() -> dict | None:
+    """Return any cached dividend-path result, whatever its params were.
+
+    The portfolio selection does not depend on starting capital or DCA, only
+    the projection does, so a cached portfolio can be re-projected for a
+    different monthly contribution without a rescan.
+    """
+    try:
+        from database import engine
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT payload FROM scan_cache"
+                    " WHERE cache_key LIKE :p ORDER BY cached_at DESC LIMIT 1"
+                ),
+                {"p": f"{_CACHE_KEY_PREFIX}:%"},
+            ).fetchall()
+        if not rows:
+            return None
+        payload = json.loads(rows[0][0])
+        if time.time() - float(payload.get("cached_at", 0)) > _CACHE_TTL:
+            return None
+        return payload
+    except Exception as e:
+        logger.warning("dividend_path peek_any_cached failed: %s", e)
+        return None
+
+
+def project_from_cached(starting_capital: float, monthly_contribution: float) -> dict | None:
+    """Re-project the cached portfolio for a new monthly contribution.
+
+    Uses the backend projection model (_build_projection) exactly, with the
+    same base and bear assumptions as the cached scan. Returns None when no
+    cached portfolio exists, so the caller can start a background scan.
+    """
+    cached = peek_any_cached()
+    if not cached or not cached.get("portfolio"):
+        return None
+    portfolio = cached["portfolio"]
+    weekly_dca = float(monthly_contribution) * 12 / 52
+    scenarios = _build_projection(portfolio, starting_capital, weekly_dca)
+    total_alloc = sum(s["allocation_pct"] for s in portfolio) or 100
+    blended_yield = sum(s["annual_yield_pct"] * s["allocation_pct"] / total_alloc for s in portfolio)
+    return {
+        "scanned_at": cached.get("scanned_at"),
+        "portfolio": portfolio,
+        "params": {
+            "starting_capital": starting_capital,
+            "weekly_dca": round(weekly_dca, 2),
+            "monthly_contribution": round(float(monthly_contribution), 2),
+        },
+        "blended_yield_pct": round(blended_yield, 2),
+        "starting_monthly_income": round(starting_capital * (blended_yield / 100) / 12, 2),
+        "goal_monthly_income": 1000.0,
+        "reached_goal_at": scenarios["reached_goal_at"],
+        "reached_goal_at_2000": scenarios["reached_goal_at_2000"],
+        "projection": scenarios["projection"],
+        "reached_goal_at_bear": scenarios["reached_goal_at_bear"],
+        "reached_goal_at_bear_2000": scenarios["reached_goal_at_bear_2000"],
+        "projection_bear": scenarios["projection_bear"],
+        "projection_assumptions": scenarios["projection_assumptions"],
+    }
 
 # Curated universe: Aristocrats + quality dividend ETFs + REITs
 # Categorized for diversification scoring
@@ -364,7 +442,7 @@ def _run_projection(
     blended_yield: float,
     avg_div_growth_pct: float,
     months: int = 120,
-) -> tuple[list[dict], dict | None]:
+) -> tuple[list[dict], dict | None, dict | None]:
     """DRIP + DCA projection, capped at 10 years (120 months).
 
     Total-return-consistent share model: price and the dividend per share both
@@ -375,6 +453,9 @@ def _run_projection(
     income. Growth is clamped to -50%..+8% a year to bound absurd inputs.
     blended_yield is a decimal (e.g. 0.04). Price is normalized to $1, so the
     starting share count equals the starting capital.
+
+    Returns snapshots plus the month $1,000/month and $2,000/month of
+    dividend income are first reached, or None for a goal not reached.
     """
     months = max(1, min(int(months), 120))
     annual_div_growth = max(-0.50, min(avg_div_growth_pct / 100, 0.08))
@@ -385,8 +466,10 @@ def _run_projection(
     dps = blended_yield  # annual dividend per share on a $1 starting price
     shares = float(starting_capital)
     goal_monthly_income = 1000.0
+    goal2_monthly_income = 2000.0
     snapshots = []
     reached_goal_at = None
+    reached_goal_at_2000 = None
 
     for month in range(1, months + 1):
         price = price * (1 + monthly_growth)
@@ -416,7 +499,10 @@ def _run_projection(
         if monthly_income >= goal_monthly_income and reached_goal_at is None:
             reached_goal_at = {"month": month, "year": year, "month_label": f"Month {month}"}
 
-    return snapshots, reached_goal_at
+        if monthly_income >= goal2_monthly_income and reached_goal_at_2000 is None:
+            reached_goal_at_2000 = {"month": month, "year": year, "month_label": f"Month {month}"}
+
+    return snapshots, reached_goal_at, reached_goal_at_2000
 
 
 def _project_with_scenarios(
@@ -435,18 +521,20 @@ def _project_with_scenarios(
     no taxes.
     """
     months = max(1, min(int(months), 120))
-    base_snaps, base_goal = _run_projection(
+    base_snaps, base_goal, base_goal_2000 = _run_projection(
         starting_capital, weekly_dca, blended_yield, avg_div_growth_pct, months
     )
     bear_growth_pct = avg_div_growth_pct - 3.0
-    bear_snaps, bear_goal = _run_projection(
+    bear_snaps, bear_goal, bear_goal_2000 = _run_projection(
         starting_capital, weekly_dca, blended_yield, bear_growth_pct, months
     )
     return {
         "projection": base_snaps,
         "reached_goal_at": base_goal,
+        "reached_goal_at_2000": base_goal_2000,
         "projection_bear": bear_snaps,
         "reached_goal_at_bear": bear_goal,
+        "reached_goal_at_bear_2000": bear_goal_2000,
         "projection_assumptions": {
             "horizon_months": months,
             "horizon_years": round(months / 12, 1),
@@ -556,8 +644,10 @@ def run_custom_portfolio(
         "starting_monthly_income": round(starting_capital * blended_yield / 12, 2),
         "goal_monthly_income": 1000.0,
         "reached_goal_at": scenarios["reached_goal_at"],
+        "reached_goal_at_2000": scenarios["reached_goal_at_2000"],
         "projection": scenarios["projection"],
         "reached_goal_at_bear": scenarios["reached_goal_at_bear"],
+        "reached_goal_at_bear_2000": scenarios["reached_goal_at_bear_2000"],
         "projection_bear": scenarios["projection_bear"],
         "projection_assumptions": scenarios["projection_assumptions"],
     }
@@ -588,28 +678,6 @@ def _distribute_lump_sum(
     return result
 
 
-def _cache_read() -> dict | None:
-    try:
-        if not os.path.exists(_CACHE_FILE):
-            return None
-        with open(_CACHE_FILE) as f:
-            data = json.load(f)
-        if time.time() - data.get("cached_at", 0) > _CACHE_TTL:
-            return None
-        return data
-    except Exception:
-        return None
-
-
-def _cache_write(data: dict) -> None:
-    try:
-        data["cached_at"] = time.time()
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.warning("dividend_path cache write failed: %s", e)
-
-
 def build_dividend_path(
     starting_capital: float = 61000.0,
     weekly_dca: float = 500.0,
@@ -617,10 +685,10 @@ def build_dividend_path(
 ) -> dict:
     """
     Main entry point: scan universe, select portfolio, project income path.
-    Results cached for 6 hours.
+    Results cached for 6 hours in the persistent scan_cache table.
     """
     if not force:
-        cached = _cache_read()
+        cached = peek_cached(starting_capital, weekly_dca)
         if cached:
             logger.info("dividend_path: returning cached results")
             return cached
@@ -673,12 +741,14 @@ def build_dividend_path(
         "starting_monthly_income": round(starting_monthly_income, 2),
         "goal_monthly_income": 1000.0,
         "reached_goal_at": scenarios["reached_goal_at"],
+        "reached_goal_at_2000": scenarios["reached_goal_at_2000"],
         "projection": scenarios["projection"],
         "reached_goal_at_bear": scenarios["reached_goal_at_bear"],
+        "reached_goal_at_bear_2000": scenarios["reached_goal_at_bear_2000"],
         "projection_bear": scenarios["projection_bear"],
         "projection_assumptions": scenarios["projection_assumptions"],
         "top_candidates": scored_all[:15],
     }
-    _cache_write(output)
+    set_cache(_cache_key(starting_capital, weekly_dca), output)
     logger.info("dividend_path complete: %d scored, portfolio of %d", len(scored_all), len(portfolio))
     return output

@@ -169,7 +169,10 @@ def _indicators(df) -> Optional[dict]:
             "low_today": float(lows.iloc[-1]),
             "low_prev": float(lows.iloc[-2]) if n > 1 else None,
             "hv30": float(hv30.iloc[-1]) if not np.isnan(hv30.iloc[-1]) else None,
-            "bullish_engulf": bullish_engulf,
+            # Plain Python bool, not the numpy bool the pandas
+            # comparisons produce: a numpy bool in a conditions dict
+            # breaks FastAPI JSON encoding and 500s the ticker lookup.
+            "bullish_engulf": bool(bullish_engulf),
         }
     except Exception as e:
         logger.debug("indicators failed: %s", e)
@@ -434,6 +437,24 @@ def _apply_sizing(action_data: dict, setup_key: str,
 # Setup signal evaluators
 # ---------------------------------------------------------------------------
 
+def _cond_int(x):
+    """int() for a conditions value, or None when missing or NaN.
+
+    yfinance can carry a NaN volume on a bar; int(NaN) raises
+    ValueError, which used to kill the whole lookup for that ticker.
+    Unknown stays unknown instead of crashing the snapshot.
+    """
+    if x is None:
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if v != v:  # NaN
+        return None
+    return int(v)
+
+
 def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
                            spy_gate: bool | None = None,
                            spy_vs_200ma_pct: float | None = None) -> tuple[bool, dict]:
@@ -477,8 +498,8 @@ def _eval_quality_pullback(ind: dict, earnings_days_val: Optional[int],
     # Volume below 20-day average
     vol = ind.get("volume", 0)
     vol20 = ind.get("vol20")
-    cond["volume"] = int(vol)
-    cond["vol20"] = int(vol20) if vol20 else None
+    cond["volume"] = _cond_int(vol)
+    cond["vol20"] = _cond_int(vol20)
     quiet_volume = (vol20 is not None and vol < vol20)
     cond["quiet_volume"] = quiet_volume
 
@@ -602,8 +623,8 @@ def _eval_volume_breakout(ind: dict, earnings_days_val: Optional[int],
 
     # Volume at least 1.5x average
     vol_confirmed = (vol20 is not None and vol >= VB_VOL_MULT * vol20)
-    cond["volume"] = int(vol)
-    cond["vol20"] = int(vol20) if vol20 else None
+    cond["volume"] = _cond_int(vol)
+    cond["vol20"] = _cond_int(vol20)
     cond["vol_confirmed"] = vol_confirmed
 
     # Price above a rising 50-day MA (ma50 above its value 20 sessions ago)
@@ -709,7 +730,10 @@ def _eval_trend_pullback_reversal(ind: dict, earnings_days_val: Optional[int]) -
         and TPR_RSI_BAND_LOW <= rsi <= TPR_RSI_BAND_HIGH
     )
     bullish_engulf = ind.get("bullish_engulf", False)
-    reversal = rsi_turning_up or bullish_engulf
+    # bool() here as well as in _indicators: an indicators dict built
+    # anywhere else could still carry a numpy bool, and a numpy bool in
+    # a conditions dict breaks FastAPI JSON encoding (lookup 500).
+    reversal = bool(rsi_turning_up or bullish_engulf)
     # No earnings within 5 days (fail-closed: unknown blocks)
     no_earnings = _earnings_ok(earnings_days_val)
 

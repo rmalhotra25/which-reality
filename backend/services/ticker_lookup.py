@@ -267,10 +267,50 @@ def _registry_statuses(db) -> dict:
         return {}
 
 
+def _json_safe(value):
+    """Recursively convert a lookup result to plain JSON-native values.
+
+    Live data paths can leak numpy scalars into a conditions dict (a
+    numpy bool from a pandas comparison 500s the lookup at FastAPI
+    response encoding, because jsonable_encoder cannot serialize it),
+    and NaN or inf floats are not valid JSON. Convert numpy scalars
+    with .item(), NaN and inf floats to None, and anything else
+    unexpected to its string form, so the snapshot always serializes.
+    Same inputs still give the same result.
+    """
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        # float() also strips a numpy float64, which is a float
+        # subclass but not a plain Python float.
+        return float(value)
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            return str(value)
+    # Anything else unexpected becomes its string form, so the
+    # response still serializes instead of 500ing at encoding.
+    return str(value)
+
+
 def _evaluate_setups(ticker: str, inputs: LookupInputs, db,
                      registry_statuses: Optional[dict],
                      signal_date: Optional[date]) -> list:
-    """Run the alert-engine evaluators for one ticker, read-only."""
+    """Run the alert-engine evaluators for one ticker, read-only.
+
+    One setup failing on live data must not kill the whole snapshot:
+    the scheduled engine wraps each ticker the same way, so the lookup
+    wraps each evaluator and each action build, and reports the setup
+    as failed with a named evaluator_error reason instead of raising.
+    """
     import services.alert_engine as ae
 
     statuses = registry_statuses if registry_statuses is not None else _registry_statuses(db)
@@ -298,15 +338,29 @@ def _evaluate_setups(ticker: str, inputs: LookupInputs, db,
                 "suppressed_reason": "rule_not_registered",
             })
             continue
-        if setup_key == "premium_at_support":
-            fires, cond = evaluator_fn(ind, inputs.earnings_days, inputs.iv_percentile)
-        elif setup_key in ("quality_pullback", "volume_breakout"):
-            fires, cond = evaluator_fn(
-                ind, inputs.earnings_days,
-                spy_gate=inputs.spy_gate, spy_vs_200ma_pct=inputs.spy_vs_200ma_pct,
+        try:
+            if setup_key == "premium_at_support":
+                fires, cond = evaluator_fn(ind, inputs.earnings_days, inputs.iv_percentile)
+            elif setup_key in ("quality_pullback", "volume_breakout"):
+                fires, cond = evaluator_fn(
+                    ind, inputs.earnings_days,
+                    spy_gate=inputs.spy_gate, spy_vs_200ma_pct=inputs.spy_vs_200ma_pct,
+                )
+            else:
+                fires, cond = evaluator_fn(ind, inputs.earnings_days)
+        except Exception as e:
+            logger.warning(
+                "ticker_lookup: evaluator %s failed for %s: %s",
+                setup_key, ticker, e,
             )
-        else:
-            fires, cond = evaluator_fn(ind, inputs.earnings_days)
+            results.append({
+                "setup_key": setup_key, "rule_key": rule_key,
+                "setup_name": name, "status": status,
+                "rule_result": "fail", "fires": False,
+                "conditions": {}, "action": None,
+                "suppressed_reason": f"evaluator_error:{type(e).__name__}",
+            })
+            continue
         if not fires:
             results.append({
                 "setup_key": setup_key, "rule_key": rule_key,
@@ -317,10 +371,24 @@ def _evaluate_setups(ticker: str, inputs: LookupInputs, db,
             })
             continue
         # Same action builder as the live run, so the numbers match.
-        alert = ae._build_alert(
-            setup_key, name, status, ticker, ind, cond, db,
-            signal_date=signal_date,
-        )
+        try:
+            alert = ae._build_alert(
+                setup_key, name, status, ticker, ind, cond, db,
+                signal_date=signal_date,
+            )
+        except Exception as e:
+            logger.warning(
+                "ticker_lookup: action build %s failed for %s: %s",
+                setup_key, ticker, e,
+            )
+            results.append({
+                "setup_key": setup_key, "rule_key": rule_key,
+                "setup_name": name, "status": status,
+                "rule_result": "suppressed", "fires": True,
+                "conditions": cond, "action": None,
+                "suppressed_reason": f"evaluator_error:{type(e).__name__}",
+            })
+            continue
         if alert.get("is_suppressed"):
             results.append({
                 "setup_key": setup_key, "rule_key": rule_key,
@@ -502,7 +570,10 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         )
         explanation = explanations.get(ticker, fallback_text)
         explanation_source = "claude" if explanation != fallback_text else "quant_fallback"
-    return {
+    # Sanitized so the response always JSON-encodes: live evaluator
+    # output can carry numpy scalars or NaN, which 500 the lookup at
+    # response encoding even though the lookup itself succeeded.
+    return _json_safe({
         "ticker": ticker,
         "lookup_type": "query",
         "is_recommendation": False,
@@ -554,7 +625,7 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         },
         "explanation": explanation,
         "explanation_source": explanation_source,
-    }
+    })
 
 
 # ---------------------------------------------------------------------------

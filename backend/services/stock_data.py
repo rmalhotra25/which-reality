@@ -9,6 +9,29 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
+def _sale_price_for_row(row: dict) -> tuple[float, float, str]:
+    """
+    Sale price for a wheel option from a normalized chain row.
+
+    Returns (sale_price, mid, premium_source). The sale price is the
+    bid, what the seller actually collects. Rows built by
+    ChainProvider already carry sale_price / price_source; rows built
+    elsewhere (synthetic Black-Scholes tiers, older fixtures) are
+    resolved from bid/ask here, so no path can price a sale at a last
+    trade. A last trade is never an executable sale price.
+    """
+    if row.get("sale_price") is not None and row.get("price_source"):
+        return (
+            round(float(row.get("sale_price") or 0), 2),
+            round(float(row.get("mid") or 0), 2),
+            str(row.get("price_source")),
+        )
+    from services.chain_provider import resolve_sale_price
+    bid = float(row.get("bid") or 0)
+    ask = float(row.get("ask") or 0)
+    return resolve_sale_price(bid, ask)
+
 try:
     import yfinance as yf
     _YF_AVAILABLE = True
@@ -680,11 +703,18 @@ class StockDataService:
             best = min(puts, key=lambda p: abs(p["delta_abs"] - target_delta_abs))
             if is_polygon and abs(best["delta_abs"] - target_delta_abs) > 0.15:
                 return None
-            mid = best["mid"]
+            # Wheel put sales are priced at the bid, what the seller
+            # collects. TXN Nov 13 $270 put: bid $1.55, mid $2.50, last
+            # trade $5.00. premium_per_contract is bid x 100 ($155) and
+            # breakeven is strike minus the bid ($268.45), never the
+            # last-trade $500 / $265.00. A tier with no executable bid
+            # carries sale_price 0 and premium_source
+            # "no_executable_bid"; the wheel scanner excludes it.
+            sale_price, mid, price_source = _sale_price_for_row(best)
             strike = best["strike"]
-            breakeven = round(strike - mid, 2)
-            drop_pct = round((price - breakeven) / price * 100, 1)
-            ann_return = round((mid / strike) * (365 / dte) * 100, 1) if strike > 0 and dte > 0 else None
+            breakeven = round(strike - sale_price, 2) if sale_price > 0 else None
+            drop_pct = round((price - breakeven) / price * 100, 1) if breakeven else None
+            ann_return = round((sale_price / strike) * (365 / dte) * 100, 1) if strike > 0 and dte > 0 and sale_price > 0 else None
             daily_income = round((best["theta_seller"] or 0) * 100, 2)
             return {
                 "strike": strike,
@@ -693,7 +723,9 @@ class StockDataService:
                 "bid": best["bid"],
                 "ask": best["ask"],
                 "mid_premium": mid,
-                "premium_per_contract": round(mid * 100, 2),
+                "sale_price": sale_price,
+                "premium_source": price_source,
+                "premium_per_contract": round(sale_price * 100, 2),
                 "iv_pct": best["iv_pct"],
                 "delta_abs": round(best["delta_abs"], 2),
                 "assignment_chance_pct": round(best["delta_abs"] * 100),
@@ -729,11 +761,14 @@ class StockDataService:
             )
             if puts:
                 best = min(puts, key=lambda p: abs(p["strike"] - suggested_strike))
+                sale_price, mid, price_source = _sale_price_for_row(best)
                 return {
                     "strike": best["strike"],
                     "expiry": best["expiry"],
                     "dte": best["dte"],
-                    "mid_premium": best["mid"],
+                    "mid_premium": mid,
+                    "sale_price": sale_price,
+                    "premium_source": price_source,
                     "bid": best["bid"],
                     "ask": best["ask"],
                     "volume": best["volume"],
@@ -778,8 +813,11 @@ class StockDataService:
             strike = float(row["strike"])
             bid = float(row.get("bid") or 0)
             ask = float(row.get("ask") or 0)
-            last = float(row.get("lastPrice") or 0)
-            mid = round((bid + ask) / 2, 2) if bid > 0 else last
+            # Executable mid only. A last trade is never the premium:
+            # "mid = (bid + ask) / 2 if bid > 0 else last" used to price
+            # sales at a stale last trade. The sale price is the bid.
+            from services.chain_provider import resolve_sale_price
+            sale_price, mid, price_source = resolve_sale_price(bid, ask)
 
             dte = (date.fromisoformat(target_expiry) - today).days
             return {
@@ -787,6 +825,8 @@ class StockDataService:
                 "expiry": target_expiry,
                 "dte": dte,
                 "mid_premium": mid,
+                "sale_price": sale_price,
+                "premium_source": price_source,
                 "bid": bid,
                 "ask": ask,
                 "volume": int(row.get("volume") or 0),
@@ -848,11 +888,13 @@ class StockDataService:
                     best = min(pool, key=lambda c: abs(c["delta"] - target_delta))
                     if is_polygon and abs(best["delta"] - target_delta) > 0.20:
                         return None
-                    mid = best["mid"]
+                    # Covered-call sales are priced at the bid, same rule
+                    # as put sales: a last trade is never the premium.
+                    sale_price, mid, price_source = _sale_price_for_row(best)
                     strike = best["strike"]
                     daily_income = round((best["theta_seller"] or 0) * 100, 2)
                     upside_pct = round((strike - price) / price * 100, 1)
-                    pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
+                    pct_of_stock = round(sale_price / price * 100, 2) if sale_price > 0 else 0
                     return {
                         "strike": strike,
                         "expiry": target_expiry,
@@ -860,14 +902,16 @@ class StockDataService:
                         "bid": best["bid"],
                         "ask": best["ask"],
                         "mid_premium": mid,
-                        "premium_per_contract": round(mid * 100, 2),
+                        "sale_price": sale_price,
+                        "premium_source": price_source,
+                        "premium_per_contract": round(sale_price * 100, 2),
                         "iv_pct": best["iv_pct"],
                         "delta": round(best["delta"], 2),
                         "call_away_chance_pct": round(best["delta"] * 100),
                         "daily_income_per_contract": daily_income,
                         "upside_to_strike_pct": upside_pct,
                         "pct_of_stock_weekly": pct_of_stock,
-                        "below_threshold": mid < min_premium,
+                        "below_threshold": sale_price < min_premium,
                         "volume": best["volume"],
                         "open_interest": best["open_interest"],
                     }
@@ -946,7 +990,9 @@ class StockDataService:
 
             def _synth_tier(target_delta: float) -> dict | None:
                 best = min(synthetic_calls, key=lambda c: abs(c["delta"] - target_delta))
-                mid = best["mid"]
+                # Synthetic rows carry a modelled bid/ask around the BS
+                # price, so the sale price is still the bid.
+                sale_price, mid, price_source = _sale_price_for_row(best)
                 strike = best["strike"]
                 delta_val = best["delta"]
                 theta = best["theta"]
@@ -958,14 +1004,16 @@ class StockDataService:
                     "bid": best["bid"],
                     "ask": best["ask"],
                     "mid_premium": mid,
-                    "premium_per_contract": round(mid * 100, 2),
+                    "sale_price": sale_price,
+                    "premium_source": price_source,
+                    "premium_per_contract": round(sale_price * 100, 2),
                     "iv_pct": atm_iv_pct,
                     "delta": round(delta_val, 2),
                     "call_away_chance_pct": round(delta_val * 100),
                     "daily_income_per_contract": daily_per_contract,
                     "upside_to_strike_pct": round((strike - price) / price * 100, 1),
-                    "pct_of_stock_weekly": round(mid / price * 100, 2),
-                    "below_threshold": mid < min_premium,
+                    "pct_of_stock_weekly": round(sale_price / price * 100, 2),
+                    "below_threshold": sale_price < min_premium,
                     "volume": 0,
                     "open_interest": 0,
                 }
@@ -1010,9 +1058,9 @@ class StockDataService:
                 best = min(pool, key=lambda c: abs(c["delta"] - target_delta))
                 if abs(best["delta"] - target_delta) > 0.20:
                     return None
-                mid = best["mid"]
+                sale_price, mid, price_source = _sale_price_for_row(best)
                 strike = best["strike"]
-                pct_of_stock = round(mid / price * 100, 2) if mid > 0 else 0
+                pct_of_stock = round(sale_price / price * 100, 2) if sale_price > 0 else 0
                 return {
                     "strike": strike,
                     "expiry": target_expiry,
@@ -1020,14 +1068,16 @@ class StockDataService:
                     "bid": best["bid"],
                     "ask": best["ask"],
                     "mid_premium": mid,
-                    "premium_per_contract": round(mid * 100, 2),
+                    "sale_price": sale_price,
+                    "premium_source": price_source,
+                    "premium_per_contract": round(sale_price * 100, 2),
                     "iv_pct": best["iv_pct"],
                     "delta": round(best["delta"], 2),
                     "call_away_chance_pct": round(best["delta"] * 100),
                     "daily_income_per_contract": round((best["theta_seller"] or 0) * 100, 2),
                     "upside_to_strike_pct": round((strike - price) / price * 100, 1),
                     "pct_of_stock_weekly": pct_of_stock,
-                    "below_threshold": mid < min_premium,
+                    "below_threshold": sale_price < min_premium,
                     "volume": best["volume"],
                     "open_interest": best["open_interest"],
                 }

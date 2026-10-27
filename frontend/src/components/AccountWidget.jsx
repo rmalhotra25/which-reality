@@ -89,8 +89,13 @@ export default function AccountWidget({ showSizing = false }) {
 
   if (!account) return null
 
-  const atRiskPct = account.balance > 0
-    ? Math.round((account.capital_at_risk / account.balance) * 100)
+  // Total capital is the resolved equity (Challenge equity, else
+  // TRADEIQ_ACCOUNT_EQUITY, else $100,000 default), labelled by
+  // source below. The stored manual balance is created at $0 and
+  // must not make the account look empty.
+  const totalCapital = account.equity > 0 ? account.equity : account.balance
+  const atRiskPct = totalCapital > 0
+    ? Math.round((account.capital_at_risk / totalCapital) * 100)
     : 0
 
   return (
@@ -100,7 +105,10 @@ export default function AccountWidget({ showSizing = false }) {
       <div style={s.grid}>
         <div style={s.stat}>
           <span style={s.statLabel}>Total Capital</span>
-          <span style={{ ...s.statVal, color: '#90cdf4' }}>${account.balance.toLocaleString()}</span>
+          <span style={{ ...s.statVal, color: '#90cdf4' }}>${totalCapital.toLocaleString()}</span>
+          {account.equity_source && (
+            <span style={s.statSub}>equity: {account.equity_source}</span>
+          )}
         </div>
         <div style={s.stat}>
           <span style={s.statLabel}>Available</span>
@@ -128,9 +136,9 @@ export default function AccountWidget({ showSizing = false }) {
         </div>
       )}
 
-      {showSizing && account.balance > 0 && (
+      {showSizing && totalCapital > 0 && (
         <div style={s.positionSizing}>
-          <strong>Position sizing rule:</strong> With ${account.balance.toLocaleString()} in your account,
+          <strong>Position sizing rule:</strong> With ${totalCapital.toLocaleString()} in your account,
           the maximum you should allocate to a single wheel trade is ${account.max_single_position.toLocaleString()} ({account.max_position_pct}% rule).
           This limits the damage if one stock goes against you.
         </div>

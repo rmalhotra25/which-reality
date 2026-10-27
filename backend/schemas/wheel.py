@@ -13,6 +13,8 @@ class WheelRecommendationSchema(BaseModel):
     put_strike: Optional[float] = None
     put_expiry: Optional[str] = None
     put_premium: Optional[float] = None
+    # How put_premium was priced: "bid" or "no_executable_bid".
+    premium_source: Optional[str] = None
     # iv_rank is injected dynamically as a dict by the router — not read from DB column
     # Dual confidence scores
     quant_score: Optional[float] = None

@@ -14,7 +14,11 @@ Expectancy ranking (both modes, printed on every card)
 -------------------------------------------------------
   EV per contract = (1 - p) * premium - p * assignment_loss
   p = assignment chance (delta_abs, or assignment_chance_pct / 100)
-  premium = mid_premium * 100
+  premium = sale_price * 100, where sale_price is the bid, what the
+  seller actually collects. A last trade is never the premium (TXN
+  Nov 13 $270 put, Oct 26 2026: bid $1.55, mid $2.50, last trade
+  $5.00). A candidate with no executable bid is excluded, never
+  ranked at a stale price.
   assignment_loss = max(0, strike - 0.9 * current_price) * 100
   rank = EV / (strike * 100), times the mode penalties
 
@@ -53,7 +57,7 @@ EXPIRY_WEEK_DTE = 7
 RANKING_FORMULA_TEXT = (
     "EV = (1 - p) * premium - p * assignment_loss  |  "
     "p = assignment chance (delta);  "
-    "premium = mid * 100;  "
+    "premium = sale price (bid) * 100, never a last trade;  "
     "assignment_loss = max(0, strike - 0.9 * price) * 100;  "
     "rank = EV / (strike * 100), times mode penalties"
 )

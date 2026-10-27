@@ -142,10 +142,32 @@ export default function WheelCard({ rec, account, mode, onAccepted }) {
   const [showModal, setShowModal] = useState(false)
 
   const capitalRequired = rec.put_strike ? rec.put_strike * 100 : null
-  const isOverLimit = account && capitalRequired && capitalRequired > account.max_single_position
-  const pctOfAccount = account && capitalRequired && account.balance > 0
-    ? Math.round((capitalRequired / account.balance) * 100)
+  // Position limit uses the resolved account equity from /api/account
+  // (Challenge equity, else TRADEIQ_ACCOUNT_EQUITY, else $100,000
+  // default), never the stored manual balance, which is created at
+  // $0. The old code divided by that $0 balance and showed
+  // "(null% of your account) - exceeds your 10% position limit of $0"
+  // for every trade. Equity is always positive in the payload, so a
+  // $0 limit cannot appear; when no equity is available at all the
+  // limit is not checked instead of blocking on $0.
+  const accountEquity = account && (account.equity > 0 ? account.equity
+    : account.balance > 0 ? account.balance : null)
+  const equityKnown = accountEquity != null && accountEquity > 0
+  const isOverLimit = equityKnown && capitalRequired && account.max_single_position != null
+    ? capitalRequired > account.max_single_position
+    : false
+  const pctOfAccount = equityKnown && capitalRequired
+    ? Math.round((capitalRequired / accountEquity) * 100)
     : null
+  const premiumSourceLabel = rec.premium_source === 'bid'
+    ? 'Premium at bid'
+    : rec.premium_source === 'no_executable_bid'
+      ? 'No executable bid'
+      : rec.premium_source === 'legacy_mid'
+        ? 'Premium at mid (legacy)'
+        : rec.premium_source
+          ? `Premium: ${rec.premium_source}`
+          : null
 
   return (
     <div style={s.card}>
@@ -219,6 +241,15 @@ export default function WheelCard({ rec, account, mode, onAccepted }) {
             <td style={s.td}>IV Rank</td>
             <td style={s.tdVal}>{rec.iv_rank?.iv_rank != null ? `${rec.iv_rank.iv_rank}` : '—'}</td>
           </tr>
+          {premiumSourceLabel && (
+            <tr>
+              <td style={{ ...s.td, fontSize: '11px' }} colSpan={4}>
+                {premiumSourceLabel}
+                {rec.premium_source === 'bid' && ' - what you would actually collect selling the put'}
+                {rec.premium_source === 'no_executable_bid' && ' - no bid, so no sale price is shown'}
+              </td>
+            </tr>
+          )}
           {(rec.pct_otm != null || rec.breakeven != null) && (
             <tr>
               <td style={s.td}>% OTM</td>
@@ -234,9 +265,11 @@ export default function WheelCard({ rec, account, mode, onAccepted }) {
 
       {capitalRequired && account && (
         <div style={sizingStyle(isOverLimit)}>
-          {isOverLimit
-            ? `⚠ This trade requires ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of your account) — exceeds your ${account.max_position_pct}% position limit of $${account.max_single_position.toLocaleString()}. Consider skipping or reducing size.`
-            : `✓ Capital required: ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of account) — within your $${account.max_single_position.toLocaleString()} position limit.`
+          {!equityKnown
+            ? `Account equity unknown - position limit not checked. This trade requires ~$${capitalRequired.toLocaleString()} of collateral.`
+            : isOverLimit
+              ? `⚠ This trade requires ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of your $${accountEquity.toLocaleString()} account${account.equity_source ? `, ${account.equity_source}` : ''}) - exceeds your ${account.max_position_pct}% position limit of $${account.max_single_position.toLocaleString()}. Consider skipping or reducing size.`
+              : `✓ Capital required: ~$${capitalRequired.toLocaleString()} (${pctOfAccount}% of your $${accountEquity.toLocaleString()} account${account.equity_source ? `, ${account.equity_source}` : ''}) - within your $${account.max_single_position.toLocaleString()} position limit.`
           }
         </div>
       )}

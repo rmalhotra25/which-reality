@@ -103,6 +103,8 @@ def _migrate_add_columns():
         ("setup_alerts", "risk_pct_actual",      "FLOAT"),
         ("setup_alerts", "sizing_note",          "TEXT"),
         ("setup_alerts", "sizing_source",        "VARCHAR(20)"),
+        # Wheel premium priced at the bid (Oct 26 2026 fix)
+        ("wheel_recommendations", "premium_source", "VARCHAR(20)"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in additions:

@@ -109,11 +109,24 @@ class WheelEngine:
                         if snapped:
                             rec["put_strike"] = snapped["strike"]
                             rec["put_expiry"] = snapped["expiry"]
-                            if snapped["mid_premium"] > 0:
-                                rec["put_premium"] = snapped["mid_premium"]
+                            # Wheel put sales are priced at the bid, what
+                            # the seller collects, never at a last trade.
+                            # TXN Nov 13 $270 put: bid $1.55, mid $2.50,
+                            # last trade $5.00. A snap with no executable
+                            # bid keeps no premium, so the card never
+                            # shows a stale price as if it were real.
+                            sale_price = snapped.get("sale_price", 0) or 0
+                            rec["premium_source"] = snapped.get(
+                                "premium_source", "no_executable_bid"
+                            )
+                            if sale_price > 0:
+                                rec["put_premium"] = sale_price
+                            else:
+                                rec.pop("put_premium", None)
                             logger.info(
-                                "WheelEngine: snapped %s strike %.2f → %.2f (exp %s)",
+                                "WheelEngine: snapped %s strike %.2f → %.2f (exp %s, premium $%.2f at %s)",
                                 ticker, suggested, snapped["strike"], snapped["expiry"],
+                                sale_price, rec["premium_source"],
                             )
                     except Exception as snap_err:
                         logger.debug("snap_put_strike skipped for %s: %s", ticker, snap_err)
@@ -149,6 +162,7 @@ class WheelEngine:
                 put_strike=put_strike,
                 put_expiry=rec.get("put_expiry"),
                 put_premium=put_premium,
+                premium_source=rec.get("premium_source"),
                 iv_rank=rec.get("iv_rank"),
                 quant_score=round(quant_score, 1) if quant_score is not None else None,
                 qual_score=round(qual_score, 1),

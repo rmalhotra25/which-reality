@@ -33,10 +33,14 @@ reason, instead of building a second directional or champions system.
 The down-market put strategy is SHADOW ONLY and Post-Earnings Drift
 is RETIRED; both are reported the same way.
 
-Verdict (build_verdict): the top of the tab is three binary answers,
-BUY THE STOCK or DON'T BUY THE STOCK, SELL THE PUT or DON'T SELL A
-PUT, BUY THE CALL or DON'T BUY THE CALL, computed only from the
-quant results above, never by Claude, and with no threshold loosened.
+Verdict (build_verdict): the top of the tab is tiered, not binary.
+BUY NOW keeps the strict old BUY rule, WAIT FOR ENTRY is a good trend
+with no trigger today, AVOID is a broken trend, and CANNOT JUDGE
+means a gate or trend input is missing, so no stock judgment is
+claimed. The put is offered on BUY NOW as before, and on WAIT FOR
+ENTRY only as a discount entry with a 4% cushion floor. The call
+stays BUY NOW only. All tiers are computed only from the quant
+results above, never by Claude, and BUY NOW has no threshold loosened.
 The stock verdict is based on data, not on setups alone:
 
 - Stock ticker setups that provide conviction: the LIVE setups,
@@ -337,18 +341,22 @@ def _json_safe(value):
 
 
 # ---------------------------------------------------------------------------
-# Verdict: three binary answers, computed only from quant results.
+# Verdict: tiered answers, computed only from quant results.
 #
-# BUY THE STOCK only when at least one LIVE setup (Quality Pullback or
+# BUY NOW only when at least one LIVE setup (Quality Pullback or
 # Volume Breakout) passes, the earnings date is known and more than 5
 # days away, and the SPY gate passes. Those gates are already enforced
 # by the evaluators; the verdict re-checks them so a setup can never
 # produce a BUY on its own if a gate is unknown or blocked. Premium
 # at Support is SHADOW, so it never makes a BUY on its own. No
-# threshold is loosened, no new buy signal is invented, and no missing
-# data is counted as support. News, earnings, trend, quality, volume,
-# and the SPY gate are listed in the conviction summary as supporting,
-# against, or missing, in plain language.
+# threshold is loosened for BUY NOW, no new buy signal is invented,
+# and no missing data is counted as support. WAIT FOR ENTRY, AVOID,
+# and CANNOT JUDGE are not buys: WAIT shows a trigger price, an
+# invalidation, a drop and news context, and a dated fundamental
+# snapshot when one exists, so the user can judge a dip instead of
+# being told only that today is not a buy. News, earnings, trend,
+# quality, volume, and the SPY gate are listed in the conviction
+# summary as supporting, against, or missing, in plain language.
 # ---------------------------------------------------------------------------
 
 _LIVE_STOCK_SETUPS = ("quality_pullback", "volume_breakout")
@@ -646,11 +654,253 @@ def _what_would_change(qp_cond, vb_cond, earnings_days, spy_gate) -> str:
     return "A fresh pullback to an average, or a volume breakout, would change this."
 
 
+_FUNDAMENTALS_SNAPSHOT = None
+_FUNDAMENTALS_SNAPSHOT_LOADED = False
+
+
+def _load_fundamentals_snapshot() -> dict:
+    """Weekly quality screener v2 snapshot, dated 2026-10-26.
+
+    Only survivors are in the file. A ticker absent here is not
+    verified in this snapshot, never a failed fundamental. The file
+    is loaded once and cached; a missing or unreadable file means
+    every ticker is not verified, not guessed.
+    """
+    global _FUNDAMENTALS_SNAPSHOT, _FUNDAMENTALS_SNAPSHOT_LOADED
+    if _FUNDAMENTALS_SNAPSHOT_LOADED:
+        return _FUNDAMENTALS_SNAPSHOT or {}
+    _FUNDAMENTALS_SNAPSHOT_LOADED = True
+    try:
+        import json
+        import os
+
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "data",
+            "quality_screener_v2_2026-10-26.json",
+        )
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        _FUNDAMENTALS_SNAPSHOT = payload or {}
+    except Exception:
+        _FUNDAMENTALS_SNAPSHOT = {}
+    return _FUNDAMENTALS_SNAPSHOT
+
+
+def _fundamentals_for(ticker: str, override) -> dict:
+    """Fundamentals for one ticker, or a not-verified record.
+
+    An explicit override (from a test, or a newer snapshot) wins.
+    Otherwise the dated screener snapshot is used. No fundamental
+    is ever invented for a ticker that is not in the snapshot.
+    """
+    if override is not None:
+        if isinstance(override, dict) and override.get("status") == "not_verified":
+            return override
+        if isinstance(override, dict):
+            return {"status": "verified", "run_date": "2026-10-26",
+                    "source": "quality_screener_v2", **override}
+        return override
+    snapshot = _load_fundamentals_snapshot()
+    tickers = (snapshot or {}).get("tickers") or {}
+    entry = tickers.get((ticker or "").upper())
+    if entry is None:
+        return {
+            "status": "not_verified",
+            "run_date": None,
+            "source": "quality_screener_v2",
+            "note": (
+                "This ticker is not in the 2026-10-26 quality screener "
+                "v2 survivors, so no fundamental is verified here. "
+                "A WAIT verdict never becomes a buy on news alone."
+            ),
+        }
+    return {"status": "verified", "run_date": snapshot.get("run_date"),
+            "source": "quality_screener_v2", **entry}
+
+
+def _classify_news(news: dict) -> dict:
+    """Headline category for the latest news item, nothing more.
+
+    Keyword-based, labelled as headline only. A category does not
+    prove revenue, margins, or cash flow changed or stayed intact.
+    An earnings or guidance headline is flagged as potentially
+    fundamental, because the numbers behind it are what matter.
+    """
+    latest = (news or {}).get("latest") or {}
+    title = (latest.get("title") or "").strip()
+    title_lower = title.lower()
+    if any(k in title_lower for k in ("earnings", "guidance", "outlook",
+                                      "quarterly results", "q3 results",
+                                      "q4 results", "revenue")):
+        category = "earnings_guidance"
+        note = (
+            "Earnings or guidance headline: treat as potentially "
+            "fundamental until the reported numbers are checked. "
+            "A headline alone does not prove the thesis changed."
+        )
+    elif any(k in title_lower for k in ("analyst", "downgrade", "upgrade",
+                                        "price target", "rating")):
+        category = "analyst"
+        note = (
+            "Analyst headline: an opinion change, not a company "
+            "fundamental by itself. It does not show revenue, "
+            "margins, or cash flow changed."
+        )
+    elif any(k in title_lower for k in ("sector", "industry", "market",
+                                        "federal reserve", "interest rate")):
+        category = "sector_macro"
+        note = (
+            "Sector or market headline: a drop on this kind of news "
+            "is not by itself a company fundamental break, but it "
+            "is also not proof the company is unaffected."
+        )
+    elif title:
+        category = "company_news"
+        note = (
+            "Company headline, not classified as earnings, analyst, "
+            "or sector news. Headline category only: it does not "
+            "prove fundamentals changed or stayed intact."
+        )
+    else:
+        category = "none"
+        note = "No news headline could be verified, so no news context is claimed."
+    return {
+        "category": category,
+        "title": title or None,
+        "published_date": latest.get("published_date"),
+        "publisher": latest.get("publisher"),
+        "url": latest.get("url"),
+        "fresh": bool((news or {}).get("fresh_company_release")),
+        "note": note,
+    }
+
+
+def _build_entry_plan(ticker: str, price: float, trend: dict, quality: dict,
+                      indicators, qp_cond: dict, vb_cond: dict,
+                      earnings_days, earnings_known: bool, spy_gate: dict,
+                      news: dict, fundamentals_override) -> dict:
+    """WAIT FOR ENTRY detail: trigger, invalidation, and what flips it.
+
+    Every number comes from trend, indicators, or setup conditions.
+    Nothing is a target invented for this verdict. The buy zone is
+    the range between the 50-day and 200-day averages, where a
+    pullback would land, not a price to chase today.
+    """
+    ind = indicators or {}
+    ma50 = trend.get("ma50")
+    ma200 = trend.get("ma200")
+    prior_high = ind.get("prior_high_55") or (vb_cond or {}).get("prior_high_55")
+    prev_close = ind.get("prev_close")
+    day_change = None
+    if prev_close:
+        try:
+            day_change = round((price - prev_close) / prev_close * 100, 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            day_change = None
+    rsi = (quality.get("inputs") or {}).get("rsi")
+    if rsi is None:
+        rsi = ind.get("rsi")
+    vol_ratio = (quality.get("inputs") or {}).get("volume_ratio_vs_20d")
+    if vol_ratio is None:
+        vol20 = ind.get("vol20")
+        vol = ind.get("volume")
+        if vol and vol20:
+            vol_ratio = round(vol / vol20, 2)
+    distance_pullback = None
+    if ma50:
+        distance_pullback = round((ma50 - price) / price * 100, 2)
+    distance_breakout = None
+    if prior_high:
+        distance_breakout = round((prior_high - price) / price * 100, 2)
+    extended = bool(
+        (trend.get("price_vs_ma50_pct") is not None
+         and trend["price_vs_ma50_pct"] > 10)
+        or (rsi is not None and rsi > 75)
+    )
+    heavy_drop = bool(
+        day_change is not None and day_change <= -3
+        and vol_ratio is not None and vol_ratio >= 1.5
+    )
+    blocker = None
+    if not earnings_known:
+        blocker = "Earnings date unknown, so BUY is blocked until it is known."
+    elif earnings_days is not None and earnings_days <= 5:
+        blocker = f"Earnings in {earnings_days} day(s), so BUY is blocked until after the report."
+    elif spy_gate.get("spy_above_200") is False:
+        blocker = "SPY is below its 200-day average, so BUY is blocked until the market closes back above it."
+    elif spy_gate.get("spy_above_200") is None:
+        blocker = "SPY trend unknown, so BUY is blocked until it is known."
+    trigger_parts = []
+    if ma50 is not None:
+        trigger_parts.append(f"a pullback to the 50-day average at ${round(ma50, 2)}")
+    if prior_high is not None:
+        trigger_parts.append(f"a close above the 55-day high at ${round(prior_high, 2)}")
+    trigger_text = " or ".join(trigger_parts) if trigger_parts else "a fresh pullback or breakout"
+    flips_to_buy = (
+        f"BUY NOW on {trigger_text} on confirming volume, with earnings "
+        "more than 5 days away and SPY above its 200-day average."
+    )
+    if blocker:
+        flips_to_buy += f" Blocker today: {blocker}"
+    flips_to_avoid = "A close below the 200-day average would break the trend and flip this to AVOID."
+    if ma200 is not None:
+        flips_to_avoid = (
+            f"A close below ${round(ma200, 2)} would break the trend and flip this to AVOID."
+        )
+    news_context = _classify_news(news)
+    if news_context["category"] == "earnings_guidance":
+        flips_to_avoid += " A confirmed guidance cut or earnings miss would also flip it, it is not assumed from a headline alone."
+    notes = []
+    if extended:
+        notes.append(
+            "Extended: the price sits well above its 50-day average or RSI is over 75, "
+            "so a pullback is the entry, not a chase."
+        )
+    if heavy_drop:
+        notes.append(
+            "Heavy volume on a drop of 3% or more: check the news category above "
+            "before treating this as a bargain dip."
+        )
+    if news_context["category"] in ("analyst", "sector_macro"):
+        notes.append(
+            "Latest headline is analyst or sector news, not an earnings report. "
+            "That alone does not show the company fundamental changed."
+        )
+    return {
+        "buy_zone": (
+            [round(min(ma50, ma200), 2), round(max(ma50, ma200), 2)]
+            if ma50 is not None and ma200 is not None else None
+        ),
+        "pullback_price": _money(ma50),
+        "breakout_price": _money(prior_high),
+        "distance_to_pullback_pct": distance_pullback,
+        "distance_to_breakout_pct": distance_breakout,
+        "invalidation_price": _money(ma200),
+        "blocker": blocker,
+        "what_flips_to_buy": flips_to_buy,
+        "what_flips_to_avoid": flips_to_avoid,
+        "drop_context": {
+            "day_change_pct": day_change,
+            "price_vs_ma50_pct": trend.get("price_vs_ma50_pct"),
+            "price_vs_ma200_pct": trend.get("price_vs_ma200_pct"),
+            "rsi": round(rsi, 1) if rsi is not None else None,
+            "volume_ratio_vs_20d": vol_ratio,
+            "extended": extended,
+            "heavy_drop": heavy_drop,
+        },
+        "news_context": news_context,
+        "fundamentals": _fundamentals_for(ticker, fundamentals_override),
+        "notes": notes,
+    }
+
+
 def build_verdict(ticker: str, *, price: float, setups: list,
                   earnings: dict, spy_gate: dict, quality: dict,
                   trend: dict, iv_percentile, news: dict,
                   chain_puts: list, chain_calls: list,
-                  as_of: Optional[date] = None) -> dict:
+                  as_of: Optional[date] = None,
+                  indicators: Optional[dict] = None,
+                  fundamentals: Optional[dict] = None) -> dict:
     """Deterministic verdict from quant results only.
 
     Same inputs give the same verdict. Claude is never called here.
@@ -728,15 +978,30 @@ def build_verdict(ticker: str, *, price: float, setups: list,
     if iv_percentile is None:
         missing.append("IV rank is unavailable, so the put setup cannot be judged on IV.")
 
-    # Stock verdict. The earnings and SPY gates are re-checked here so
-    # a setup can never produce a BUY if a gate is unknown or blocked.
+    # Stock verdict, tiered. BUY NOW is unchanged and strict: a live
+    # setup fired, earnings known and more than 5 days away, SPY above
+    # its 200-day. Everything else is graded, not lumped into one
+    # DON'T BUY: WAIT FOR ENTRY (good trend, no trigger today),
+    # AVOID (trend broken), or CANNOT JUDGE (a gate or trend input
+    # is missing, so no stock judgment is claimed at all).
     can_buy = bool(passing) and earnings_ok and spy_ok
+    trend_broken = (
+        (trend.get("above_ma200") is False and trend.get("ma200_direction") == "falling")
+        or (trend.get("above_ma50") is False and trend.get("above_ma200") is False)
+    )
+    trend_unknown = trend.get("ma50") is None or trend.get("ma200") is None
+    entry_plan = _build_entry_plan(
+        ticker, price, trend, quality, indicators,
+        qp.get("conditions") or {}, vb.get("conditions") or {},
+        earnings_days, earnings_known, spy_gate, news, fundamentals,
+    )
     if can_buy:
         action = passing["action"]
         invalidation = action.get("invalidation_price")
         stock = {
             "decision": "buy",
-            "label": "BUY THE STOCK",
+            "tier": "buy_now",
+            "label": "BUY NOW",
             "reason": f"{passing.get('setup_name')} fired today, with a clear price where it is wrong.",
             "reasons": [f"{passing.get('setup_name')} fired today."] + supports[1:3],
             "what_would_change": (
@@ -752,17 +1017,75 @@ def build_verdict(ticker: str, *, price: float, setups: list,
             "invalidation_price": _money(invalidation),
             "target_price": _money(action.get("target_price")),
             "exit_rule": action.get("exit_rule"),
+            "entry_plan": None,
+            "blocker": None,
+        }
+    elif trend_broken:
+        avoid_reasons = []
+        if trend.get("above_ma200") is False:
+            avoid_reasons.append("Price is below its 200-day average.")
+        if trend.get("ma200_direction") == "falling":
+            avoid_reasons.append("The 200-day average is falling.")
+        if trend.get("above_ma50") is False:
+            avoid_reasons.append("Price is below its 50-day average.")
+        if not avoid_reasons:
+            avoid_reasons.append("The trend is broken, so no entry is offered.")
+        stock = {
+            "decision": "avoid",
+            "tier": "avoid",
+            "label": "AVOID",
+            "reason": avoid_reasons[0],
+            "reasons": avoid_reasons[:3],
+            "what_would_change": (
+                "A close back above the 200-day average, with that average "
+                "rising again, plus a fresh pullback or breakout, would change this."
+            ),
+            "positive_note": "Avoiding a broken trend is also a decision, it is not a missed trade by default.",
+            "price": _money(price),
+            "passing_setup_key": None,
+            "passing_setup_name": None,
+            "entry_price": None,
+            "invalidation_price": _money(trend.get("ma200")),
+            "target_price": None,
+            "exit_rule": None,
+            "entry_plan": None,
+            "blocker": None,
+        }
+    elif not earnings_known or spy_gate.get("spy_above_200") is None or trend_unknown:
+        missing_reasons = []
+        if not earnings_known:
+            missing_reasons.append("We do not know the next earnings date, so no buy can be judged until it is known.")
+        if spy_gate.get("spy_above_200") is None:
+            missing_reasons.append("The wider market trend is unknown, so no buy can be judged until it is known.")
+        if trend_unknown:
+            missing_reasons.append("The trend averages are unavailable, so no buy can be judged until they are known.")
+        stock = {
+            "decision": "cannot_judge",
+            "tier": "cannot_judge",
+            "label": "CANNOT JUDGE",
+            "reason": missing_reasons[0],
+            "reasons": missing_reasons[:3],
+            "what_would_change": _what_would_change(
+                qp.get("conditions") or {}, vb.get("conditions") or {},
+                earnings_days, spy_gate.get("spy_above_200"),
+            ),
+            "positive_note": "No verdict is better than a guessed one. The trend and trigger are shown below, but no buy is offered until the missing data is known.",
+            "price": _money(price),
+            "passing_setup_key": None,
+            "passing_setup_name": None,
+            "entry_price": None,
+            "invalidation_price": None,
+            "target_price": None,
+            "exit_rule": None,
+            "entry_plan": entry_plan,
+            "blocker": entry_plan["blocker"],
         }
     else:
         reasons = []
-        if not earnings_known:
-            reasons.append("We do not know the next earnings date, so every setup is blocked until it is known.")
-        elif not earnings_ok:
-            reasons.append(f"Earnings are in {earnings_days} day(s), so setups are blocked until after the report.")
+        if not earnings_ok:
+            reasons.append(f"Earnings are in {earnings_days} day(s), so BUY is blocked until after the report.")
         if spy_below:
-            reasons.append("The wider market is below its 200-day average, so new buys are blocked.")
-        elif spy_gate.get("spy_above_200") is None:
-            reasons.append("The wider market trend is unknown, so new buys are blocked.")
+            reasons.append("The wider market is below its 200-day average, so BUY is blocked.")
         suppressed_live = [
             s for s in setups
             if s.get("setup_key") in _LIVE_STOCK_SETUPS
@@ -776,38 +1099,66 @@ def build_verdict(ticker: str, *, price: float, setups: list,
             )
         if not reasons:
             reasons.append("No pullback to a rising average and no volume breakout today.")
+        elif len(reasons) == 1 and not earnings_ok is False:
+            reasons.append("No pullback to a rising average and no volume breakout today.")
         reasons = reasons[:3]
         stock = {
-            "decision": "dont_buy",
-            "label": "DON'T BUY THE STOCK",
+            "decision": "wait",
+            "tier": "wait_for_entry",
+            "label": "WAIT FOR ENTRY",
             "reason": reasons[0],
             "reasons": reasons,
-            "what_would_change": _what_would_change(
-                qp.get("conditions") or {}, vb.get("conditions") or {},
-                earnings_days, spy_gate.get("spy_above_200"),
-            ),
-            "positive_note": "That is a good outcome too. It saved a bad trade today.",
+            "what_would_change": entry_plan["what_flips_to_buy"],
+            "positive_note": "Waiting for a trigger price is the entry plan, not indecision.",
             "price": _money(price),
             "passing_setup_key": None,
             "passing_setup_name": None,
             "entry_price": None,
-            "invalidation_price": None,
+            "invalidation_price": entry_plan["invalidation_price"],
             "target_price": None,
             "exit_rule": None,
+            "entry_plan": entry_plan,
+            "blocker": entry_plan["blocker"],
         }
 
-    # Sell a put, only when the stock is a BUY.
-    if stock["decision"] != "buy":
+    # Sell a put: on BUY NOW, as before, and on WAIT FOR ENTRY, as a
+    # discount entry, but only with the same gates and a real cushion.
+    # A WAIT put needs earnings known and more than 5 days away, SPY
+    # above its 200-day, and a strike at least 4% below the price.
+    # A BUY put keeps its original rule, with its cushion reported.
+    # CANNOT JUDGE, AVOID, and any gate block offer no put at all.
+    put_eligible = stock["decision"] in ("buy", "wait")
+    if not put_eligible or not earnings_ok or not spy_ok:
+        if stock["decision"] == "cannot_judge" and not earnings_known:
+            put_reason, put_code = (
+                "The next earnings date is unknown, so no put can be judged.",
+                "earnings_unknown",
+            )
+        elif not earnings_ok:
+            put_reason, put_code = (
+                "Earnings block the stock verdict, so no put is offered.",
+                "earnings_block",
+            )
+        elif not spy_ok:
+            put_reason, put_code = (
+                "The wider market gate blocks the stock verdict, so no put is offered.",
+                "spy_block",
+            )
+        else:
+            put_reason, put_code = (
+                f"The stock verdict is {stock['label']}, so no put is offered.",
+                "stock_not_buy_now",
+            )
         put = {
             "decision": "not_available",
             "label": "NOT AVAILABLE",
-            "reason": "The stock verdict is Don't Buy, so no put is offered.",
-            "reason_code": "stock_not_buy",
+            "reason": put_reason,
+            "reason_code": put_code,
             "strike": None, "expiry": None, "dte": None,
             "premium_per_share": None, "premium_per_contract": None,
             "breakeven": None, "assignment_price": None,
             "max_loss_per_contract": None, "price_source": None,
-            "why": None,
+            "why": None, "cushion_pct": None, "earnings_before_expiry": None,
         }
     else:
         row, fail = _select_put(price, chain_puts)
@@ -822,38 +1173,66 @@ def build_verdict(ticker: str, *, price: float, setups: list,
                 "premium_per_share": None, "premium_per_contract": None,
                 "breakeven": None, "assignment_price": None,
                 "max_loss_per_contract": None, "price_source": None,
-                "why": None,
+                "why": None, "cushion_pct": None, "earnings_before_expiry": None,
             }
         else:
             strike = _money(row.get("strike"))
             premium = _money(row.get("bid"))
-            put = {
-                "decision": "sell",
-                "label": "SELL THE PUT",
-                "reason": f"Sell the {row.get('expiry')} ${strike} put and collect ${round(premium * 100)} now.",
-                "reason_code": None,
-                "strike": strike,
-                "expiry": row.get("expiry"),
-                "dte": row.get("dte"),
-                "premium_per_share": premium,
-                "premium_per_contract": round(premium * 100, 2),
-                "breakeven": _money(strike - premium),
-                "assignment_price": strike,
-                "max_loss_per_contract": round((strike - premium) * 100, 2),
-                "price_source": "bid",
-                "why": (
-                    f"You collect ${round(premium * 100)} now and buy the stock at "
-                    f"${strike} if it falls there, lower than today's ${price}."
-                ),
-            }
+            cushion = round((price - strike) / price * 100, 2) if price else None
+            if stock["decision"] == "wait" and cushion is not None and cushion < 4.0:
+                put = {
+                    "decision": "dont_sell",
+                    "label": "DON'T SELL A PUT",
+                    "reason": (
+                        f"The nearest ~0.30 delta put sits only {cushion}% below "
+                        "the price, below the 4% cushion floor for a WAIT entry, "
+                        "so no put is offered."
+                    ),
+                    "reason_code": "cushion_too_thin",
+                    "strike": None, "expiry": None, "dte": None,
+                    "premium_per_share": None, "premium_per_contract": None,
+                    "breakeven": None, "assignment_price": None,
+                    "max_loss_per_contract": None, "price_source": None,
+                    "why": None, "cushion_pct": cushion, "earnings_before_expiry": None,
+                }
+            else:
+                put_dte = row.get("dte")
+                earnings_before = None
+                if earnings_days is not None and put_dte is not None:
+                    try:
+                        earnings_before = bool(earnings_days <= float(put_dte))
+                    except (TypeError, ValueError):
+                        earnings_before = None
+                put = {
+                    "decision": "sell",
+                    "label": "SELL THE PUT",
+                    "reason": f"Sell the {row.get('expiry')} ${strike} put and collect ${round(premium * 100)} now.",
+                    "reason_code": None,
+                    "strike": strike,
+                    "expiry": row.get("expiry"),
+                    "dte": row.get("dte"),
+                    "premium_per_share": premium,
+                    "premium_per_contract": round(premium * 100, 2),
+                    "breakeven": _money(strike - premium),
+                    "assignment_price": strike,
+                    "max_loss_per_contract": round((strike - premium) * 100, 2),
+                    "price_source": "bid",
+                    "why": (
+                        f"You collect ${round(premium * 100)} now and buy the stock at "
+                        f"${strike} if it falls there, lower than today's ${price}."
+                    ),
+                    "cushion_pct": cushion,
+                    "earnings_before_expiry": earnings_before,
+                }
 
-    # Buy a call, only when the stock is a BUY.
+    # Buy a call, only when the stock is BUY NOW. A WAIT stock needs
+    # a move, not just quality, so no call is offered on WAIT.
     if stock["decision"] != "buy":
         call = {
             "decision": "not_available",
             "label": "NOT AVAILABLE",
-            "reason": "The stock verdict is Don't Buy, so no call is offered.",
-            "reason_code": "stock_not_buy",
+            "reason": f"The stock verdict is {stock['label']}, not BUY NOW, so no call is offered.",
+            "reason_code": "stock_not_buy_now",
             "strike": None, "expiry": None, "dte": None,
             "premium_per_share": None, "premium_per_contract": None,
             "breakeven": None, "max_loss_per_contract": None,
@@ -1243,6 +1622,7 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         iv_percentile=inputs.iv_percentile, news=news,
         chain_puts=inputs.chain_puts, chain_calls=inputs.chain_calls,
         as_of=signal_date or date.today(),
+        indicators=ind,
     )
     chain_available = bool(inputs.chain_puts or inputs.chain_calls)
     if not chain_available and inputs.chain_error is None:

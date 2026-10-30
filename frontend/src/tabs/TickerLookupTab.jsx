@@ -66,13 +66,13 @@ const S = {
     padding: '12px 14px', fontSize: '13px', color: '#a0aec0', lineHeight: 1.6, marginTop: '8px',
   },
   verdictCard: (tone) => ({
-    background: tone === 'buy' ? '#12261a' : '#1d1a12',
-    border: tone === 'buy' ? '1px solid #276749' : '1px solid #975a16',
+    background: tone === 'buy' ? '#12261a' : tone === 'wait' ? '#16233a' : tone === 'avoid' ? '#2d1515' : '#1d1a12',
+    border: tone === 'buy' ? '1px solid #276749' : tone === 'wait' ? '1px solid #2b6cb0' : tone === 'avoid' ? '1px solid #742a2a' : '1px solid #975a16',
     borderRadius: '12px', padding: '20px',
   }),
   verdictBig: (tone) => ({
     fontSize: '30px', fontWeight: 800, letterSpacing: '0.01em',
-    color: tone === 'buy' ? '#68d391' : '#f6e05e', lineHeight: 1.2,
+    color: tone === 'buy' ? '#68d391' : tone === 'wait' ? '#90cdf4' : tone === 'avoid' ? '#fc8181' : '#f6e05e', lineHeight: 1.2,
   }),
   verdictReason: { fontSize: '15px', color: '#e2e8f0', lineHeight: 1.5, marginTop: '8px' },
   verdictList: { fontSize: '13px', color: '#a0aec0', lineHeight: 1.7, margin: '10px 0 0', paddingLeft: '18px' },
@@ -164,8 +164,11 @@ export default function TickerLookupTab() {
   return (
     <div style={S.root}>
       <div style={S.banner}>
-        Type a ticker, get a clear answer first: Buy the stock or Don't Buy the stock, Sell the
-        Put or Don't Sell a Put, Buy the Call or Don't Buy the Call. The answer comes from the
+        Type a ticker, get a clear answer first: Buy Now, Wait for Entry, Avoid, or Cannot Judge,
+        plus Sell the Put or Don't Sell a Put, and Buy the Call or Don't Buy the Call. Buy Now
+        keeps the strict setup rule. Wait for Entry shows the trigger price, the invalidation,
+        the drop and news context, and a dated fundamental snapshot when one exists, so you can
+        judge a dip instead of only being told today is not a buy. The answer comes from the
         same rule registry check the alert engine runs, for one ticker, at the data timestamp
         shown, plus the latest company news and the next earnings date. No alert fires, no
         journal row is created, no notification is sent. The full rule check and the full
@@ -202,8 +205,8 @@ export default function TickerLookupTab() {
 
       {result && result.verdict && (
         <>
-          <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : 'hold')}>
-            <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : 'hold')}>
+          <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
+            <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
               {result.verdict.stock.label}
             </div>
             <div style={S.verdictReason}>{result.verdict.stock.reason}</div>
@@ -233,7 +236,11 @@ export default function TickerLookupTab() {
                     </div>
                     <div style={S.optionSub}>
                       Breakeven ${val(result.verdict.put.breakeven)} | You buy at ${val(result.verdict.put.assignment_price)} if assigned |
-                      Most you can lose ${val(result.verdict.put.max_loss_per_contract)} per contract
+                      Most you can lose ${val(result.verdict.put.max_loss_per_contract)} per contract |
+                      Cushion {val(result.verdict.put.cushion_pct)}%
+                      {result.verdict.put.earnings_before_expiry != null && (
+                        <span> | Earnings before expiry: {result.verdict.put.earnings_before_expiry ? 'yes' : 'no'}</span>
+                      )}
                     </div>
                     <div style={S.optionSub}>{result.verdict.put.why}</div>
                   </>
@@ -260,6 +267,71 @@ export default function TickerLookupTab() {
               </div>
             </div>
           </div>
+
+          {result.verdict.stock.entry_plan && (
+            <div style={S.card}>
+              <div style={S.sectionLabel}>Wait for Entry plan</div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Trigger: </strong>
+                Pullback to ${val(result.verdict.stock.entry_plan.pullback_price)}
+                {result.verdict.stock.entry_plan.distance_to_pullback_pct != null && (
+                  <span> ({val(result.verdict.stock.entry_plan.distance_to_pullback_pct)}% from today)</span>
+                )}
+                {result.verdict.stock.entry_plan.breakout_price != null && (
+                  <span> or a close above ${val(result.verdict.stock.entry_plan.breakout_price)}
+                  {result.verdict.stock.entry_plan.distance_to_breakout_pct != null && (
+                    <span> ({val(result.verdict.stock.entry_plan.distance_to_breakout_pct)}% away)</span>
+                  )}</span>
+                )}
+                {result.verdict.stock.entry_plan.buy_zone && (
+                  <span> | Buy zone ${val(result.verdict.stock.entry_plan.buy_zone[0])} to ${val(result.verdict.stock.entry_plan.buy_zone[1])}</span>
+                )}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Wrong if: </strong>
+                {result.verdict.stock.entry_plan.what_flips_to_avoid}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>What flips it to Buy Now: </strong>
+                {result.verdict.stock.entry_plan.what_flips_to_buy}
+              </div>
+              {result.verdict.stock.entry_plan.blocker && (
+                <div style={{ ...S.note, marginTop: '6px' }}>
+                  <strong style={{ color: '#e2e8f0' }}>Blocker today: </strong>
+                  {result.verdict.stock.entry_plan.blocker}
+                </div>
+              )}
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Drop context: </strong>
+                Day {val(result.verdict.stock.entry_plan.drop_context.day_change_pct)}% |
+                vs 50-day {val(result.verdict.stock.entry_plan.drop_context.price_vs_ma50_pct)}% |
+                vs 200-day {val(result.verdict.stock.entry_plan.drop_context.price_vs_ma200_pct)}% |
+                RSI {val(result.verdict.stock.entry_plan.drop_context.rsi)} |
+                Volume {val(result.verdict.stock.entry_plan.drop_context.volume_ratio_vs_20d)}x the 20-day average
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>News ({val(result.verdict.stock.entry_plan.news_context.category)}): </strong>
+                {result.verdict.stock.entry_plan.news_context.title || 'No headline verified. '}
+                {result.verdict.stock.entry_plan.news_context.note}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Fundamentals: </strong>
+                {result.verdict.stock.entry_plan.fundamentals.status === 'verified' ? (
+                  <span>
+                    Screener {val(result.verdict.stock.entry_plan.fundamentals.run_date)}: composite {val(result.verdict.stock.entry_plan.fundamentals.composite)} ({val(result.verdict.stock.entry_plan.fundamentals.label)}), smoothed Rule of 40 {val(result.verdict.stock.entry_plan.fundamentals.smoothed_rule_of_40)}, revenue CAGR 3y {val(result.verdict.stock.entry_plan.fundamentals.rev_cagr_3y_pct)}%, FCF margin avg 3y {val(result.verdict.stock.entry_plan.fundamentals.fcf_margin_avg_3y_pct)}%, operating margin {val(result.verdict.stock.entry_plan.fundamentals.operating_margin_pct)}%.
+                  </span>
+                ) : (
+                  <span>{val(result.verdict.stock.entry_plan.fundamentals.note)}</span>
+                )}
+              </div>
+              {result.verdict.stock.entry_plan.notes.map((n, i) => (
+                <div key={i} style={{ ...S.note, marginTop: '6px' }}>{n}</div>
+              ))}
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                A dip is not automatically a bargain. This plan shows the trigger and the invalidation, it does not say to buy today.
+              </div>
+            </div>
+          )}
 
           <div style={S.card}>
             <div style={S.sectionLabel}>Why, in plain language</div>

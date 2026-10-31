@@ -41,6 +41,15 @@ claimed. The put is offered on BUY NOW as before, and on WAIT FOR
 ENTRY only as a discount entry with a 4% cushion floor. The call
 stays BUY NOW only. All tiers are computed only from the quant
 results above, never by Claude, and BUY NOW has no threshold loosened.
+
+Long-term lane (services.longterm_valuation): a separate verdict
+from the timing verdict, computed from the dated quality screener
+snapshot and, when reported statements are supplied, a shared-core
+DCF. It never changes the timing verdict and never changes put or
+call gating. A timing AVOID with a strong long-term lane reads as
+a long-term buy candidate to wait for, not as "never buy this
+company". When no statements are supplied, the DCF is BLOCKED or
+NOT VERIFIED, never derived from market cap divided by P/S.
 The stock verdict is based on data, not on setups alone:
 
 - Stock ticker setups that provide conviction: the LIVE setups,
@@ -900,7 +909,11 @@ def build_verdict(ticker: str, *, price: float, setups: list,
                   chain_puts: list, chain_calls: list,
                   as_of: Optional[date] = None,
                   indicators: Optional[dict] = None,
-                  fundamentals: Optional[dict] = None) -> dict:
+                  fundamentals: Optional[dict] = None,
+                  longterm: Optional[dict] = None,
+                  longterm_statements: Optional[dict] = None,
+                  longterm_risk_free_rate: Optional[float] = None,
+                  longterm_erp: Optional[float] = None) -> dict:
     """Deterministic verdict from quant results only.
 
     Same inputs give the same verdict. Claude is never called here.
@@ -1290,10 +1303,54 @@ def build_verdict(ticker: str, *, price: float, setups: list,
                 ),
             }
 
+    # Long-term lane: computed after timing, never used by put or
+    # call gating above. When the lane says "Long-term buy
+    # candidate, wait for entry", the entry prices come from the
+    # WAIT entry plan computed above, even when the timing verdict
+    # itself is AVOID and therefore carries no entry plan of its own.
+    if longterm is None:
+        try:
+            from services.longterm_valuation import build_longterm
+
+            longterm = build_longterm(
+                ticker, price,
+                _fundamentals_for(ticker, fundamentals),
+                statements=longterm_statements,
+                risk_free_rate=longterm_risk_free_rate,
+                erp=longterm_erp,
+            )
+        except Exception as exc:
+            logger.warning(
+                "ticker_lookup: long-term lane failed for %s: %s",
+                ticker, exc,
+            )
+            longterm = {
+                "verdict": "blocked",
+                "label": "BLOCKED",
+                "reason": "The long-term lane could not be computed.",
+                "reason_code": "longterm_error",
+                "quality": {"status": "not_verified"},
+                "dcf": None, "wacc": None,
+                "bridge_line": None, "bridge_entry": None,
+                "notes": ["Long-term lane error, timing verdict unaffected."],
+            }
+    if isinstance(longterm, dict) and longterm.get("bridge_line") \
+            and not longterm.get("bridge_entry"):
+        longterm = dict(longterm)
+        longterm["bridge_entry"] = {
+            "pullback_price": entry_plan.get("pullback_price"),
+            "breakout_price": entry_plan.get("breakout_price"),
+            "buy_zone": entry_plan.get("buy_zone"),
+            "invalidation_price": entry_plan.get("invalidation_price"),
+            "what_flips_to_buy": entry_plan.get("what_flips_to_buy"),
+            "blocker": entry_plan.get("blocker"),
+        }
+
     return {
         "stock": stock,
         "put": put,
         "call": call,
+        "longterm": longterm,
         "conviction": {
             "supports": supports,
             "against": against,
@@ -1569,7 +1626,10 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
                     provider=None, db=None,
                     registry_statuses: Optional[dict] = None,
                     explain_fn=None,
-                    signal_date: Optional[date] = None) -> dict:
+                    signal_date: Optional[date] = None,
+                    longterm_statements: Optional[dict] = None,
+                    longterm_risk_free_rate: Optional[float] = None,
+                    longterm_erp: Optional[float] = None) -> dict:
     """Pure, deterministic lookup for one ticker.
 
     Same inputs give the same result. No DB writes, no alerts, no
@@ -1623,6 +1683,9 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         chain_puts=inputs.chain_puts, chain_calls=inputs.chain_calls,
         as_of=signal_date or date.today(),
         indicators=ind,
+        longterm_statements=longterm_statements,
+        longterm_risk_free_rate=longterm_risk_free_rate,
+        longterm_erp=longterm_erp,
     )
     chain_available = bool(inputs.chain_puts or inputs.chain_calls)
     if not chain_available and inputs.chain_error is None:

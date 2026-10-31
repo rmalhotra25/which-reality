@@ -164,8 +164,11 @@ export default function TickerLookupTab() {
   return (
     <div style={S.root}>
       <div style={S.banner}>
-        Type a ticker, get a clear answer first: Buy Now, Wait for Entry, Avoid, or Cannot Judge,
-        plus Sell the Put or Don't Sell a Put, and Buy the Call or Don't Buy the Call. Buy Now
+        Type a ticker, get a clear answer first: Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge,
+        plus Sell the Put or Don't Sell a Put, and Buy the Call or Don't Buy the Call. The long-term
+        lane comes first: is this a strong company, and is it undervalued on a 3 to 5 year view?
+        A timing Avoid for Now is not a verdict on the company, and the long-term lane never
+        changes the put or call answer. Buy Now
         keeps the strict setup rule. Wait for Entry shows the trigger price, the invalidation,
         the drop and news context, and a dated fundamental snapshot when one exists, so you can
         judge a dip instead of only being told today is not a buy. The answer comes from the
@@ -205,9 +208,96 @@ export default function TickerLookupTab() {
 
       {result && result.verdict && (
         <>
+          {result.verdict.longterm && (
+            <div style={S.card}>
+              <div style={S.sectionLabel}>Long term, 3 to 5 years (separate from timing)</div>
+              <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0' }}>
+                {result.verdict.longterm.label}
+              </div>
+              <div style={S.verdictReason}>{result.verdict.longterm.reason}</div>
+              {result.verdict.longterm.bridge_line && (
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#68d391', marginTop: '8px' }}>
+                  {result.verdict.longterm.bridge_line}
+                  {result.verdict.longterm.bridge_entry && (
+                    <span style={{ fontWeight: 400, color: '#a0aec0' }}>
+                      {' '}Pullback ${val(result.verdict.longterm.bridge_entry.pullback_price)}
+                      {result.verdict.longterm.bridge_entry.breakout_price != null && (
+                        <span> or a close above ${val(result.verdict.longterm.bridge_entry.breakout_price)}</span>
+                      )}
+                      {result.verdict.longterm.bridge_entry.buy_zone && (
+                        <span> | Buy zone ${val(result.verdict.longterm.bridge_entry.buy_zone[0])} to ${val(result.verdict.longterm.bridge_entry.buy_zone[1])}</span>
+                      )}
+                      {result.verdict.longterm.bridge_entry.invalidation_price != null && (
+                        <span> | Wrong if it closes below ${val(result.verdict.longterm.bridge_entry.invalidation_price)}</span>
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
+              {result.verdict.longterm.quality && result.verdict.longterm.quality.status === 'verified' && (
+                <div style={{ ...S.note, marginTop: '8px' }}>
+                  Quality, screener {val(result.verdict.longterm.quality.run_date)}: composite {val(result.verdict.longterm.quality.composite)} ({val(result.verdict.longterm.quality.label)}), revenue CAGR 3y {val(result.verdict.longterm.quality.rev_cagr_3y_pct)}%, FCF margin avg 3y {val(result.verdict.longterm.quality.fcf_margin_avg_3y_pct)}%, ROIC {val(result.verdict.longterm.quality.roic_pct)}%, operating margin {val(result.verdict.longterm.quality.operating_margin_pct)}%, EV/EBITDA {val(result.verdict.longterm.quality.ev_to_ebitda)}x.
+                </div>
+              )}
+              {result.verdict.longterm.quality && result.verdict.longterm.quality.status !== 'verified' && (
+                <div style={{ ...S.note, marginTop: '8px' }}>{val(result.verdict.longterm.quality.note)}</div>
+              )}
+              {result.verdict.longterm.dcf && (
+                <>
+                  <div style={{ ...S.grid, marginTop: '12px' }}>
+                    <div style={S.stat}>
+                      <span style={S.statLabel}>Bear fair value</span>
+                      <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.bear)}</span>
+                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.bear)}% vs today</span>
+                    </div>
+                    <div style={S.stat}>
+                      <span style={S.statLabel}>Base fair value</span>
+                      <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.base)}</span>
+                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.base)}% vs today</span>
+                    </div>
+                    <div style={S.stat}>
+                      <span style={S.statLabel}>Bull fair value</span>
+                      <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.bull)}</span>
+                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.bull)}% vs today</span>
+                    </div>
+                    <div style={S.stat}>
+                      <span style={S.statLabel}>Reverse DCF</span>
+                      <span style={S.statValue}>{val(result.verdict.longterm.dcf.reverse_dcf_implied_growth_pct)}%</span>
+                      <span style={S.statSub}>growth the market is already pricing in</span>
+                    </div>
+                  </div>
+                  {result.verdict.longterm.wacc && (
+                    <div style={{ ...S.note, marginTop: '8px' }}>
+                      WACC {val(result.verdict.longterm.wacc.wacc_pct)}% (risk free {val(result.verdict.longterm.wacc.risk_free_pct)}%, source: {val(result.verdict.longterm.wacc.risk_free_source)}).
+                      {result.verdict.longterm.dcf.exit_multiple_check && result.verdict.longterm.dcf.exit_multiple_check.fair_value != null && (
+                        <span> Exit-multiple cross-check: ${val(result.verdict.longterm.dcf.exit_multiple_check.fair_value)} vs Gordon ${val(result.verdict.longterm.dcf.exit_multiple_check.gordon_fair_value)} ({val(result.verdict.longterm.dcf.exit_multiple_check.disagreement_pct)}%{result.verdict.longterm.dcf.exit_multiple_check.wide_disagreement ? ', wide disagreement, neither method is picked' : ''}).</span>
+                      )}
+                      {result.verdict.longterm.dcf.exit_multiple_check && result.verdict.longterm.dcf.exit_multiple_check.fair_value == null && (
+                        <span> Exit-multiple cross-check unavailable: {val(result.verdict.longterm.dcf.exit_multiple_check.note)}</span>
+                      )}
+                    </div>
+                  )}
+                  {result.verdict.longterm.dcf.wacc_sensitivity && result.verdict.longterm.dcf.wacc_sensitivity.length > 0 && (
+                    <div style={{ ...S.note, marginTop: '8px' }}>
+                      WACC sensitivity (base fair value): {result.verdict.longterm.dcf.wacc_sensitivity.map((r, i) => (
+                        <span key={i}>{i > 0 ? ' | ' : ''}{val(r.wacc_pct)}% WACC: ${val(r.base.price)}</span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {result.verdict.longterm.notes && result.verdict.longterm.notes.map((n, i) => (
+                <div key={i} style={{ ...S.note, marginTop: '6px' }}>{n}</div>
+              ))}
+              <div style={{ ...S.note, marginTop: '8px' }}>
+                This lane does not change the put or call answer below. A strong, undervalued company can keep falling, so weekly options stay gated by timing, earnings, and SPY.
+              </div>
+            </div>
+          )}
+
           <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
             <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
-              {result.verdict.stock.label}
+              {result.verdict.stock.decision === 'avoid' ? 'AVOID FOR NOW' : result.verdict.stock.label}
             </div>
             <div style={S.verdictReason}>{result.verdict.stock.reason}</div>
             <div style={{ fontSize: '15px', color: '#e2e8f0', marginTop: '6px' }}>

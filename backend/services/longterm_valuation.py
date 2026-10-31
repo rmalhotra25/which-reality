@@ -105,6 +105,22 @@ def _pct(value):
         return None
 
 
+def _pct1(value):
+    """Round a displayed percentage to one decimal place.
+
+    Snapshot files carry full float precision (for example ROIC
+    102.387442503643). Displaying that precision is noise, so
+    every percentage the long-term lane reports is rounded to
+    one decimal at the source, not only in the frontend.
+    """
+    if value is None:
+        return None
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def wacc_with_risk_free(beta, risk_free_rate, erp, debt_equity, sector):
     """CAPM WACC, same formula as discovery_engine._wacc_from_beta.
 
@@ -211,15 +227,15 @@ def _quality_from_snapshot(snapshot_entry):
         "status": "verified",
         "run_date": snapshot_entry.get("run_date"),
         "source": "quality_screener_v2",
-        "composite": snapshot_entry.get("composite"),
+        "composite": _pct1(snapshot_entry.get("composite")),
         "label": snapshot_entry.get("label"),
-        "rev_cagr_3y_pct": snapshot_entry.get("rev_cagr_3y_pct"),
-        "fcf_margin_avg_3y_pct": snapshot_entry.get("fcf_margin_avg_3y_pct"),
-        "roic_pct": snapshot_entry.get("roic_pct"),
-        "operating_margin_pct": snapshot_entry.get("operating_margin_pct"),
+        "rev_cagr_3y_pct": _pct1(snapshot_entry.get("rev_cagr_3y_pct")),
+        "fcf_margin_avg_3y_pct": _pct1(snapshot_entry.get("fcf_margin_avg_3y_pct")),
+        "roic_pct": _pct1(snapshot_entry.get("roic_pct")),
+        "operating_margin_pct": _pct1(snapshot_entry.get("operating_margin_pct")),
         "ev_to_ebitda": snapshot_entry.get("ev_to_ebitda"),
-        "fcf_yield_pct": snapshot_entry.get("fcf_yield_pct"),
-        "smoothed_rule_of_40": snapshot_entry.get("smoothed_rule_of_40"),
+        "fcf_yield_pct": _pct1(snapshot_entry.get("fcf_yield_pct")),
+        "smoothed_rule_of_40": _pct1(snapshot_entry.get("smoothed_rule_of_40")),
         "note": (
             "Quality from the dated screener snapshot, not a live "
             "recalculation. A snapshot does not prove current quality."
@@ -238,7 +254,10 @@ def _blocked(quality, reason_code, reason, **extra):
         "wacc": None,
         "bridge_line": None,
         "bridge_entry": None,
-        "notes": [reason],
+        # Notes are kept empty here on purpose: the frontend
+        # already prints reason once, and printing the same text
+        # again as a note is what duplicated the BLOCKED text.
+        "notes": [],
     }
     lane.update(extra)
     return lane
@@ -287,7 +306,9 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
                 "Quality is verified in the snapshot, but no reported "
                 "revenue and free cash flow were supplied, so no DCF "
                 "fair value is computed. Revenue derived from market "
-                "cap divided by P/S is not used here.",
+                "cap divided by P/S is not used here. This is not a "
+                "weekend or market-closed issue. It will be blocked "
+                "on a weekday too, until a statements source is wired.",
             )
         return _not_verified(quality)
 
@@ -400,7 +421,7 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
                 "The shared DCF engine returned no value for a scenario.",
             )
         fair[name] = round(pv / shares, 2)
-        upside[name] = round((fair[name] - price) / price * 100, 2) if price else None
+        upside[name] = round((fair[name] - price) / price * 100, 1) if price else None
 
     try:
         reverse = _reverse_dcf(market_cap, revenue, fcf_margin, dr,
@@ -442,7 +463,7 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
                 (ebitda10 * float(ev_multiple)) / (1 + dr) ** 10)
             exit_fair = round((pv_fcf_years + pv_exit_terminal) / shares, 2)
             disagreement = round(
-                (exit_fair - fair["base"]) / fair["base"] * 100, 2
+                (exit_fair - fair["base"]) / fair["base"] * 100, 1
             ) if fair["base"] else None
             exit_check = {
                 "method": "industry_exit_multiple_ev_ebitda",
@@ -547,8 +568,8 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
             "current_price": _money(price),
             "revenue_millions": revenue,
             "fcf_millions": fcf,
-            "fcf_margin_pct": round(fcf_margin * 100, 2),
-            "revenue_growth_pct": round(rev_growth * 100, 2),
+            "fcf_margin_pct": round(fcf_margin * 100, 1),
+            "revenue_growth_pct": round(rev_growth * 100, 1),
             "scenarios": {
                 name: {
                     "g1_pct": round(s["g1"] * 100, 1),
@@ -571,4 +592,222 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
         "bridge_line": bridge_line,
         "bridge_entry": None,
         "notes": notes,
+    }
+
+
+# DCA lane, separate from timed entry and from options.
+#
+# DCA eligibility, stated here so it is testable and not a hidden
+# threshold:
+# - Quality verified, composite at least 50.0 when a composite is
+#   present (the same 50 cap used for a STRONG verdict above).
+#   When composite is absent but the snapshot label is
+#   Compounder, that label is accepted as the quality signal.
+# - Trend not broken, using the same rule as the timing verdict:
+#   broken means below both averages, or below the 200-day with
+#   that average falling. A broken trend gets no DCA lane.
+# - Timing decision is wait, buy, or cannot_judge with known
+#   trend averages. Avoid gets no DCA lane, because avoid is a
+#   broken trend. A cannot_judge caused only by missing earnings
+#   or market data still gets a DCA lane when trend averages are
+#   known and not broken, because a long-term accumulation plan
+#   does not need a timed verdict. Trend unknown still gets no
+#   lane, because there is no support price to anchor to.
+# - Long-term verdict: strong allows a DCA lane, valuation-backed
+#   when base fair value is above price. Blocked allows a DCA
+#   lane only for missing_statements, and only on a quality
+#   basis, never labelled valuation-backed. Weak (overvalued on
+#   a computed DCF), watch (only bull above, or capped by
+#   quality), and not_verified get no DCA lane.
+# - Price at a discount: price below the 50-day average, or
+#   price within 3% above the 200-day average (near support).
+#   Waiting for a higher trigger would mean paying more, which
+#   is the point of DCA here.
+#
+# DCA pieces, guidance not a sized order, no share counts:
+# - Piece 1, now, at the current price.
+# - Piece 2, on a further dip, only if a distinct level exists:
+#   the midpoint between price and the 200-day average, and
+#   only when that midpoint is at least 1% below the current
+#   price. NVDA on Oct 31 is the thin-range case: price $204.64,
+#   200-day $204.09, midpoint $204.37, only 0.13% below price,
+#   so no dip piece is forced. The plan then says so plainly
+#   and has a piece now plus a piece on recovery, not a fake
+#   distinct level.
+# - Piece 3, on recovery to the 50-day average with confirming
+#   volume, which is the timed trigger, used here as the last
+#   accumulation piece, not as a timed entry price.
+# - Pause rule: stop adding if the stock closes below its
+#   200-day average, and reassess. Do not add into a broken
+#   trend.
+#
+# Earnings rule, stated, not the weekly options gate reused
+# silently: earnings within 5 days do NOT block a DCA lane,
+# because DCA tranches span weeks, not one weekly expiry.
+# Instead the lane carries an earnings note: when earnings are
+# within 5 days, the first piece is the only piece before
+# earnings, and later pieces come after the report. When the
+# earnings date is unknown, the note says a report could move
+# the price, so keep early pieces small. The reason is that a
+# single report does not invalidate a long-term accumulation
+# thesis, but it does argue against committing later pieces
+# before it prints.
+_DCA_COMPOSITE_MIN = 50.0
+_DCA_NEAR_SUPPORT_PCT = 3.0
+_DCA_DIP_MIN_PCT = 1.0
+
+
+def _trend_broken(trend):
+    if not isinstance(trend, dict):
+        return True
+    return bool(
+        (trend.get("above_ma200") is False
+         and trend.get("ma200_direction") == "falling")
+        or (trend.get("above_ma50") is False
+            and trend.get("above_ma200") is False)
+    )
+
+
+def build_dca(price, trend, longterm, stock_decision,
+              earnings_days=None, earnings_known=True):
+    """Build a DCA accumulation plan, or None when not eligible.
+
+    Returns None, not a disabled plan, when any eligibility rule
+    fails, so the frontend hides the lane instead of showing a
+    greyed-out DCA that reads as advice. This lane never unlocks
+    a weekly put or call and never changes the timing verdict.
+    """
+    if stock_decision not in ("wait", "buy", "cannot_judge"):
+        return None
+    if not isinstance(longterm, dict):
+        return None
+    if _trend_broken(trend):
+        return None
+    ma50 = trend.get("ma50")
+    ma200 = trend.get("ma200")
+    if ma50 is None or ma200 is None:
+        return None
+    try:
+        price = float(price)
+        ma50 = float(ma50)
+        ma200 = float(ma200)
+    except (TypeError, ValueError):
+        return None
+    quality = longterm.get("quality") or {}
+    if quality.get("status") != "verified":
+        return None
+    composite = quality.get("composite")
+    label = quality.get("label")
+    if composite is not None:
+        try:
+            quality_ok = float(composite) >= _DCA_COMPOSITE_MIN
+        except (TypeError, ValueError):
+            quality_ok = False
+    else:
+        quality_ok = label == "Compounder"
+    if not quality_ok:
+        return None
+    verdict = longterm.get("verdict")
+    dcf = longterm.get("dcf") or {}
+    fair = dcf.get("fair_value") or {}
+    if verdict == "strong":
+        base = fair.get("base")
+        if base is None or not (base > price):
+            return None
+        basis = "valuation-backed"
+        basis_note = (
+            "Valuation-backed: base case fair value is above "
+            "today's price, so the DCF supports accumulation."
+        )
+    elif verdict == "blocked" and longterm.get("reason_code") == "missing_statements":
+        basis = "quality-based, valuation pending"
+        basis_note = (
+            "Quality-based, valuation pending: quality is verified "
+            "and high, but no DCF fair value is computed yet, "
+            "because reported revenue and free cash flow are "
+            "missing. This is not valuation-backed, and it is not "
+            "a weekend or market-closed issue."
+        )
+    else:
+        return None
+    discount_to_ma50 = price < ma50
+    near_support = ma200 <= price <= ma200 * (1 + _DCA_NEAR_SUPPORT_PCT / 100.0)
+    if not (discount_to_ma50 or near_support):
+        return None
+    pieces = [
+        {
+            "order": 1,
+            "condition": "Now",
+            "price": _money(price),
+            "detail": "First piece now, at today's price.",
+        },
+    ]
+    dip_note = None
+    midpoint = round((price + ma200) / 2, 2)
+    dip_pct = (price - midpoint) / price * 100 if price else 0
+    if dip_pct >= _DCA_DIP_MIN_PCT:
+        pieces.append({
+            "order": 2,
+            "condition": "On a further dip, still above support",
+            "price": midpoint,
+            "detail": (
+                "Second piece only if it falls to this level, "
+                "which is still above its 200-day average."
+            ),
+        })
+    else:
+        dip_note = (
+            "There is no distinct lower piece above support, "
+            "because the 200-day average is only "
+            f"${round(price - ma200, 2)} below today's price, "
+            "so the plan is a piece now and a piece on recovery, "
+            "not a fake distinct level."
+        )
+    pieces.append({
+        "order": len(pieces) + 1,
+        "condition": "On recovery to the 50-day average",
+        "price": _money(ma50),
+        "detail": (
+            "Last piece only if it recovers to its 50-day average "
+            "with confirming volume. That is the timed trigger, "
+            "used here as an accumulation piece, not as a timed "
+            "entry price."
+        ),
+    })
+    if earnings_known and earnings_days is not None and earnings_days <= 5:
+        earnings_note = (
+            f"Earnings are in {earnings_days} day(s). A report can "
+            "move the price, so the first piece is the only piece "
+            "before earnings, and later pieces come after the report."
+        )
+    elif not earnings_known:
+        earnings_note = (
+            "Earnings date is unknown, so a report could move the "
+            "price. Keep early pieces small."
+        )
+    else:
+        earnings_note = None
+    return {
+        "eligible": True,
+        "label": "BEGIN DCA",
+        "basis": basis,
+        "basis_note": basis_note,
+        "pieces": pieces,
+        "dip_note": dip_note,
+        "pause_rule": (
+            f"Stop adding if it closes below ${round(ma200, 2)} "
+            "(its 200-day average), and reassess. Do not add into "
+            "a broken trend."
+        ),
+        "invalidation_price": _money(ma200),
+        "support_price": _money(ma200),
+        "trigger_price": _money(ma50),
+        "discount_to_50d_pct": round((ma50 - price) / price * 100, 1) if price else None,
+        "earnings_note": earnings_note,
+        "note": (
+            "Accumulation plan, not a timed trade setup and not a "
+            "sized order. Pieces are bought in small parts, not "
+            "all at once, and the pause rule above is the exit "
+            "from adding."
+        ),
     }

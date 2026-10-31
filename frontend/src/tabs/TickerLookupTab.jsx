@@ -104,6 +104,13 @@ function val(v) {
   return String(v)
 }
 
+function fmtPct(v) {
+  if (v === null || v === undefined) return 'unknown'
+  const n = Number(v)
+  if (Number.isNaN(n)) return String(v)
+  return n.toFixed(1)
+}
+
 function ResultPill({ result, status }) {
   if (result === 'pass') return <span style={S.pill('#15301f', '#276749', '#68d391')}>PASS ({status})</span>
   if (result === 'suppressed') return <span style={S.pill('#3d2f10', '#975a16', '#f6e05e')}>SUPPRESSED ({status})</span>
@@ -208,6 +215,47 @@ export default function TickerLookupTab() {
 
       {result && result.verdict && (
         <>
+          {result.summary && (
+            <div style={S.card}>
+              <div style={S.sectionLabel}>In plain language</div>
+              <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6 }}>{result.summary}</div>
+            </div>
+          )}
+          {result.verdict.dca && (
+            <div style={S.card}>
+              <div style={S.sectionLabel}>Long-term accumulation, not a timed trade</div>
+              <div style={{ fontSize: '22px', fontWeight: 800, color: '#68d391' }}>
+                {result.verdict.dca.label}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px', color: '#e2e8f0', fontSize: '13px' }}>
+                Basis: {result.verdict.dca.basis}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>{result.verdict.dca.basis_note}</div>
+              <ul style={S.verdictList}>
+                {result.verdict.dca.pieces.map((p, i) => (
+                  <li key={i}>
+                    Piece {p.order}: {p.condition}
+                    {p.price != null && (<span> at ${val(p.price)}</span>)}
+                    {p.detail && (<span> ({p.detail})</span>)}
+                  </li>
+                ))}
+              </ul>
+              {result.verdict.dca.dip_note && (
+                <div style={{ ...S.note, marginTop: '6px' }}>{result.verdict.dca.dip_note}</div>
+              )}
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Pause rule: </strong>
+                {result.verdict.dca.pause_rule}
+              </div>
+              {result.verdict.dca.earnings_note && (
+                <div style={{ ...S.note, marginTop: '6px' }}>{result.verdict.dca.earnings_note}</div>
+              )}
+              <div style={{ ...S.note, marginTop: '6px' }}>{result.verdict.dca.note}</div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                This DCA lane does not change the put or call answer below, and it is not a timed entry price.
+              </div>
+            </div>
+          )}
           {result.verdict.longterm && (
             <div style={S.card}>
               <div style={S.sectionLabel}>Long term, 3 to 5 years (separate from timing)</div>
@@ -236,7 +284,7 @@ export default function TickerLookupTab() {
               )}
               {result.verdict.longterm.quality && result.verdict.longterm.quality.status === 'verified' && (
                 <div style={{ ...S.note, marginTop: '8px' }}>
-                  Quality, screener {val(result.verdict.longterm.quality.run_date)}: composite {val(result.verdict.longterm.quality.composite)} ({val(result.verdict.longterm.quality.label)}), revenue CAGR 3y {val(result.verdict.longterm.quality.rev_cagr_3y_pct)}%, FCF margin avg 3y {val(result.verdict.longterm.quality.fcf_margin_avg_3y_pct)}%, ROIC {val(result.verdict.longterm.quality.roic_pct)}%, operating margin {val(result.verdict.longterm.quality.operating_margin_pct)}%, EV/EBITDA {val(result.verdict.longterm.quality.ev_to_ebitda)}x.
+                  Quality, screener {val(result.verdict.longterm.quality.run_date)}: composite {fmtPct(result.verdict.longterm.quality.composite)} ({val(result.verdict.longterm.quality.label)}), revenue CAGR 3y {fmtPct(result.verdict.longterm.quality.rev_cagr_3y_pct)}%, FCF margin avg 3y {fmtPct(result.verdict.longterm.quality.fcf_margin_avg_3y_pct)}%, ROIC {fmtPct(result.verdict.longterm.quality.roic_pct)}%, operating margin {fmtPct(result.verdict.longterm.quality.operating_margin_pct)}%, EV/EBITDA {val(result.verdict.longterm.quality.ev_to_ebitda)}x.
                 </div>
               )}
               {result.verdict.longterm.quality && result.verdict.longterm.quality.status !== 'verified' && (
@@ -248,21 +296,21 @@ export default function TickerLookupTab() {
                     <div style={S.stat}>
                       <span style={S.statLabel}>Bear fair value</span>
                       <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.bear)}</span>
-                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.bear)}% vs today</span>
+                      <span style={S.statSub}>{fmtPct(result.verdict.longterm.dcf.upside_pct.bear)}% vs today</span>
                     </div>
                     <div style={S.stat}>
                       <span style={S.statLabel}>Base fair value</span>
                       <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.base)}</span>
-                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.base)}% vs today</span>
+                      <span style={S.statSub}>{fmtPct(result.verdict.longterm.dcf.upside_pct.base)}% vs today</span>
                     </div>
                     <div style={S.stat}>
                       <span style={S.statLabel}>Bull fair value</span>
                       <span style={S.statValue}>${val(result.verdict.longterm.dcf.fair_value.bull)}</span>
-                      <span style={S.statSub}>{val(result.verdict.longterm.dcf.upside_pct.bull)}% vs today</span>
+                      <span style={S.statSub}>{fmtPct(result.verdict.longterm.dcf.upside_pct.bull)}% vs today</span>
                     </div>
                     <div style={S.stat}>
                       <span style={S.statLabel}>Reverse DCF</span>
-                      <span style={S.statValue}>{val(result.verdict.longterm.dcf.reverse_dcf_implied_growth_pct)}%</span>
+                      <span style={S.statValue}>{fmtPct(result.verdict.longterm.dcf.reverse_dcf_implied_growth_pct)}%</span>
                       <span style={S.statSub}>growth the market is already pricing in</span>
                     </div>
                   </div>
@@ -270,7 +318,7 @@ export default function TickerLookupTab() {
                     <div style={{ ...S.note, marginTop: '8px' }}>
                       WACC {val(result.verdict.longterm.wacc.wacc_pct)}% (risk free {val(result.verdict.longterm.wacc.risk_free_pct)}%, source: {val(result.verdict.longterm.wacc.risk_free_source)}).
                       {result.verdict.longterm.dcf.exit_multiple_check && result.verdict.longterm.dcf.exit_multiple_check.fair_value != null && (
-                        <span> Exit-multiple cross-check: ${val(result.verdict.longterm.dcf.exit_multiple_check.fair_value)} vs Gordon ${val(result.verdict.longterm.dcf.exit_multiple_check.gordon_fair_value)} ({val(result.verdict.longterm.dcf.exit_multiple_check.disagreement_pct)}%{result.verdict.longterm.dcf.exit_multiple_check.wide_disagreement ? ', wide disagreement, neither method is picked' : ''}).</span>
+                        <span> Exit-multiple cross-check: ${val(result.verdict.longterm.dcf.exit_multiple_check.fair_value)} vs Gordon ${val(result.verdict.longterm.dcf.exit_multiple_check.gordon_fair_value)} ({fmtPct(result.verdict.longterm.dcf.exit_multiple_check.disagreement_pct)}%{result.verdict.longterm.dcf.exit_multiple_check.wide_disagreement ? ', wide disagreement, neither method is picked' : ''}).</span>
                       )}
                       {result.verdict.longterm.dcf.exit_multiple_check && result.verdict.longterm.dcf.exit_multiple_check.fair_value == null && (
                         <span> Exit-multiple cross-check unavailable: {val(result.verdict.longterm.dcf.exit_multiple_check.note)}</span>
@@ -300,6 +348,9 @@ export default function TickerLookupTab() {
               {result.verdict.stock.decision === 'avoid' ? 'AVOID FOR NOW' : result.verdict.stock.label}
             </div>
             <div style={S.verdictReason}>{result.verdict.stock.reason}</div>
+            {result.verdict.stock.plain_explanation && (
+              <div style={S.verdictNote}>{result.verdict.stock.plain_explanation}</div>
+            )}
             <div style={{ fontSize: '15px', color: '#e2e8f0', marginTop: '6px' }}>
               {result.ticker} at ${val(result.price)}
               {result.verdict.stock.invalidation_price != null && (
@@ -363,7 +414,7 @@ export default function TickerLookupTab() {
               <div style={S.sectionLabel}>Wait for Entry plan</div>
               <div style={{ ...S.note, marginTop: '6px' }}>
                 <strong style={{ color: '#e2e8f0' }}>Trigger: </strong>
-                Pullback to ${val(result.verdict.stock.entry_plan.pullback_price)}
+                {result.verdict.stock.entry_plan.trigger_50d_wording === 'recovery' ? 'Recovery to' : 'Pullback to'} ${val(result.verdict.stock.entry_plan.pullback_price)}
                 {result.verdict.stock.entry_plan.distance_to_pullback_pct != null && (
                   <span> ({val(result.verdict.stock.entry_plan.distance_to_pullback_pct)}% from today)</span>
                 )}

@@ -840,8 +840,16 @@ def _build_entry_plan(ticker: str, price: float, trend: dict, quality: dict,
     elif spy_gate.get("spy_above_200") is None:
         blocker = "SPY trend unknown, so BUY is blocked until it is known."
     trigger_parts = []
+    trigger_50d_wording = "pullback"
     if ma50 is not None:
-        trigger_parts.append(f"a pullback to the 50-day average at ${round(ma50, 2)}")
+        # Position-aware wording: calling the 50-day a "pullback"
+        # when price is already below it is backwards. Below the
+        # average, reaching it is a recovery, not a pullback.
+        if price is not None and price < ma50:
+            trigger_50d_wording = "recovery"
+            trigger_parts.append(f"a recovery to the 50-day average at ${round(ma50, 2)}")
+        else:
+            trigger_parts.append(f"a pullback to the 50-day average at ${round(ma50, 2)}")
     if prior_high is not None:
         trigger_parts.append(f"a close above the 55-day high at ${round(prior_high, 2)}")
     trigger_text = " or ".join(trigger_parts) if trigger_parts else "a fresh pullback or breakout"
@@ -876,6 +884,8 @@ def _build_entry_plan(ticker: str, price: float, trend: dict, quality: dict,
             "That alone does not show the company fundamental changed."
         )
     return {
+        "trigger_50d_wording": trigger_50d_wording,
+        "trigger_text": trigger_text,
         "buy_zone": (
             [round(min(ma50, ma200), 2), round(max(ma50, ma200), 2)]
             if ma50 is not None and ma200 is not None else None
@@ -901,6 +911,120 @@ def _build_entry_plan(ticker: str, price: float, trend: dict, quality: dict,
         "fundamentals": _fundamentals_for(ticker, fundamentals_override),
         "notes": notes,
     }
+
+
+def _build_plain_summary(ticker, price, trend, stock, longterm, dca):
+    """One paragraph, plain language, for the top of the card.
+
+    This is a summary of the lanes below, not a new verdict. It
+    states quality, trend, price versus both averages, what a
+    short-term trader should do, and what a long-term investor
+    should do, in that order. No jargon, no invented fair value,
+    and no em dashes.
+    """
+    try:
+        price_f = float(price)
+    except (TypeError, ValueError):
+        price_f = None
+    ma50 = trend.get("ma50") if isinstance(trend, dict) else None
+    ma200 = trend.get("ma200") if isinstance(trend, dict) else None
+    quality = (longterm or {}).get("quality") or {}
+    parts = []
+    if quality.get("status") == "verified":
+        composite = quality.get("composite")
+        label = quality.get("label") or "company"
+        if composite is not None and float(composite) >= 70:
+            strength = "strong"
+        elif composite is not None and float(composite) >= 50:
+            strength = "solid"
+        elif composite is not None:
+            strength = "weaker"
+        else:
+            strength = "verified"
+        if composite is not None:
+            parts.append(
+                f"{ticker} is a {strength} company on quality "
+                f"(composite {round(float(composite), 1)}, {label})."
+            )
+        else:
+            parts.append(
+                f"{ticker} is a {strength} company on quality ({label})."
+            )
+    else:
+        parts.append(
+            f"Quality is not verified for {ticker} in the screener "
+            "snapshot, so no long-term quality claim is made."
+        )
+    if price_f is not None and ma50 is not None and ma200 is not None:
+        if price_f < ma50 and price_f >= ma200:
+            near = "just above" if (price_f - ma200) / ma200 * 100 <= 3 else "above"
+            parts.append(
+                f"Its short-term trend is weak: price ${round(price_f, 2)} "
+                f"is below its 50-day average of ${round(ma50, 2)}, and "
+                f"{near} its 200-day average of ${round(ma200, 2)}."
+            )
+        elif price_f >= ma50 and price_f >= ma200:
+            parts.append(
+                f"Its short-term trend is up: price ${round(price_f, 2)} "
+                f"is above its 50-day average of ${round(ma50, 2)} and "
+                f"its 200-day average of ${round(ma200, 2)}."
+            )
+        else:
+            parts.append(
+                f"Its short-term trend is broken: price ${round(price_f, 2)} "
+                f"is below its 200-day average of ${round(ma200, 2)}."
+            )
+    else:
+        parts.append("Its trend averages are not available.")
+    decision = (stock or {}).get("decision")
+    if decision == "buy":
+        parts.append("For a short-term trade, this is a buy now, with a clear price where it is wrong.")
+    elif decision == "wait":
+        parts.append("For a short-term trade, wait for a trigger, do not buy today.")
+    elif decision == "avoid":
+        parts.append("For a short-term trade, avoid for now.")
+    else:
+        parts.append("For a short-term trade, no verdict is claimed, because data is missing.")
+    if dca:
+        if price_f is not None and ma50 is not None and price_f < ma50:
+            parts.append(
+                f"For a long-term investor, ${round(price_f, 2)} is a "
+                f"better entry than ${round(ma50, 2)}, so consider "
+                "starting to buy in small pieces, not waiting for "
+                f"${round(ma50, 2)}."
+            )
+        else:
+            parts.append(
+                "For a long-term investor, consider starting to buy "
+                "in small pieces, as shown in the DCA plan below."
+            )
+        if dca.get("basis") == "quality-based, valuation pending":
+            parts.append(
+                "This DCA plan is based on quality, not on a fair "
+                "value, because no DCF fair value is computed yet."
+            )
+    else:
+        if (longterm or {}).get("verdict") == "weak":
+            parts.append("There is no DCA plan here, because the DCF says it is overvalued.")
+        elif (longterm or {}).get("verdict") == "not_verified":
+            parts.append("There is no DCA plan here, because quality is not verified.")
+        elif decision == "avoid":
+            parts.append("There is no DCA plan here, because the trend is broken.")
+    dcf = (longterm or {}).get("dcf") or {}
+    fair = dcf.get("fair_value") or {}
+    if fair.get("base") is not None:
+        parts.append(
+            f"Base fair value is ${fair.get('base')}, bear "
+            f"${fair.get('bear')}, bull ${fair.get('bull')}."
+        )
+    elif (longterm or {}).get("verdict") == "blocked":
+        parts.append(
+            "No fair value is computed yet, because reported "
+            "revenue and free cash flow are missing. This is not "
+            "because the market is closed, and it will be blocked "
+            "on a weekday too until a statements source is wired."
+        )
+    return " ".join(parts)
 
 
 def build_verdict(ticker: str, *, price: float, setups: list,
@@ -1115,12 +1239,28 @@ def build_verdict(ticker: str, *, price: float, setups: list,
         elif len(reasons) == 1 and not earnings_ok is False:
             reasons.append("No pullback to a rising average and no volume breakout today.")
         reasons = reasons[:3]
+        # Position-aware WAIT wording: when price is already below
+        # the 50-day, "no pullback" reads backwards, because a
+        # pullback down cannot happen from below the average.
+        if trend.get("ma50") is not None and price < trend["ma50"]:
+            reasons = [
+                r if r != "No pullback to a rising average and no volume breakout today."
+                else "No setup fired today: price is below its 50-day average, so a pullback entry did not fire, and no volume breakout fired."
+                for r in reasons
+            ]
+        wait_plain = None
+        if trend.get("ma200") is not None:
+            wait_plain = (
+                "Trend not broken, no setup fired today. Wrong if it "
+                f"closes below ${round(trend['ma200'], 2)}."
+            )
         stock = {
             "decision": "wait",
             "tier": "wait_for_entry",
             "label": "WAIT FOR ENTRY",
             "reason": reasons[0],
             "reasons": reasons,
+            "plain_explanation": wait_plain,
             "what_would_change": entry_plan["what_flips_to_buy"],
             "positive_note": "Waiting for a trigger price is the entry plan, not indecision.",
             "price": _money(price),
@@ -1346,11 +1486,30 @@ def build_verdict(ticker: str, *, price: float, setups: list,
             "blocker": entry_plan.get("blocker"),
         }
 
+    # DCA lane: computed after timing and long-term, never used
+    # by put or call gating above. It is an accumulation plan,
+    # not a timed entry, and it never changes the timing verdict.
+    dca = None
+    try:
+        from services.longterm_valuation import build_dca
+
+        dca = build_dca(
+            price, trend, longterm, stock["decision"],
+            earnings_days=earnings_days, earnings_known=earnings_known,
+        )
+    except Exception as exc:
+        logger.warning("ticker_lookup: DCA lane failed: %s", exc)
+        dca = None
+    summary = _build_plain_summary(
+        ticker, price, trend, stock, longterm, dca)
+
     return {
         "stock": stock,
         "put": put,
         "call": call,
         "longterm": longterm,
+        "dca": dca,
+        "summary": summary,
         "conviction": {
             "supports": supports,
             "against": against,

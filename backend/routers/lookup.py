@@ -95,8 +95,39 @@ def _build_ondemand(ticker: str, db):
         statements["revenue_growth_pct"] = quality_live.get("rev_cagr_3y_pct")
         statements["operating_margin_pct"] = quality_live.get("operating_margin_pct")
         statements["ev_to_ebitda"] = quality_live.get("ev_to_ebitda")
+        # Multi-year history for the normalized DCF, only on the
+        # yfinance fallback path, where annuals are already wired.
+        # Polygon SEC path supplies no history, so normalized falls
+        # back to the verified 3-year average margin there.
+        if statements.get("statements_source") == "yfinance_annual":
+            try:
+                from services.twelve_step_service import _get_annual_financials_list
+
+                annuals = _get_annual_financials_list(ticker, 3) or []
+                history = []
+                for row in annuals:
+                    try:
+                        history.append({
+                            "revenue": float(row.get("revenue")) / 1_000_000.0,
+                            "fcf": float(row.get("free_cash_flow")) / 1_000_000.0,
+                        })
+                    except (TypeError, ValueError):
+                        continue
+                if history:
+                    statements["history"] = history
+            except Exception:
+                pass
+    live_yield = None
     try:
-        longterm_live = build_longterm(ticker, price, quality_live, statements=statements)
+        from services.dcf_methods import fetch_live_10y_yield
+
+        live_yield = fetch_live_10y_yield()
+    except Exception:
+        live_yield = None
+    try:
+        longterm_live = build_longterm(
+            ticker, price, quality_live, statements=statements,
+            risk_free_rate=live_yield)
         # build_longterm rebuilds quality from the snapshot shape,
         # which drops the live kills and missing list. Put the
         # full live quality back, so the frontend can show them.
@@ -110,7 +141,7 @@ def _build_ondemand(ticker: str, db):
             "reason": f"Long-term lane failed: {exc}.",
             "reason_code": "not_verified", "quality": quality_live,
             "dcf": None, "wacc": None, "bridge_line": None,
-            "bridge_entry": None, "notes": [],
+            "bridge_entry": None, "dcf_methods": None, "notes": [],
         }
     try:
         tenure = {}
@@ -124,6 +155,25 @@ def _build_ondemand(ticker: str, db):
         base.get("spy_gate") or {}, earnings, quality_live,
         longterm_live, proposals,
     )
+    # Options Strategies for the on-demand section, from the same
+    # listed chain the snapshot lookup already fetched. Additional
+    # information only, never a verdict driver.
+    try:
+        from services.option_strategies import build_option_strategies
+
+        chain = base.get("chain") or {}
+        review["option_strategies"] = build_option_strategies(
+            price, chain.get("puts") or [], chain.get("calls") or [],
+            chain_source=chain.get("source"), chain_error=chain.get("error"))
+    except Exception as exc:
+        logger.warning("on-demand option strategies failed for %s: %s", ticker, exc)
+        review["option_strategies"] = {
+            "available": False, "expiry": None, "dte": None,
+            "expiry_rule": None, "chain_source": None,
+            "selection_note": None, "best_call": None, "best_put": None,
+            "straddle": None, "iron_condor": None,
+            "reason": f"Option strategies could not be computed: {exc}.",
+        }
     review["snapshot"] = {
         "longterm": verdict.get("longterm"),
         "dca": verdict.get("dca"),

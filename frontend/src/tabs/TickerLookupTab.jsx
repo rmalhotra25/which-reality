@@ -220,6 +220,104 @@ function DcfSummary({ longterm, price }) {
   )
 }
 
+function methodLine(method) {
+  if (!method || method.status !== 'ok' || !method.fair_value) return null
+  return `base $${val(method.fair_value.base)} (bear $${val(method.fair_value.bear)} to bull $${val(method.fair_value.bull)})`
+}
+
+function greekLine(g) {
+  if (!g) return 'Greeks: Missing'
+  const fmt = (v) => (v === null || v === undefined ? 'Missing' : Number(v).toFixed(2))
+  return `Delta ${fmt(g.delta)}, gamma ${fmt(g.gamma)}, vega ${fmt(g.vega)}, theta ${fmt(g.theta_seller)} per day`
+}
+
+function DcfMethodsSummary({ longterm, price }) {
+  const p = dcfPresentationFor(longterm, price)
+  const methods = longterm && longterm.dcf_methods
+  if (!p && !methods) return null
+  return (
+    <div>
+      {p && (
+        <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>
+          Statements anchor: DCF base ${val(p.base)} (bear ${val(p.bear)} to bull ${val(p.bull)}){longterm && longterm.verdict === 'weak' ? ', overvalued on current cash flows.' : '.'}
+        </div>
+      )}
+      {p && (<DcfFraming longterm={longterm} price={price} />)}
+      {methods && (
+        <>
+          <div style={S.note}>Forward scenarios: {methodLine(methods.forward) || 'Missing, see details.'}</div>
+          <div style={S.note}>Normalized: {methodLine(methods.normalized) || 'Missing, see details.'}</div>
+          <div style={S.note}>
+            Sum of parts: {methods.sum_of_parts && methods.sum_of_parts.status === 'ok'
+              ? `operating ${methodLine(methods.sum_of_parts)}; future upside: ${methods.sum_of_parts.upside && methods.sum_of_parts.upside.status === 'supplied' ? `$${val(methods.sum_of_parts.upside.per_share)} per share, separate` : 'Missing'}`
+              : 'Missing, no segment data from a wired source.'}
+          </div>
+          <details style={{ marginTop: '8px' }}>
+            <summary style={S.summary}>DCF method assumptions</summary>
+            <div style={{ marginTop: '8px' }}>
+              {p && (<div style={S.note}>Statements anchor inputs: {p.inputs_line}</div>)}
+              {methods.forward && (<div style={S.note}>Forward scenarios: {methods.forward.assumptions || methods.forward.reason}</div>)}
+              {methods.normalized && (<div style={S.note}>Normalized: {methods.normalized.assumptions || methods.normalized.reason} Risk free source: {val(methods.normalized.risk_free_source)}.</div>)}
+              {methods.sum_of_parts && (<div style={S.note}>Sum of parts: {methods.sum_of_parts.reason || methods.sum_of_parts.framing} Operating total is never blended with future upside.</div>)}
+              {methods.sum_of_parts && methods.sum_of_parts.segments && methods.sum_of_parts.segments.length > 0 && (
+                <div style={S.note}>Segments: {methods.sum_of_parts.segments.map((s) => `${val(s.name)} $${val(s.fair_value_millions.base)}M base`).join(', ')}.</div>
+              )}
+              {methods.note && (<div style={S.note}>{methods.note}</div>)}
+            </div>
+          </details>
+        </>
+      )}
+      {!methods && p && (<div style={S.note}>Inputs: {p.inputs_line}</div>)}
+    </div>
+  )
+}
+
+function StrategyLine({ strategy, label }) {
+  if (!strategy) return null
+  if (strategy.status !== 'ok') return (<div style={S.note}>{label}: Missing, {val(strategy.reason)}</div>)
+  if (label === 'Best call' || label === 'Best put') {
+    return (<div style={S.note}>{label}: buy ${val(strategy.strike)} strike, expiry {val(strategy.expiry)}, cost ${val(strategy.premium_per_contract)} per contract, breakeven ${val(strategy.breakeven)}, {val(strategy.key_greek)}.</div>)
+  }
+  if (label === 'Straddle') {
+    return (<div style={S.note}>Straddle: ${val(strategy.strike)} strike, expiry {val(strategy.expiry)}, cost ${val(strategy.total_cost_per_contract)} per contract, breakevens ${val(strategy.lower_breakeven)} to ${val(strategy.upper_breakeven)}, {val(strategy.key_greek)}.</div>)
+  }
+  return (<div style={S.note}>Iron condor: short ${val(strategy.short_put_strike)} put and ${val(strategy.short_call_strike)} call, expiry {val(strategy.expiry)}, credit ${val(strategy.net_credit_per_contract)} per contract, max loss ${val(strategy.max_loss_per_contract)}, {val(strategy.key_greek)}.</div>)
+}
+
+function OptionStrategiesSummary({ strategies }) {
+  if (!strategies) return null
+  if (!strategies.available) {
+    return (<div style={S.note}>Options Strategies: unavailable, {val(strategies.reason)}</div>)
+  }
+  return (
+    <div>
+      <div style={S.note}>Options Strategies, expiry {val(strategies.expiry)} ({val(strategies.dte)} days, nearest to 21 days). Model-ranked opportunity, not a prediction or guarantee.</div>
+      <StrategyLine strategy={strategies.best_call} label="Best call" />
+      <StrategyLine strategy={strategies.best_put} label="Best put" />
+      <StrategyLine strategy={strategies.straddle} label="Straddle" />
+      <StrategyLine strategy={strategies.iron_condor} label="Iron condor" />
+      <details style={{ marginTop: '8px' }}>
+        <summary style={S.summary}>Strategy Greeks, breakevens, and ranking inputs</summary>
+        <div style={{ marginTop: '8px' }}>
+          {strategies.best_call && strategies.best_call.status === 'ok' && (
+            <div style={S.note}>Best call: {greekLine(strategies.best_call.greeks)}. Breakeven ${val(strategies.best_call.breakeven)}, max loss ${val(strategies.best_call.max_loss_per_contract)} per contract. Rank score {val(strategies.best_call.ranking.score)}: {val(strategies.best_call.ranking.score_weights)} Breakeven distance {val(strategies.best_call.ranking.breakeven_distance_pct)}%, payoff at expected move ${val(strategies.best_call.ranking.payoff_at_expected_move_per_contract)} per contract, IV {val(strategies.best_call.ranking.iv_pct)}%, spread {val(strategies.best_call.ranking.spread_pct)}%, open interest {val(strategies.best_call.ranking.open_interest)}.</div>
+          )}
+          {strategies.best_put && strategies.best_put.status === 'ok' && (
+            <div style={S.note}>Best put: {greekLine(strategies.best_put.greeks)}. Breakeven ${val(strategies.best_put.breakeven)}, max loss ${val(strategies.best_put.max_loss_per_contract)} per contract. Rank score {val(strategies.best_put.ranking.score)}: {val(strategies.best_put.ranking.score_weights)} Breakeven distance {val(strategies.best_put.ranking.breakeven_distance_pct)}%, payoff at expected move ${val(strategies.best_put.ranking.payoff_at_expected_move_per_contract)} per contract, IV {val(strategies.best_put.ranking.iv_pct)}%, spread {val(strategies.best_put.ranking.spread_pct)}%, open interest {val(strategies.best_put.ranking.open_interest)}.</div>
+          )}
+          {strategies.straddle && strategies.straddle.status === 'ok' && (
+            <div style={S.note}>Straddle: {greekLine(strategies.straddle.greeks)}. Breakevens ${val(strategies.straddle.lower_breakeven)} to ${val(strategies.straddle.upper_breakeven)}, cost ${val(strategies.straddle.total_cost_per_contract)} per contract. Rank score {val(strategies.straddle.ranking.score)}: {val(strategies.straddle.ranking.score_weights)} Expected move ${val(strategies.straddle.ranking.expected_move)}, expected move divided by cost {val(strategies.straddle.ranking.expected_move_divided_by_cost)}.</div>
+          )}
+          {strategies.iron_condor && strategies.iron_condor.status === 'ok' && (
+            <div style={S.note}>Iron condor: {greekLine(strategies.iron_condor.greeks)}. Breakevens ${val(strategies.iron_condor.lower_breakeven)} to ${val(strategies.iron_condor.upper_breakeven)}, widths put ${val(strategies.iron_condor.put_width)} and call ${val(strategies.iron_condor.call_width)}, net credit ${val(strategies.iron_condor.net_credit_per_contract)} per contract, max loss ${val(strategies.iron_condor.max_loss_per_contract)} per contract. Rank score {val(strategies.iron_condor.ranking.score)}: {val(strategies.iron_condor.ranking.score_weights)} Short deltas put {val(strategies.iron_condor.ranking.short_put_delta_abs)} and call {val(strategies.iron_condor.ranking.short_call_delta_abs)}, range {val(strategies.iron_condor.ranking.range_pct)}%.</div>
+          )}
+          <div style={S.note}>{val(strategies.selection_note)} Chain source: {val(strategies.chain_source)}. On a yfinance fallback chain, delta and theta are Black-Scholes estimates from IV, and gamma and vega read Missing. This section does not change verdict put or call gating.</div>
+        </div>
+      </details>
+    </div>
+  )
+}
+
 function OptionSummary({ option }) {
   if (!option) return null
   return (
@@ -486,7 +584,7 @@ export default function TickerLookupTab() {
                     <div style={{ ...S.note, marginTop: '6px', color: '#68d391' }}>{result.verdict.longterm.bridge_line}</div>
                   )}
                   <div style={{ marginTop: '10px' }}>
-                    <DcfSummary longterm={result.verdict.longterm} price={result.price} />
+                    <DcfMethodsSummary longterm={result.verdict.longterm} price={result.price} />
                   </div>
                 </>
               )}
@@ -509,6 +607,13 @@ export default function TickerLookupTab() {
               <OptionSummary option={result.verdict.put} />
               <OptionSummary option={result.verdict.call} />
               <div style={{ ...S.note, marginTop: '8px' }}>The full option chain is in the full expanded view, closed by default.</div>
+            </div>
+          </details>
+
+          <details style={S.details}>
+            <summary style={S.summary}>Options Strategies: best call, best put, straddle, iron condor</summary>
+            <div style={{ marginTop: '12px' }}>
+              <OptionStrategiesSummary strategies={result.verdict.option_strategies} />
             </div>
           </details>
 
@@ -607,7 +712,7 @@ export default function TickerLookupTab() {
                     </div>
                   )}
                   <div style={{ marginTop: '10px' }}>
-                    <DcfSummary longterm={ondemand.longterm} price={ondemand.short_term.price} />
+                    <DcfMethodsSummary longterm={ondemand.longterm} price={ondemand.short_term.price} />
                   </div>
                   {ondemand.dca_decision.trigger && (
                     <div style={S.note}>Trigger: {ondemand.dca_decision.trigger}{ondemand.dca_decision.trigger_price != null && (<span> at ${val(ondemand.dca_decision.trigger_price)}</span>)}</div>
@@ -632,6 +737,13 @@ export default function TickerLookupTab() {
                   </div>
                   <OptionSummary option={result.verdict.put} />
                   <OptionSummary option={result.verdict.call} />
+                </div>
+              </details>
+
+              <details style={S.details}>
+                <summary style={S.summary}>On-demand Options Strategies: best call, best put, straddle, iron condor</summary>
+                <div style={{ marginTop: '12px' }}>
+                  <OptionStrategiesSummary strategies={ondemand.option_strategies} />
                 </div>
               </details>
 

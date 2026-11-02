@@ -257,6 +257,7 @@ def _blocked(quality, reason_code, reason, **extra):
         "bridge_line": None,
         "bridge_entry": None,
         "dcf_presentation": None,
+        "dcf_methods": None,
         # Notes are kept empty here on purpose: the frontend
         # already prints reason once, and printing the same text
         # again as a note is what duplicated the BLOCKED text.
@@ -281,6 +282,7 @@ def _not_verified(quality, reason=None):
         "bridge_line": None,
         "bridge_entry": None,
         "dcf_presentation": None,
+        "dcf_methods": None,
         "notes": [
             "No quality and no DCF, so nothing about this company "
             "is invented for the long-term lane.",
@@ -560,12 +562,26 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
             "the higher fair value. Treat the range as uncertain."
         )
 
+    # Additional DCF methods, context only. They never change the
+    # verdict, DCA, or options gating above. If this computation
+    # fails, the anchor lane still returns, with methods missing.
+    try:
+        from services.dcf_methods import build_dcf_methods
+
+        dcf_methods = build_dcf_methods(
+            price, revenue, fcf, shares, rev_growth, fcf_margin, dr,
+            market_cap, quality, statements, wacc=wacc)
+    except Exception as exc:
+        logger.warning("long-term DCF methods failed: %s", exc)
+        dcf_methods = None
+
     return {
         "verdict": verdict,
         "label": verdict.upper(),
         "reason": reason,
         "reason_code": rule,
         "quality": quality,
+        "dcf_methods": dcf_methods,
         "dcf": {
             "fair_value": fair,
             "upside_pct": upside,

@@ -1503,10 +1503,29 @@ def build_verdict(ticker: str, *, price: float, setups: list,
     summary = _build_plain_summary(
         ticker, price, trend, stock, longterm, dca)
 
+    # Options Strategies section, additional information only. It
+    # is computed from the listed chain already fetched above and
+    # never feeds back into the verdict put, verdict call, timing,
+    # long-term, or DCA decisions.
+    try:
+        from services.option_strategies import build_option_strategies
+
+        option_strategies = build_option_strategies(price, chain_puts, chain_calls)
+    except Exception as exc:
+        logger.warning("ticker_lookup: option strategies failed: %s", exc)
+        option_strategies = {
+            "available": False, "expiry": None, "dte": None,
+            "expiry_rule": None, "chain_source": None,
+            "selection_note": None, "best_call": None, "best_put": None,
+            "straddle": None, "iron_condor": None,
+            "reason": f"Option strategies could not be computed: {exc}.",
+        }
+
     return {
         "stock": stock,
         "put": put,
         "call": call,
+        "option_strategies": option_strategies,
         "longterm": longterm,
         "dca": dca,
         "summary": summary,

@@ -72,6 +72,8 @@ a weekly put or call. Options stay gated exactly as they are.
 """
 import logging
 
+from services.dcf_presentation import build_dcf_presentation
+
 logger = logging.getLogger(__name__)
 
 _FALLBACK_RISK_FREE = 0.045
@@ -254,6 +256,7 @@ def _blocked(quality, reason_code, reason, **extra):
         "wacc": None,
         "bridge_line": None,
         "bridge_entry": None,
+        "dcf_presentation": None,
         # Notes are kept empty here on purpose: the frontend
         # already prints reason once, and printing the same text
         # again as a note is what duplicated the BLOCKED text.
@@ -277,6 +280,7 @@ def _not_verified(quality, reason=None):
         "wacc": None,
         "bridge_line": None,
         "bridge_entry": None,
+        "dcf_presentation": None,
         "notes": [
             "No quality and no DCF, so nothing about this company "
             "is invented for the long-term lane.",
@@ -588,6 +592,21 @@ def build_longterm(ticker, price, snapshot_entry, statements=None,
                 "inputs, never market cap divided by P/S."
             ),
         },
+        "dcf_presentation": build_dcf_presentation(
+            {
+                "fair_value": fair,
+                "upside_pct": upside,
+                "revenue_millions": revenue,
+                "fcf_millions": fcf,
+                "fcf_margin_pct": round(fcf_margin * 100, 1),
+                "revenue_growth_pct": round(rev_growth * 100, 1),
+                "reverse_dcf_implied_growth_pct": reverse,
+                "exit_multiple_check": exit_check,
+            },
+            price,
+            wacc,
+            verdict,
+        ),
         "wacc": wacc,
         "bridge_line": bridge_line,
         "bridge_entry": None,

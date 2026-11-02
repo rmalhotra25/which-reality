@@ -18,6 +18,11 @@ Sources, reused, not a new model:
 - Live DCF: services.longterm_valuation.build_longterm, the
   same shared _run_dcf core, bear/base/bull, WACC, reverse DCF,
   and exit-multiple cross-check as the snapshot lane.
+  Statements are Polygon SEC first, with yfinance annual
+  statements as a fallback only when Polygon returns no revenue
+  or no free cash flow. The statements_source label says which
+  one fed the DCF, and both sources tried are named when the
+  DCF stays BLOCKED.
 - Chart trend and setup: the existing timing trend data from
   ticker_lookup, price, 50-day and 200-day averages and their
   directions, RSI, volume, Quality Pullback and Volume Breakout
@@ -476,17 +481,81 @@ def fetch_live_quality_inputs(ticker):
     return inputs
 
 
-def fetch_statements(ticker, price):
-    """Polygon SEC latest annual plus Finnhub shares, in millions.
+def _statements_from_values(revenue_m, fcf_m, shares_m, total_debt,
+                             equity, profile, basics, price,
+                             statements_source, shares_source):
+    """Validate and assemble a statements dict, in millions.
 
-    Returns (statements_dict_or_None, note). Statements are
-    revenue_millions, fcf_millions, shares_outstanding_millions,
-    beta, sector, plus the cross-check fields. If Polygon
-    returns no revenue or FCF, or shares are missing, statements
-    are None and the DCF stays BLOCKED. If price times shares
-    differs from the Finnhub market cap by more than 25%,
-    statements are also None, because the share count does not
-    reconcile, and the note says so plainly.
+    Shares are in millions, matching the Finnhub convention and
+    the build_longterm convention: price times shares is the
+    market cap in millions. If the price times shares cross-check
+    against the Finnhub market cap fails by more than 25%, the
+    statements are rejected, because the share count does not
+    reconcile. A missing market cap skips the cross-check, it
+    does not fail it. Negative or zero FCF is passed through
+    here and blocked by build_longterm with negative_fcf, the
+    same as the Polygon path already did.
+    """
+    profile = profile or {}
+    basics = basics or {}
+    try:
+        revenue_m = float(revenue_m)
+        fcf_m = float(fcf_m)
+        shares_m = float(shares_m)
+    except (TypeError, ValueError):
+        return None, "Statement values are not numbers, so no DCF is computed."
+    market_cap_profile = profile.get("marketCapitalization")
+    if market_cap_profile is not None and price:
+        try:
+            implied = float(price) * shares_m
+            base = float(market_cap_profile)
+            if base > 0 and abs(implied - base) / base > 0.25:
+                return None, (
+                    "Share count does not reconcile: price times "
+                    "shares differs from the profile market cap by "
+                    "more than 25%, so no DCF is computed on it."
+                )
+        except (TypeError, ValueError):
+            pass
+    statements = {
+        "revenue": revenue_m,
+        "fcf": fcf_m,
+        "shares_outstanding": shares_m,
+        "beta": basics.get("beta"),
+        "sector": profile.get("finnhubIndustry") or profile.get("gics_sector"),
+        "debt_equity": None,
+        "statements_source": statements_source,
+        "shares_source": shares_source,
+    }
+    if total_debt is not None and equity:
+        try:
+            statements["debt_equity"] = float(total_debt) / float(equity)
+        except (TypeError, ValueError, ZeroDivisionError):
+            statements["debt_equity"] = None
+    return statements, None
+
+
+def fetch_statements(ticker, price):
+    """Polygon SEC latest annual first, yfinance annual as fallback.
+
+    Returns (statements_dict_or_None, note). Statements are in
+    millions, with a statements_source label of polygon_sec or
+    yfinance_annual, so a DCF from yfinance is never presented
+    as a Polygon SEC DCF. The fallback runs only when Polygon
+    returns no revenue or no free cash flow. It uses real
+    yfinance annual statements (the existing aggregation in
+    twelve_step_service), never revenue derived from market cap
+    divided by P/S, never FCF estimated from net income alone.
+    If yfinance annuals also lack revenue or FCF, the DCF stays
+    BLOCKED and the note names both sources tried. Shares come
+    from the Finnhub profile on the Polygon path, and from the
+    yfinance annual shares or the Finnhub profile on the fallback
+    path, stated in shares_source. The price times shares
+    cross-check against the Finnhub market cap within 25%
+    applies on both paths where a market cap is available.
+    If Polygon returns revenue and FCF but shares are missing,
+    the fallback does not run for shares alone, and the DCF
+    stays BLOCKED, matching the previous Polygon-only behaviour.
     """
     ticker = (ticker or "").upper().strip()
     try:
@@ -501,52 +570,100 @@ def fetch_statements(ticker, price):
         fin = {}
     revenue = fin.get("revenue")
     fcf = fin.get("free_cash_flow")
-    if revenue is None or fcf is None:
-        return None, "Polygon SEC financials returned no revenue or free cash flow, so no DCF is computed."
+    if revenue is not None and fcf is not None:
+        try:
+            profile = get_company_profile(ticker) or {}
+            basics = get_basic_financials(ticker) or {}
+        except Exception:
+            profile, basics = {}, {}
+        if profile.get("shareOutstanding") is not None:
+            shares = profile.get("shareOutstanding")
+            shares_source = "finnhub_profile"
+        elif basics.get("sharesOutstanding") is not None:
+            shares = basics.get("sharesOutstanding")
+            shares_source = "finnhub_basics"
+        else:
+            return None, "Shares outstanding are missing, so no DCF is computed."
+        try:
+            revenue_m = float(revenue) / 1_000_000.0
+            fcf_m = float(fcf) / 1_000_000.0
+        except (TypeError, ValueError):
+            return None, "Statement values are not numbers, so no DCF is computed."
+        statements, error = _statements_from_values(
+            revenue_m, fcf_m, shares, fin.get("total_debt"),
+            fin.get("equity"), profile, basics, price,
+            "polygon_sec", shares_source)
+        if statements is None:
+            return None, error
+        return statements, (
+            "Polygon SEC latest annual, converted to millions, "
+            "shares from Finnhub profile. Statements source: polygon_sec."
+        )
     try:
         profile = get_company_profile(ticker) or {}
         basics = get_basic_financials(ticker) or {}
     except Exception:
         profile, basics = {}, {}
-    shares = profile.get("shareOutstanding") or basics.get("sharesOutstanding")
-    if shares is None:
-        return None, "Shares outstanding are missing, so no DCF is computed."
     try:
-        shares = float(shares)
-        revenue_m = float(revenue) / 1_000_000.0
-        fcf_m = float(fcf) / 1_000_000.0
+        from services.twelve_step_service import _get_annual_financials_list
+        annuals = _get_annual_financials_list(ticker, 1) or []
+    except Exception as exc:
+        logger.warning("on-demand yfinance annuals failed for %s: %s", ticker, exc)
+        annuals = []
+    latest = annuals[0] if annuals else {}
+    yf_revenue = latest.get("revenue")
+    yf_fcf = latest.get("free_cash_flow")
+    if yf_revenue is None or yf_fcf is None:
+        return None, (
+            "Polygon SEC financials returned no revenue or free cash flow, "
+            "and yfinance annual statements also returned no revenue or "
+            "free cash flow, so no DCF is computed. Statements sources "
+            "tried: polygon_sec, yfinance_annual."
+        )
+    if latest.get("shares") is not None:
+        yf_shares = latest.get("shares")
+        shares_source = "yfinance_annual"
+    elif profile.get("shareOutstanding") is not None:
+        yf_shares = profile.get("shareOutstanding")
+        shares_source = "finnhub_profile"
+    elif basics.get("sharesOutstanding") is not None:
+        yf_shares = basics.get("sharesOutstanding")
+        shares_source = "finnhub_basics"
+    else:
+        return None, (
+            "Polygon SEC financials returned no revenue or free cash flow, "
+            "and yfinance annual statements have no shares outstanding, "
+            "so no DCF is computed. Statements sources tried: "
+            "polygon_sec, yfinance_annual."
+        )
+    try:
+        revenue_m = float(yf_revenue) / 1_000_000.0
+        fcf_m = float(yf_fcf) / 1_000_000.0
+        if shares_source == "yfinance_annual":
+            shares_m = float(yf_shares) / 1_000_000.0
+        else:
+            shares_m = float(yf_shares)
     except (TypeError, ValueError):
-        return None, "Statement values are not numbers, so no DCF is computed."
-    market_cap_profile = profile.get("marketCapitalization")
-    if market_cap_profile is not None and price:
-        try:
-            implied = float(price) * shares
-            base = float(market_cap_profile)
-            if base > 0 and abs(implied - base) / base > 0.25:
-                return None, (
-                    "Share count does not reconcile: price times "
-                    "shares differs from the profile market cap by "
-                    "more than 25%, so no DCF is computed on it."
-                )
-        except (TypeError, ValueError):
-            pass
-    statements = {
-        "revenue": revenue_m,
-        "fcf": fcf_m,
-        "shares_outstanding": shares,
-        "beta": basics.get("beta"),
-        "sector": profile.get("finnhubIndustry") or profile.get("gics_sector"),
-        "debt_equity": None,
-    }
-    debt = fin.get("total_debt")
-    equity = fin.get("equity")
-    if debt is not None and equity:
-        try:
-            statements["debt_equity"] = float(debt) / float(equity)
-        except (TypeError, ValueError, ZeroDivisionError):
-            statements["debt_equity"] = None
-    return statements, "Polygon SEC latest annual, converted to millions, shares from Finnhub profile."
-
+        return None, (
+            "yfinance annual statement values are not numbers, so no "
+            "DCF is computed. Statements sources tried: polygon_sec, "
+            "yfinance_annual."
+        )
+    statements, error = _statements_from_values(
+        revenue_m, fcf_m, shares_m, latest.get("total_debt"),
+        None, profile, basics, price,
+        "yfinance_annual", shares_source)
+    if statements is None:
+        return None, error
+    period = latest.get("period")
+    period_note = f" (latest annual year {period})" if period else ""
+    return statements, (
+        "yfinance annual statements" + period_note + ", converted to "
+        "millions, used as a fallback because Polygon SEC financials "
+        "returned no revenue or free cash flow. This is a real "
+        "statements source, not a market cap derivation. Statements "
+        "source: yfinance_annual."
+    )
 
 def build_short_term(price, trend, stock, setups, spy_gate, earnings):
     """Short-term trend and setup, from existing timing data only."""

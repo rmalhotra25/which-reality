@@ -135,6 +135,9 @@ def _build_ondemand(ticker: str, db):
     }
     review["live_quality"] = quality_live
     review["statements_note"] = statements_note
+    review["statements_source"] = (
+        statements.get("statements_source") if statements else None
+    )
     review["profile_sector"] = profile.get("finnhubIndustry") or profile.get("industry")
     return review
 

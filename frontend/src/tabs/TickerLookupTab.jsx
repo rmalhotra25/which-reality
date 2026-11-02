@@ -144,6 +144,97 @@ function ChainTable({ rows, side }) {
   )
 }
 
+function plainVerdictLabel(decision, label) {
+  if (decision === 'buy') return 'Buy now'
+  if (decision === 'wait') return 'Wait for entry'
+  if (decision === 'avoid') return 'Avoid for now'
+  if (decision === 'cannot_judge') return 'Cannot judge'
+  return label || 'Unknown'
+}
+
+function trendLine(trend, price) {
+  if (!trend) return `Price $${val(price)}`
+  const above50 = trend.above_ma50 ? 'above' : 'below'
+  const above200 = trend.above_ma200 ? 'above' : 'below'
+  return `Price $${val(price)}, ${above50} its 50-day average of $${val(trend.ma50)} (${val(trend.ma50_direction)}) and ${above200} its 200-day average of $${val(trend.ma200)} (${val(trend.ma200_direction)})`
+}
+
+function dcfPresentationFor(longterm, price) {
+  if (!longterm || !longterm.dcf) return null
+  if (longterm.dcf_presentation) return longterm.dcf_presentation
+  const dcf = longterm.dcf
+  const wide = !!(dcf.exit_multiple_check && dcf.exit_multiple_check.wide_disagreement)
+  const implied = dcf.reverse_dcf_implied_growth_pct
+  const high = implied != null && Number(implied) > 25
+  const unreliable = wide || high
+  const base = dcf.fair_value.base
+  let warning = null
+  if (unreliable) {
+    warning = `DCF is not a reliable price anchor for this name. Do not treat $${base} as an intrinsic value.`
+    if (longterm.verdict === 'weak') {
+      warning += ` Treat it as overvalued on current cash flows, not as an $${base} intrinsic value.`
+    }
+  }
+  return {
+    bear: dcf.fair_value.bear,
+    base,
+    bull: dcf.fair_value.bull,
+    range_label: `$${dcf.fair_value.bear} to $${dcf.fair_value.bull}`,
+    framing: `On today's cash flows, this DCF says $${base}, market is $${price}, so the market is paying for growth not yet in cash flows. This is not a price target.`,
+    unreliable,
+    high_implied_growth: high,
+    wide_terminal_disagreement: wide,
+    implied_growth_pct: implied,
+    warning,
+    inputs_line: `Revenue $${val(dcf.revenue_millions)}M, FCF $${val(dcf.fcf_millions)}M (${fmtPct(dcf.fcf_margin_pct)}% margin), revenue growth ${fmtPct(dcf.revenue_growth_pct)}%, WACC ${longterm.wacc ? val(longterm.wacc.wacc_pct) : 'unknown'}%.`,
+    exit_multiple_fair_value: dcf.exit_multiple_check ? dcf.exit_multiple_check.fair_value : null,
+    gordon_fair_value: dcf.exit_multiple_check ? dcf.exit_multiple_check.gordon_fair_value : null,
+    disagreement_pct: dcf.exit_multiple_check ? dcf.exit_multiple_check.disagreement_pct : null,
+  }
+}
+
+function DcfFraming({ longterm, price }) {
+  const p = dcfPresentationFor(longterm, price)
+  if (!p) return null
+  return (
+    <>
+      <div style={{ ...S.note, marginTop: '8px', color: '#e2e8f0', fontSize: '13px' }}>{p.framing}</div>
+      {p.warning && (
+        <div style={{ ...S.note, marginTop: '6px', color: '#f6e05e', fontSize: '13px' }}>{p.warning}</div>
+      )}
+    </>
+  )
+}
+
+function DcfSummary({ longterm, price }) {
+  const p = dcfPresentationFor(longterm, price)
+  if (!p) return null
+  return (
+    <div>
+      <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>
+        DCF base ${val(p.base)} (bear ${val(p.bear)} to bull ${val(p.bull)})
+      </div>
+      <DcfFraming longterm={longterm} price={price} />
+      <div style={S.note}>Inputs: {p.inputs_line}</div>
+    </div>
+  )
+}
+
+function OptionSummary({ option }) {
+  if (!option) return null
+  return (
+    <div style={{ ...S.note, marginTop: '6px', color: '#e2e8f0', fontSize: '13px' }}>
+      <strong>{option.label}:</strong> {option.reason}
+      {option.decision === 'sell' && (
+        <span> Strike ${val(option.strike)}, expiry {val(option.expiry)}, premium ${val(option.premium_per_contract)} per contract, breakeven ${val(option.breakeven)}.</span>
+      )}
+      {option.decision === 'buy' && (
+        <span> Strike ${val(option.strike)}, expiry {val(option.expiry)}, premium ${val(option.premium_per_contract)} per contract, breakeven ${val(option.breakeven)}.</span>
+      )}
+    </div>
+  )
+}
+
 function ProposalRow({ proposal, onAlign, adjustScore, setAdjustScore }) {
   if (!proposal) return null
   const hasScore = proposal.proposed_score !== null && proposal.proposed_score !== undefined
@@ -202,6 +293,23 @@ export default function TickerLookupTab() {
   const [ondemandError, setOndemandError] = useState(null)
   const [alignActions, setAlignActions] = useState({})
   const [adjustScores, setAdjustScores] = useState({ moat: '5', ceo: '5' })
+  const [simpleView, setSimpleView] = useState(() => {
+    try {
+      return localStorage.getItem('ticker_lookup_simple_view') !== 'full'
+    } catch (err) {
+      return true
+    }
+  })
+
+  function toggleView() {
+    const next = !simpleView
+    setSimpleView(next)
+    try {
+      localStorage.setItem('ticker_lookup_simple_view', next ? 'simple' : 'full')
+    } catch (err) {
+      // View preference is a convenience, not a requirement.
+    }
+  }
 
   async function runLookup(e) {
     e.preventDefault()
@@ -320,6 +428,241 @@ export default function TickerLookupTab() {
       )}
 
       {result && result.verdict && (
+        <div style={S.card}>
+          <button style={S.button} type="button" onClick={toggleView}>
+            {simpleView ? 'Show full expanded view' : 'Back to simple view'}
+          </button>
+          <div style={{ ...S.note, marginTop: '8px' }}>
+            Simple view shows the answer first, then three collapsed sections: short-term, long-term, and options.
+            Details and the full audit trail are behind the toggles below and in the full expanded view.
+          </div>
+        </div>
+      )}
+
+      {result && result.verdict && simpleView && (
+        <>
+          <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
+            <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
+              {plainVerdictLabel(result.verdict.stock.decision, result.verdict.stock.label)}
+            </div>
+            <div style={{ fontSize: '15px', color: '#e2e8f0', marginTop: '6px' }}>{trendLine(result.trend, result.price)}</div>
+            <div style={S.verdictReason}>{result.verdict.stock.reason}</div>
+            <div style={S.verdictNote}>What would change this: {result.verdict.stock.what_would_change}</div>
+          </div>
+
+          <details style={S.details}>
+            <summary style={S.summary}>Short-term: trend, setup, trigger, invalidation</summary>
+            <div style={{ marginTop: '12px' }}>
+              {result.verdict.stock.entry_plan && (
+                <>
+                  <div style={S.note}>
+                    Trigger: {result.verdict.stock.entry_plan.trigger_50d_wording === 'recovery' ? 'Recovery to' : 'Pullback to'} ${val(result.verdict.stock.entry_plan.pullback_price)}
+                    {result.verdict.stock.entry_plan.breakout_price != null && (
+                      <span> or a close above ${val(result.verdict.stock.entry_plan.breakout_price)}</span>
+                    )}
+                    {result.verdict.stock.entry_plan.buy_zone && (
+                      <span> | Buy zone ${val(result.verdict.stock.entry_plan.buy_zone[0])} to ${val(result.verdict.stock.entry_plan.buy_zone[1])}</span>
+                    )}
+                  </div>
+                  <div style={{ ...S.note, marginTop: '6px' }}>Wrong if: {result.verdict.stock.entry_plan.what_flips_to_avoid}</div>
+                  {result.verdict.stock.entry_plan.blocker && (
+                    <div style={{ ...S.note, marginTop: '6px' }}>Blocker today: {result.verdict.stock.entry_plan.blocker}</div>
+                  )}
+                </>
+              )}
+              {!result.verdict.stock.entry_plan && (
+                <div style={S.note}>No entry plan today. See the timing verdict above for the blocker.</div>
+              )}
+            </div>
+          </details>
+
+          <details style={S.details}>
+            <summary style={S.summary}>Long-term: quality, DCF summary, DCA decision</summary>
+            <div style={{ marginTop: '12px' }}>
+              {result.verdict.longterm && (
+                <>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{val(result.verdict.longterm.label)}: {result.verdict.longterm.reason}</div>
+                  {result.verdict.longterm.bridge_line && (
+                    <div style={{ ...S.note, marginTop: '6px', color: '#68d391' }}>{result.verdict.longterm.bridge_line}</div>
+                  )}
+                  <div style={{ marginTop: '10px' }}>
+                    <DcfSummary longterm={result.verdict.longterm} price={result.price} />
+                  </div>
+                </>
+              )}
+              {result.verdict.dca && (
+                <div style={{ marginTop: '10px' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{result.verdict.dca.label}</div>
+                  <div style={S.note}>{result.verdict.dca.basis_note}</div>
+                  <div style={{ ...S.note, marginTop: '6px' }}>Pause rule: {result.verdict.dca.pause_rule}</div>
+                </div>
+              )}
+              {!result.verdict.dca && (
+                <div style={{ ...S.note, marginTop: '10px' }}>No DCA plan here, because quality is not verified or the trend is broken.</div>
+              )}
+            </div>
+          </details>
+
+          <details style={S.details}>
+            <summary style={S.summary}>Options: put and call, selected strike only</summary>
+            <div style={{ marginTop: '12px' }}>
+              <OptionSummary option={result.verdict.put} />
+              <OptionSummary option={result.verdict.call} />
+              <div style={{ ...S.note, marginTop: '8px' }}>The full option chain is in the full expanded view, closed by default.</div>
+            </div>
+          </details>
+
+          <details style={S.details}>
+            <summary style={S.summary}>Show details: conviction, news, earnings, market</summary>
+            <div style={{ marginTop: '12px' }}>
+              <div style={S.note}>
+                <strong style={{ color: '#e2e8f0' }}>What supported this: </strong>
+                {result.verdict.conviction.supports.length > 0 ? result.verdict.conviction.supports.join(' ') : 'Nothing supported a buy today.'}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>What was against it: </strong>
+                {result.verdict.conviction.against.length > 0 ? result.verdict.conviction.against.join(' ') : 'Nothing was against it.'}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>What was missing: </strong>
+                {result.verdict.conviction.missing.join(' ')}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>News: </strong>
+                {result.news ? result.news.note : 'No fresh company news could be verified.'}
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                <strong style={{ color: '#e2e8f0' }}>Earnings: </strong>
+                {result.verdict.earnings.anticipated_date
+                  ? `Next report ${val(result.verdict.earnings.anticipated_date)}, ${val(result.verdict.earnings.days_away)} days away. `
+                  : 'Next earnings date is unknown. '}
+                No consensus estimate and no reported beat or miss is available, so nothing is guessed there.
+              </div>
+              <div style={{ ...S.note, marginTop: '6px' }}>
+                IV rank {val(result.iv.iv_percentile)} | SPY gate {val(result.spy_gate.gate)} ({val(result.spy_gate.spy_vs_200ma_pct)}% vs 200-day) |
+                Price source {val(result.price_source)} | Data timestamp {val(result.data_timestamp)}
+              </div>
+              <div style={{ ...S.note, marginTop: '8px' }}>
+                Full setup conditions and the full option chain are in the full expanded view, not repeated here.
+              </div>
+            </div>
+          </details>
+
+          <div style={S.card}>
+            <div style={S.sectionLabel}>On-demand review, live, for any ticker</div>
+            <div style={S.note}>
+              {result.verdict.longterm && result.verdict.longterm.verdict === 'not_verified'
+                ? 'The long-term lane above reads NOT VERIFIED, because this ticker is not in the 2026-10-26 quality screener snapshot. Run a live review below. It is dated, labelled live, and shown alongside the snapshot result, which it does not overwrite.'
+                : 'Run a live review alongside the snapshot result above, for comparison. The live review does not overwrite the snapshot lane.'}
+            </div>
+            <button style={{ ...S.button, marginTop: '10px' }} type="button" onClick={runOndemand} disabled={ondemandLoading}>
+              {ondemandLoading ? 'Running live review...' : 'Run on-demand review'}
+            </button>
+            {ondemandError && (
+              <div style={{ ...S.note, marginTop: '8px', color: '#fc8181' }}>{ondemandError}</div>
+            )}
+          </div>
+
+          {ondemand && (
+            <>
+              <div style={S.verdictCard('hold')}>
+                <div style={S.verdictBig('hold')}>{val(ondemand.dca_decision.label)}</div>
+                <div style={{ fontSize: '15px', color: '#e2e8f0', marginTop: '6px' }}>
+                  {trendLine(ondemand.short_term, ondemand.short_term.price)}
+                </div>
+                <div style={S.verdictReason}>{ondemand.dca_decision.reason}</div>
+                <div style={S.verdictReason}>{val(ondemand.longterm.label)}: {ondemand.longterm.reason}</div>
+                {ondemand.alignment && ondemand.alignment.provisional && (
+                  <div style={{ ...S.note, marginTop: '6px', color: '#f6e05e' }}>
+                    AI-proposed, awaiting your alignment: verdicts that depend on the proposals are provisional, not final.
+                  </div>
+                )}
+              </div>
+
+              <details style={S.details}>
+                <summary style={S.summary}>On-demand short-term: trend, setup, trigger, invalidation</summary>
+                <div style={{ marginTop: '12px' }}>
+                  <div style={S.note}>{ondemand.short_term.trend_note}</div>
+                  <div style={{ ...S.note, marginTop: '6px' }}>
+                    Pullback ${val(ondemand.short_term.pullback_price)} | Breakout ${val(ondemand.short_term.breakout_price)} |
+                    Invalidation ${val(ondemand.short_term.invalidation_price)} |
+                    SPY above 200-day: {val(ondemand.short_term.spy_above_200)} |
+                    Earnings in {val(ondemand.short_term.earnings_days)} days ({val(ondemand.short_term.earnings_status)})
+                  </div>
+                  {ondemand.short_term.setup_names && ondemand.short_term.setup_names.length > 0 && (
+                    <div style={S.note}>Setups present: {ondemand.short_term.setup_names.join(', ')}</div>
+                  )}
+                </div>
+              </details>
+
+              <details style={S.details}>
+                <summary style={S.summary}>On-demand long-term: quality, DCF summary, DCA decision</summary>
+                <div style={{ marginTop: '12px' }}>
+                  {ondemand.live_quality && ondemand.live_quality.status === 'verified' && (
+                    <div style={S.note}>
+                      Live quality: composite {fmtPct(ondemand.live_quality.composite)} ({val(ondemand.live_quality.label)}),
+                      revenue CAGR 3y {fmtPct(ondemand.live_quality.rev_cagr_3y_pct)}%,
+                      FCF margin avg 3y {fmtPct(ondemand.live_quality.fcf_margin_avg_3y_pct)}%,
+                      ROIC {fmtPct(ondemand.live_quality.roic_pct)}%, operating margin {fmtPct(ondemand.live_quality.operating_margin_pct)}%.
+                    </div>
+                  )}
+                  <div style={{ marginTop: '10px' }}>
+                    <DcfSummary longterm={ondemand.longterm} price={ondemand.short_term.price} />
+                  </div>
+                  {ondemand.dca_decision.trigger && (
+                    <div style={S.note}>Trigger: {ondemand.dca_decision.trigger}{ondemand.dca_decision.trigger_price != null && (<span> at ${val(ondemand.dca_decision.trigger_price)}</span>)}</div>
+                  )}
+                  {ondemand.dca_decision.killing_parameters && ondemand.dca_decision.killing_parameters.length > 0 && (
+                    <div style={S.note}>Killing parameters: {ondemand.dca_decision.killing_parameters.join('; ')}</div>
+                  )}
+                  {ondemand.statements_note && (
+                    <div style={S.note}>{ondemand.statements_note}</div>
+                  )}
+                  {ondemand.statements_source && (
+                    <div style={S.note}>Statements source: {ondemand.statements_source === 'yfinance_annual' ? 'yfinance annual, fallback because Polygon SEC returned no revenue or free cash flow' : 'Polygon SEC'}.</div>
+                  )}
+                </div>
+              </details>
+
+              <details style={S.details}>
+                <summary style={S.summary}>On-demand options: put and call, selected strike only</summary>
+                <div style={{ marginTop: '12px' }}>
+                  <div style={S.note}>
+                    Timing decision: {val(result.verdict.stock.label)}. Put and call gating is unchanged: timing, earnings, and SPY, exactly as in the timing card in the full view. The on-demand review never unlocks a weekly put or call.
+                  </div>
+                  <OptionSummary option={result.verdict.put} />
+                  <OptionSummary option={result.verdict.call} />
+                </div>
+              </details>
+
+              <details style={S.details}>
+                <summary style={S.summary}>Show details: AI proposals and alignment</summary>
+                <div style={{ marginTop: '12px' }}>
+                  <div style={S.note}>
+                    These are evidence-based proposals, not quant decisions for options. Until you align an assumption, the long-term and DCA verdicts that depend on it stay provisional, not final.
+                  </div>
+                  {ondemand.proposals && ['moat', 'ceo', 'market_size'].map((key) => (
+                    <ProposalRow
+                      key={key}
+                      proposal={ondemand.proposals[key] ? { ...ondemand.proposals[key], key } : null}
+                      onAlign={alignProposal}
+                      adjustScore={adjustScores[key] || '5'}
+                      setAdjustScore={(v) => setAdjustScores({ ...adjustScores, [key]: v })}
+                    />
+                  ))}
+                  {ondemand.alignment && ondemand.alignment.audit_trail && ondemand.alignment.audit_trail.length > 0 && (
+                    <div style={{ ...S.note, marginTop: '10px' }}>
+                      Audit trail: {ondemand.alignment.audit_trail.map((a) => `${a.key}: proposed ${val(a.proposed_score)} -> aligned ${val(a.aligned_score)} (${val(a.alignment_status)})`).join(' | ')}
+                    </div>
+                  )}
+                </div>
+              </details>
+            </>
+          )}
+        </>
+      )}
+
+      {result && result.verdict && !simpleView && (
         <>
           {result.summary && (
             <div style={S.card}>
@@ -398,6 +741,7 @@ export default function TickerLookupTab() {
               )}
               {result.verdict.longterm.dcf && (
                 <>
+                  <DcfFraming longterm={result.verdict.longterm} price={result.price} />
                   <div style={{ ...S.grid, marginTop: '12px' }}>
                     <div style={S.stat}>
                       <span style={S.statLabel}>Bear fair value</span>
@@ -523,11 +867,14 @@ export default function TickerLookupTab() {
                   </div>
                 )}
                 {ondemand.longterm.dcf && (
+                  <>
+                  <DcfFraming longterm={ondemand.longterm} price={ondemand.short_term.price} />
                   <div style={{ ...S.grid, marginTop: '10px' }}>
                     <div style={S.stat}><span style={S.statLabel}>DCF bear</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.bear)}</span></div>
                     <div style={S.stat}><span style={S.statLabel}>DCF base</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.base)}</span></div>
                     <div style={S.stat}><span style={S.statLabel}>DCF bull</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.bull)}</span></div>
                   </div>
+                  </>
                 )}
                 {ondemand.longterm.wacc && (
                   <div style={S.note}>WACC {val(ondemand.longterm.wacc.wacc_pct)}% (risk free {val(ondemand.longterm.wacc.risk_free_pct)}%, source: {val(ondemand.longterm.wacc.risk_free_source)}).</div>

@@ -133,6 +133,16 @@ export const api = {
     getData: (ticker) => request(`/api/twelve-step/data/${encodeURIComponent(ticker)}`),
     screener: (filters) => request('/api/twelve-step/screener', { method: 'POST', body: filters }),
   },
+  coveredCallPicks: {
+    get: (ticker, { expiry, shares, costBasis } = {}) => {
+      const params = new URLSearchParams()
+      if (expiry) params.set('expiry', expiry)
+      if (shares !== undefined && shares !== null && shares !== '') params.set('shares', shares)
+      if (costBasis !== undefined && costBasis !== null && costBasis !== '') params.set('cost_basis', costBasis)
+      const query = params.toString()
+      return request(`/api/covered-call-picks/${encodeURIComponent(ticker)}${query ? `?${query}` : ''}`)
+    },
+  },
   lookup: {
     get: (ticker, explain = false) =>
       request(`/api/lookup/${encodeURIComponent(ticker)}${explain ? '?explain=true' : ''}`),

@@ -10,6 +10,7 @@ import IncomeTab from './tabs/IncomeTab'
 import BookTab from './tabs/BookTab'
 import ChallengeTab from './tabs/ChallengeTab'
 import TickerLookupTab from './tabs/TickerLookupTab'
+import CoveredCallsTab from './tabs/CoveredCallsTab'
 
 const TABS = [
   { id: 'pulse',        label: '⚡ Today' },
@@ -21,6 +22,7 @@ const TABS = [
   { id: 'challenge',    label: '🏆 Challenge' },
   { id: 'alerts',       label: '🔔 Setup Alerts' },
   { id: 'lookup',       label: '🔍 Ticker Lookup' },
+  { id: 'coveredcalls', label: '🔒 Covered Calls' },
 ]
 
 class TabErrorBoundary extends Component {
@@ -124,6 +126,7 @@ export default function App() {
           {activeTab === 'challenge'    && <ChallengeTab />}
           {activeTab === 'alerts'       && <AlertsTab />}
           {activeTab === 'lookup'       && <TickerLookupTab />}
+          {activeTab === 'coveredcalls' && <CoveredCallsTab />}
         </TabErrorBoundary>
       </main>
     </div>

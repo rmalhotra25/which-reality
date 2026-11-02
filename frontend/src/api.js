@@ -136,6 +136,10 @@ export const api = {
   lookup: {
     get: (ticker, explain = false) =>
       request(`/api/lookup/${encodeURIComponent(ticker)}${explain ? '?explain=true' : ''}`),
+    getOndemand: (ticker) =>
+      request(`/api/lookup/${encodeURIComponent(ticker)}/ondemand`),
+    alignOndemand: (ticker, body) =>
+      request(`/api/lookup/${encodeURIComponent(ticker)}/ondemand/align`, { method: 'POST', body }),
   },
   challenge: {
     getState: () => request('/api/challenge'),

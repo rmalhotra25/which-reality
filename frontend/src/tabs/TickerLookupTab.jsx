@@ -285,13 +285,25 @@ function StrategyLine({ strategy, label }) {
 }
 
 function OptionStrategiesSummary({ strategies }) {
-  if (!strategies) return null
+  if (!strategies) {
+    return (<div style={S.note}>Options Strategies: unavailable, no strategies data was returned.</div>)
+  }
   if (!strategies.available) {
-    return (<div style={S.note}>Options Strategies: unavailable, {val(strategies.reason)}</div>)
+    return (
+      <div>
+        <div style={S.note}>Options Strategies: unavailable, {val(strategies.reason)}</div>
+        {strategies.chain_source && (
+          <div style={S.note}>Chain source: {val(strategies.chain_source)}{strategies.chain_source === 'cboe_delayed' ? ' (delayed quotes, about 15 minutes delayed)' : ''}.</div>
+        )}
+      </div>
+    )
   }
   return (
     <div>
       <div style={S.note}>Options Strategies, expiry {val(strategies.expiry)} ({val(strategies.dte)} days, nearest to 21 days). Model-ranked opportunity, not a prediction or guarantee.</div>
+      {strategies.chain_source && (
+        <div style={S.note}>Chain source: {val(strategies.chain_source)}{strategies.chain_source === 'cboe_delayed' ? ' (delayed quotes, about 15 minutes delayed)' : ''}.</div>
+      )}
       <StrategyLine strategy={strategies.best_call} label="Best call" />
       <StrategyLine strategy={strategies.best_put} label="Best put" />
       <StrategyLine strategy={strategies.straddle} label="Straddle" />
@@ -610,12 +622,12 @@ export default function TickerLookupTab() {
             </div>
           </details>
 
-          <details style={S.details}>
-            <summary style={S.summary}>Options Strategies: best call, best put, straddle, iron condor</summary>
-            <div style={{ marginTop: '12px' }}>
+          <div style={S.card}>
+            <div style={S.sectionLabel}>Options Strategies: best call, best put, straddle, iron condor</div>
+            <div style={{ marginTop: '6px' }}>
               <OptionStrategiesSummary strategies={result.verdict.option_strategies} />
             </div>
-          </details>
+          </div>
 
           <details style={S.details}>
             <summary style={S.summary}>Show details: conviction, news, earnings, market</summary>
@@ -740,12 +752,12 @@ export default function TickerLookupTab() {
                 </div>
               </details>
 
-              <details style={S.details}>
-                <summary style={S.summary}>On-demand Options Strategies: best call, best put, straddle, iron condor</summary>
-                <div style={{ marginTop: '12px' }}>
+              <div style={S.card}>
+                <div style={S.sectionLabel}>On-demand Options Strategies: best call, best put, straddle, iron condor</div>
+                <div style={{ marginTop: '6px' }}>
                   <OptionStrategiesSummary strategies={ondemand.option_strategies} />
                 </div>
-              </details>
+              </div>
 
               <details style={S.details}>
                 <summary style={S.summary}>Show details: AI proposals and alignment</summary>
@@ -1120,6 +1132,13 @@ export default function TickerLookupTab() {
                   </>
                 )}
               </div>
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sectionLabel}>Options Strategies: best call, best put, straddle, iron condor</div>
+            <div style={{ marginTop: '6px' }}>
+              <OptionStrategiesSummary strategies={result.verdict.option_strategies} />
             </div>
           </div>
 

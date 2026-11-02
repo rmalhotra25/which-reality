@@ -1,5 +1,20 @@
 """
-Chain provider: Polygon primary, yfinance fallback, selected in one place.
+Chain provider: Polygon primary, yfinance second, CBOE delayed third,
+selected in one place.
+
+Why a third source exists (Nov 2 2026): Polygon on the Massive
+Options Starter plan returns bid/ask 0.0 (no quotes entitlement), so
+every Polygon row is skipped for having no executable mid, and the
+yfinance fallback returned no option expiries for TSLA, NVDA, and MSFT
+on Render the same day, leaving snapshot lookups with no chain at all
+and the Options Strategies section unavailable. The yfinance failure
+mode on Render is unproven (the provider only records that no
+expiries were returned, not why Yahoo returned none), so the fix
+adds a third source rather than claiming a yfinance root cause.
+CBOE delayed quotes are a public endpoint that returns real bid/ask
+for listed options, with Greeks on near-money rows. It is delayed,
+so the source label says so, and it never replaces a live source
+when one works: it is tried only after Polygon and yfinance fail.
 
 All consumers of options chain data call ChainProvider.fetch() or ChainProvider.fetch_price()
 instead of duplicating Polygon/yfinance logic. The provider normalizes both sources into
@@ -26,12 +41,17 @@ Sale pricing (wheel put sales, Oct 26 2026 fix):
   stale last trade.
 
 ChainResult.source: "polygon_live" | "yfinance_live" | "yfinance_last_trade"
+  | "cboe_delayed"
 ChainResult.fetched_at: UTC datetime of the fetch
 ChainError.sources_tried: which sources were attempted before giving up
 """
 
+import json
 import logging
 import math
+import re
+import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -178,13 +198,44 @@ def _historical_volatility(ticker: str) -> float | None:
 # ChainProvider
 # ---------------------------------------------------------------------------
 
+# CBOE delayed-quotes payload cache: one lookup fetches puts and calls
+# separately, and both would otherwise download the same full chain
+# file twice. 120 seconds is short against a delayed feed and long
+# enough to cover one lookup. Keyed by ticker only, never by price.
+_CBOE_CACHE: dict = {}
+_CBOE_CACHE_TTL_SECONDS = 120.0
+_CBOE_SYMBOL_RE = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
+
+
+def _parse_cboe_symbol(symbol: str):
+    """Parse a CBOE option symbol into (expiry_iso, contract_type, strike).
+
+    Symbol form: ROOT + YYMMDD + C/P + strike x 1000, zero padded to
+    8 digits, for example TSLA261120C00405000 is a Nov 20 2026 call
+    struck at $405.00. Returns None when the symbol does not parse,
+    so an unparseable row is skipped, never guessed.
+    """
+    try:
+        match = _CBOE_SYMBOL_RE.match(str(symbol or "").strip().upper())
+        if not match:
+            return None
+        yy, mm, dd = int(match.group(2)[0:2]), int(match.group(2)[2:4]), int(match.group(2)[4:6])
+        expiry = date(2000 + yy, mm, dd).isoformat()
+        contract_type = "call" if match.group(3) == "C" else "put"
+        strike = int(match.group(4)) / 1000.0
+        return expiry, contract_type, strike
+    except (ValueError, IndexError):
+        return None
+
+
 class ChainProvider:
-    """Provides normalized options chain data with Polygon primary, yfinance fallback."""
+    """Provides normalized options chain data with Polygon primary, yfinance second, CBOE delayed third."""
 
     # Human-readable notes on what the most recent fetch from each source
     # produced, so a total failure can say why instead of going silent.
     last_polygon_note: str = ""
     last_yfinance_note: str = ""
+    last_cboe_note: str = ""
 
     # ------------------------------------------------------------------
     # Price pre-fetch
@@ -533,6 +584,148 @@ class ChainProvider:
             return [], None, ""
 
     # ------------------------------------------------------------------
+    # CBOE delayed chain (third fallback)
+    # ------------------------------------------------------------------
+
+    def _fetch_cboe_payload(self, ticker: str):
+        """Download the CBOE delayed-quotes options list for one ticker.
+
+        Returns the list of option dicts, or None on any failure. The
+        payload is cached for 120 seconds so a lookup's separate put
+        and call fetches share one download. This method is the only
+        HTTP step in the CBOE path, so tests patch it, not the parser.
+        """
+        key = str(ticker or "").strip().upper()
+        cached = _CBOE_CACHE.get(key)
+        if cached and (time.monotonic() - cached[0]) < _CBOE_CACHE_TTL_SECONDS:
+            return cached[1]
+        url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/{key}.json"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            options = (payload or {}).get("data", {}).get("options") or []
+            _CBOE_CACHE[key] = (time.monotonic(), options)
+            return options
+        except Exception as e:
+            self.last_cboe_note = f"cboe failed: {type(e).__name__}: {e}"
+            logger.warning("_fetch_cboe_payload %s failed: %s", ticker, e)
+            return None
+
+    def _fetch_cboe_rows(
+        self,
+        ticker: str,
+        contract_type: str,
+        dte_min: int,
+        dte_max: int,
+        live_price: float | None = None,
+    ) -> tuple[list[dict], float | None, str]:
+        """
+        Fetch normalized chain rows from CBOE delayed quotes for the
+        given DTE window. Returns (rows, price, source) where source
+        is "cboe_delayed". Returns ([], None, "") on failure.
+
+        Pricing follows the same rule as the other sources: bought
+        legs at ask else mid, sold legs at bid, never a last trade.
+        Rows with neither a bid nor an ask are skipped, because
+        neither side of the trade has an executable price. CBOE
+        Greeks are used as supplied on near-money rows; when CBOE
+        reports IV 0, gamma, vega, and theta are set to None rather
+        than shown as 0.0, and delta falls back to Black-Scholes
+        only when IV is positive, exactly as the Polygon path does.
+        """
+        options = self._fetch_cboe_payload(ticker)
+        if options is None:
+            return [], None, ""
+        if not options:
+            self.last_cboe_note = f"cboe returned no options for {ticker}"
+            return [], None, ""
+
+        today = date.today()
+        rows = []
+        skipped_symbol = skipped_dte = 0
+        for opt in options:
+            parsed = _parse_cboe_symbol(opt.get("option"))
+            if parsed is None:
+                skipped_symbol += 1
+                continue
+            expiry, opt_type, strike = parsed
+            if opt_type != contract_type:
+                continue
+            try:
+                dte_val = (date.fromisoformat(expiry) - today).days
+            except ValueError:
+                skipped_symbol += 1
+                continue
+            if dte_val < dte_min or dte_val > dte_max:
+                skipped_dte += 1
+                continue
+            bid = round(float(opt.get("bid") or 0), 2)
+            ask = round(float(opt.get("ask") or 0), 2)
+            if bid <= 0 and ask <= 0:
+                continue
+            sale_price, mid, price_source = resolve_sale_price(bid, ask)
+            if bid <= 0 and ask > 0:
+                mid = round(ask, 2)
+            iv_dec = float(opt.get("iv") or 0)
+            iv_pct = round(iv_dec * 100, 1)
+            delta = opt.get("delta")
+            delta = float(delta) if delta is not None else None
+            if (delta is None or delta == 0.0) and iv_dec > 0 and live_price:
+                T = max(dte_val, 1) / 365.0
+                if contract_type == "call":
+                    delta = _bs_call_delta(live_price, strike, iv_dec, T)
+                    theta_h = _bs_call_theta_daily(live_price, strike, iv_dec, T)
+                else:
+                    delta = _bs_put_delta(live_price, strike, iv_dec, T)
+                    theta_h = _bs_put_theta_daily(live_price, strike, iv_dec, T)
+            else:
+                theta_h = opt.get("theta")
+                theta_h = float(theta_h) if theta_h is not None else None
+            if delta is None:
+                continue
+            if iv_dec <= 0:
+                gamma = vega = theta_seller = None
+            else:
+                gamma = opt.get("gamma")
+                gamma = float(gamma) if gamma is not None else None
+                vega = opt.get("vega")
+                vega = float(vega) if vega is not None else None
+                theta_seller = round(abs(theta_h), 4) if theta_h is not None else None
+            rows.append({
+                "strike": strike,
+                "expiry": expiry,
+                "dte": dte_val,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "sale_price": sale_price,
+                "price_source": price_source,
+                "last_trade": round(float(opt.get("last_trade_price") or 0), 2),
+                "iv_pct": iv_pct,
+                "delta": delta,
+                "delta_abs": abs(delta),
+                "theta_seller": theta_seller,
+                "gamma": gamma,
+                "vega": vega,
+                "volume": _safe_int(opt.get("volume")),
+                "open_interest": _safe_int(opt.get("open_interest")),
+            })
+
+        if not rows:
+            self.last_cboe_note = (
+                f"cboe returned {len(options)} options but 0 usable rows "
+                f"for {ticker} {contract_type} (skipped: symbol={skipped_symbol}, "
+                f"dte={skipped_dte})"
+            )
+            return [], None, ""
+        self.last_cboe_note = f"cboe ok ({len(rows)} rows)"
+        return rows, live_price, "cboe_delayed"
+
+    # ------------------------------------------------------------------
     # Public fetch
     # ------------------------------------------------------------------
 
@@ -545,7 +738,7 @@ class ChainProvider:
         near_price: float | None = None,
     ) -> "ChainResult | ChainError":
         """
-        Polygon primary, yfinance fallback.
+        Polygon primary, yfinance second, CBOE delayed third.
         Returns ChainResult on success, ChainError on total failure.
         Never returns an empty-rows ChainResult as a success.
         """
@@ -578,12 +771,29 @@ class ChainProvider:
                 fetched_at=datetime.utcnow(),
             )
 
+        # --- CBOE delayed fallback ---
+        # Only reached when both live sources fail, so a delayed
+        # quote is never preferred over a live one. The source label
+        # stays "cboe_delayed" all the way to the UI, so a strategy
+        # built on it is never presented as live-priced.
+        cboe_rows, cboe_price, cboe_source = self._fetch_cboe_rows(
+            ticker, contract_type, dte_min, dte_max, live_price=live_price
+        )
+        sources_tried.append("cboe")
+        if cboe_rows:
+            return ChainResult(
+                rows=cboe_rows,
+                price=cboe_price or live_price or 0.0,
+                source=cboe_source,
+                fetched_at=datetime.utcnow(),
+            )
+
         return ChainError(
             ticker=ticker,
             reason=(
                 f"No chain data from any source (dte={dte_min}-{dte_max}, "
                 f"type={contract_type}). {self.last_polygon_note}; "
-                f"{self.last_yfinance_note}"
+                f"{self.last_yfinance_note}; {self.last_cboe_note}"
             ),
             sources_tried=sources_tried,
         )

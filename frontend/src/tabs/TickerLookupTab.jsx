@@ -144,12 +144,64 @@ function ChainTable({ rows, side }) {
   )
 }
 
+function ProposalRow({ proposal, onAlign, adjustScore, setAdjustScore }) {
+  if (!proposal) return null
+  const hasScore = proposal.proposed_score !== null && proposal.proposed_score !== undefined
+  return (
+    <div style={{ ...S.optionBox, marginTop: '12px' }}>
+      <div style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0' }}>
+        {proposal.name}: {hasScore ? `${proposal.proposed_score} (${proposal.proposed_label})` : proposal.proposed_label}
+        {proposal.alignment_status && proposal.alignment_status !== 'unaligned' && (
+          <span style={{ ...S.pill('#15301f', '#276749', '#68d391'), marginLeft: '8px' }}>
+            {proposal.alignment_status.toUpperCase()}
+            {proposal.aligned_score !== null && proposal.aligned_score !== undefined && ` -> ${proposal.aligned_score}`}
+          </span>
+        )}
+        {proposal.alignment_status === 'unaligned' && (
+          <span style={{ ...S.pill('#3d2f10', '#975a16', '#f6e05e'), marginLeft: '8px' }}>AWAITING YOUR ALIGNMENT</span>
+        )}
+      </div>
+      <ul style={S.verdictList}>
+        {(proposal.evidence || []).map((ev, i) => <li key={i}>{ev}</li>)}
+      </ul>
+      <div style={S.note}>Source: {val(proposal.source)} | Confidence: {val(proposal.confidence)}</div>
+      {proposal.missing && proposal.missing.length > 0 && (
+        <div style={S.note}>Missing, not guessed: {proposal.missing.join(', ')}</div>
+      )}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px', alignItems: 'center' }}>
+        <button style={S.button} type="button" onClick={() => onAlign(proposal.key, { action: 'accept' })}>Accept</button>
+        {hasScore && (
+          <>
+            <select
+              value={adjustScore}
+              onChange={(e) => setAdjustScore(e.target.value)}
+              style={{ padding: '8px', background: '#0f1520', color: '#e2e8f0', border: '1px solid #2d3748', borderRadius: '8px' }}
+              aria-label={`Adjusted score for ${proposal.name}`}
+            >
+              <option value="0">0</option>
+              <option value="5">5</option>
+              <option value="10">10</option>
+            </select>
+            <button style={S.button} type="button" onClick={() => onAlign(proposal.key, { action: 'adjust', score: Number(adjustScore) })}>Adjust score</button>
+          </>
+        )}
+        <button style={S.button} type="button" onClick={() => onAlign(proposal.key, { action: 'missing' })}>Mark missing</button>
+      </div>
+    </div>
+  )
+}
+
 export default function TickerLookupTab() {
   const [ticker, setTicker] = useState('')
   const [explain, setExplain] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [ondemand, setOndemand] = useState(null)
+  const [ondemandLoading, setOndemandLoading] = useState(false)
+  const [ondemandError, setOndemandError] = useState(null)
+  const [alignActions, setAlignActions] = useState({})
+  const [adjustScores, setAdjustScores] = useState({ moat: '5', ceo: '5' })
 
   async function runLookup(e) {
     e.preventDefault()
@@ -158,6 +210,9 @@ export default function TickerLookupTab() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setOndemand(null)
+    setOndemandError(null)
+    setAlignActions({})
     try {
       const data = await api.lookup.get(t, explain)
       setResult(data)
@@ -165,6 +220,57 @@ export default function TickerLookupTab() {
       setError(err.message || 'Lookup failed')
     } finally {
       setLoading(false)
+    }
+  }
+
+  function ondemandStorageKey(t, runDate) {
+    return `ondemand_alignment_${t}_${runDate || 'today'}`
+  }
+
+  async function applyStoredAlignment(data) {
+    try {
+      const stored = localStorage.getItem(ondemandStorageKey(data.ticker, data.run_date))
+      if (!stored) return data
+      const actions = JSON.parse(stored)
+      if (!actions || Object.keys(actions).length === 0) return data
+      const aligned = await api.lookup.alignOndemand(data.ticker, { proposals: data.proposals, actions })
+      setAlignActions(actions)
+      return { ...data, proposals: aligned.proposals, alignment: { status: aligned.status, provisional: aligned.provisional, audit_trail: aligned.audit_trail } }
+    } catch (err) {
+      return data
+    }
+  }
+
+  async function runOndemand() {
+    if (!result) return
+    const t = result.ticker
+    setOndemandLoading(true)
+    setOndemandError(null)
+    try {
+      const data = await api.lookup.getOndemand(t)
+      const merged = await applyStoredAlignment(data)
+      setOndemand(merged)
+    } catch (err) {
+      setOndemandError(err.message || 'On-demand review failed')
+    } finally {
+      setOndemandLoading(false)
+    }
+  }
+
+  async function alignProposal(key, action) {
+    if (!ondemand) return
+    const actions = { ...alignActions, [key]: action }
+    setAlignActions(actions)
+    try {
+      localStorage.setItem(ondemandStorageKey(ondemand.ticker, ondemand.run_date), JSON.stringify(actions))
+    } catch (err) {
+      // Local storage is a convenience, not a requirement. Alignment still applies this session.
+    }
+    try {
+      const aligned = await api.lookup.alignOndemand(ondemand.ticker, { proposals: ondemand.proposals, actions })
+      setOndemand({ ...ondemand, proposals: aligned.proposals, alignment: { status: aligned.status, provisional: aligned.provisional, audit_trail: aligned.audit_trail } })
+    } catch (err) {
+      setOndemandError(err.message || 'Alignment failed')
     }
   }
 
@@ -341,6 +447,152 @@ export default function TickerLookupTab() {
                 This lane does not change the put or call answer below. A strong, undervalued company can keep falling, so weekly options stay gated by timing, earnings, and SPY.
               </div>
             </div>
+          )}
+
+          <div style={S.card}>
+            <div style={S.sectionLabel}>On-demand review, live, for any ticker</div>
+            <div style={S.note}>
+              {result.verdict.longterm && result.verdict.longterm.verdict === 'not_verified'
+                ? 'The long-term lane above reads NOT VERIFIED, because this ticker is not in the 2026-10-26 quality screener snapshot. Run a live review below. It is dated, labelled live, and shown alongside the snapshot result, which it does not overwrite.'
+                : 'Run a live review alongside the snapshot result above, for comparison. The live review does not overwrite the snapshot lane.'}
+            </div>
+            <button style={{ ...S.button, marginTop: '10px' }} type="button" onClick={runOndemand} disabled={ondemandLoading}>
+              {ondemandLoading ? 'Running live review...' : 'Run on-demand review'}
+            </button>
+            {ondemandError && (
+              <div style={{ ...S.note, marginTop: '8px', color: '#fc8181' }}>{ondemandError}</div>
+            )}
+          </div>
+
+          {ondemand && (
+            <>
+              <div style={S.card}>
+                <div style={S.sectionLabel}>On-demand review, in plain language</div>
+                <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6 }}>{ondemand.summary}</div>
+                <div style={{ ...S.note, marginTop: '6px' }}>
+                  Live review, {val(ondemand.run_date)}, source: live_on_demand. Snapshot long-term above is unchanged, and the two can be compared.
+                </div>
+                {ondemand.alignment && ondemand.alignment.provisional && (
+                  <div style={{ ...S.note, marginTop: '6px', color: '#f6e05e' }}>
+                    AI-proposed, awaiting your alignment: the long-term and DCA verdicts below that depend on the proposals are provisional, not final, until you accept, adjust, or mark each assumption missing.
+                  </div>
+                )}
+              </div>
+
+              <div style={S.card}>
+                <div style={S.sectionLabel}>Short-term trend and setup, live</div>
+                <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0' }}>
+                  Trend: {val(ondemand.short_term.trend)} | Setup: {ondemand.short_term.setup_present ? 'present' : 'absent'}
+                </div>
+                <div style={{ ...S.note, marginTop: '6px', color: '#e2e8f0', fontSize: '13px' }}>{ondemand.short_term.trend_note}</div>
+                <div style={{ ...S.note, marginTop: '6px' }}>
+                  Price ${val(ondemand.short_term.price)} | 50-day ${val(ondemand.short_term.ma50)} ({val(ondemand.short_term.ma50_direction)}) | 200-day ${val(ondemand.short_term.ma200)} ({val(ondemand.short_term.ma200_direction)})
+                </div>
+                {ondemand.short_term.setup_names && ondemand.short_term.setup_names.length > 0 && (
+                  <div style={S.note}>Setups present: {ondemand.short_term.setup_names.join(', ')}</div>
+                )}
+                <div style={S.note}>
+                  Pullback ${val(ondemand.short_term.pullback_price)} | Breakout ${val(ondemand.short_term.breakout_price)} | SPY above 200-day: {val(ondemand.short_term.spy_above_200)} | Earnings in {val(ondemand.short_term.earnings_days)} days ({val(ondemand.short_term.earnings_status)})
+                </div>
+                <div style={S.note}>{ondemand.short_term.note}</div>
+              </div>
+
+              <div style={S.card}>
+                <div style={S.sectionLabel}>Long-term fundamentals and potential, live</div>
+                <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0' }}>{val(ondemand.longterm.label)}</div>
+                <div style={{ ...S.note, marginTop: '6px', color: '#e2e8f0', fontSize: '13px' }}>{ondemand.longterm.reason}</div>
+                {ondemand.live_quality && ondemand.live_quality.status === 'verified' && (
+                  <div style={{ ...S.note, marginTop: '6px' }}>
+                    Live quality, {val(ondemand.live_quality.run_date)}: composite {fmtPct(ondemand.live_quality.composite)} ({val(ondemand.live_quality.label)}), revenue CAGR 3y {fmtPct(ondemand.live_quality.rev_cagr_3y_pct)}%, FCF margin avg 3y {fmtPct(ondemand.live_quality.fcf_margin_avg_3y_pct)}%, ROIC {fmtPct(ondemand.live_quality.roic_pct)}%, operating margin {fmtPct(ondemand.live_quality.operating_margin_pct)}%, smoothed Rule of 40 {fmtPct(ondemand.live_quality.smoothed_rule_of_40)}, EV/EBITDA {val(ondemand.live_quality.ev_to_ebitda)}x.
+                  </div>
+                )}
+                {ondemand.live_quality && ondemand.live_quality.status !== 'verified' && (
+                  <div style={{ ...S.note, marginTop: '6px' }}>{val(ondemand.live_quality.note)}</div>
+                )}
+                {ondemand.live_quality && ondemand.live_quality.short_pct != null && (
+                  <div style={S.note}>
+                    Short interest {val(ondemand.live_quality.short_pct)}%: Nash Step 3 kill above 10%: {ondemand.live_quality.kills && ondemand.live_quality.kills.short_interest_nash_kill_above_10 ? 'yes, kill' : 'no'} | Screener v2 kill above 20%: {ondemand.live_quality.kills && ondemand.live_quality.kills.short_interest_screener_kill_above_20 ? 'yes, kill' : 'no'}.
+                  </div>
+                )}
+                {ondemand.live_quality && ondemand.live_quality.missing && ondemand.live_quality.missing.length > 0 && (
+                  <div style={S.note}>Missing, not scored as 0: {ondemand.live_quality.missing.join(', ')}</div>
+                )}
+                {ondemand.live_quality && ondemand.live_quality.kills && (
+                  <div style={S.note}>
+                    Nash kills: market cap at least $1B: {val(ondemand.live_quality.kills.market_cap_at_least_1b)} | FCF positive: {val(ondemand.live_quality.kills.fcf_positive)} | cash over debt: {val(ondemand.live_quality.kills.cash_over_debt)} | operating margin at least 20%: {val(ondemand.live_quality.kills.operating_margin_at_least_20)} | fewer than 2 misses: {val(ondemand.live_quality.kills.fewer_than_2_misses)}.
+                  </div>
+                )}
+                {ondemand.longterm.dcf && (
+                  <div style={{ ...S.grid, marginTop: '10px' }}>
+                    <div style={S.stat}><span style={S.statLabel}>DCF bear</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.bear)}</span></div>
+                    <div style={S.stat}><span style={S.statLabel}>DCF base</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.base)}</span></div>
+                    <div style={S.stat}><span style={S.statLabel}>DCF bull</span><span style={S.statValue}>${val(ondemand.longterm.dcf.fair_value.bull)}</span></div>
+                  </div>
+                )}
+                {ondemand.longterm.wacc && (
+                  <div style={S.note}>WACC {val(ondemand.longterm.wacc.wacc_pct)}% (risk free {val(ondemand.longterm.wacc.risk_free_pct)}%, source: {val(ondemand.longterm.wacc.risk_free_source)}).</div>
+                )}
+                {ondemand.longterm.bridge_line && (
+                  <div style={S.note}>{ondemand.longterm.bridge_line}</div>
+                )}
+                {ondemand.statements_note && (
+                  <div style={S.note}>{ondemand.statements_note}</div>
+                )}
+              </div>
+
+              <div style={S.card}>
+                <div style={S.sectionLabel}>DCA decision, live</div>
+                <div style={{ fontSize: '22px', fontWeight: 800, color: '#68d391' }}>{val(ondemand.dca_decision.label)}</div>
+                <div style={{ ...S.note, marginTop: '6px', color: '#e2e8f0', fontSize: '13px' }}>{ondemand.dca_decision.reason}</div>
+                {ondemand.dca_decision.trigger && (
+                  <div style={S.note}>Trigger: {ondemand.dca_decision.trigger}{ondemand.dca_decision.trigger_price != null && (<span> at ${val(ondemand.dca_decision.trigger_price)}</span>)}</div>
+                )}
+                {ondemand.dca_decision.killing_parameters && ondemand.dca_decision.killing_parameters.length > 0 && (
+                  <div style={S.note}>Killing parameters: {ondemand.dca_decision.killing_parameters.join('; ')}</div>
+                )}
+                {ondemand.dca_decision.missing && ondemand.dca_decision.missing.length > 0 && (
+                  <div style={S.note}>Missing: {ondemand.dca_decision.missing.join(', ')}</div>
+                )}
+                {ondemand.dca_decision.plan && ondemand.dca_decision.plan.pieces && (
+                  <ul style={S.verdictList}>
+                    {ondemand.dca_decision.plan.pieces.map((p, i) => (
+                      <li key={i}>Piece {p.order}: {p.condition}{p.price != null && (<span> at ${val(p.price)}</span>)}{p.detail && (<span> ({p.detail})</span>)}</li>
+                    ))}
+                  </ul>
+                )}
+                <div style={S.note}>Pieces are guidance, not sized orders. Pause rule: stop adding if it closes below the 200-day average.</div>
+                <div style={S.note}>This DCA decision does not change the put or call answer, and it is not a timed entry price.</div>
+              </div>
+
+              <div style={S.card}>
+                <div style={S.sectionLabel}>Timing options, unchanged gating</div>
+                <div style={S.note}>
+                  Timing decision: {val(result.verdict.stock.label)}. Put and call gating is unchanged: timing, earnings, and SPY, exactly as in the timing card below. The on-demand review never unlocks a weekly put or call.
+                </div>
+              </div>
+
+              <div style={S.card}>
+                <div style={S.sectionLabel}>AI proposals: moat, CEO, and market size, plus your alignment</div>
+                <div style={S.note}>
+                  These are evidence-based proposals, not quant decisions for options. Until you align an assumption, the long-term and DCA verdicts that depend on it stay provisional, not final. Aligned scores lock with an audit trail, saved per ticker on this device. For the full manual checklist, use the Nash 12-step wizard, Steps 4, 5, 9, and 10.
+                </div>
+                {ondemand.proposals && ['moat', 'ceo', 'market_size'].map((key) => (
+                  <ProposalRow
+                    key={key}
+                    proposal={ondemand.proposals[key] ? { ...ondemand.proposals[key], key } : null}
+                    onAlign={alignProposal}
+                    adjustScore={adjustScores[key] || '5'}
+                    setAdjustScore={(v) => setAdjustScores({ ...adjustScores, [key]: v })}
+                  />
+                ))}
+                {ondemand.alignment && ondemand.alignment.audit_trail && ondemand.alignment.audit_trail.length > 0 && (
+                  <div style={{ ...S.note, marginTop: '10px' }}>
+                    Audit trail: {ondemand.alignment.audit_trail.map((a) => `${a.key}: proposed ${val(a.proposed_score)} -> aligned ${val(a.aligned_score)} (${val(a.alignment_status)})`).join(' | ')}
+                  </div>
+                )}
+                <div style={S.note}>Alignment status: {val(ondemand.alignment && ondemand.alignment.status)}</div>
+              </div>
+            </>
           )}
 
           <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>

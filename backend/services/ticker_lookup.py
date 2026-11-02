@@ -19,9 +19,9 @@ the same thresholds as the alert engine:
   quant_scorer component functions (trend, RSI, volume). It never
   gates a setup and it is not a rule.
 - The listed option chain comes from ChainProvider (Polygon primary,
-  yfinance fallback), the same provider the directional and wheel
-  paths use. Premium at Support still prices from get_listed_put,
-  at the bid, or suppresses with a named reason.
+  yfinance second, CBOE delayed third), the same provider the
+  directional and wheel paths use. Premium at Support still prices
+  from get_listed_put, at the bid, or suppresses with a named reason.
 
 What the lookup never does, by construction: it writes no alert
 row, creates no journal row, sends no Telegram message, writes no run

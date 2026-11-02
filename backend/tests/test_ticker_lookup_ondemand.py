@@ -15,11 +15,13 @@ from services.ondemand_review import (
     apply_alignment,
     build_dca_decision,
     build_ondemand_review,
+    fetch_statements,
     propose_ceo,
     propose_market_size,
     propose_moat,
     score_live_quality,
 )
+from services.longterm_valuation import build_longterm
 
 
 def _quality(**overrides):
@@ -262,6 +264,150 @@ def test_ondemand_review_order_and_provisional_banner():
     assert "provisional" in review["summary"].lower(), review
     assert set(["summary", "short_term", "longterm", "dca_decision",
                 "proposals", "alignment"]) <= set(review.keys()), review
+
+
+def _stub_statements_modules(polygon_fin, yfinance_annuals,
+                             profile=None, basics=None):
+    """Stub the three source modules fetch_statements imports lazily.
+
+    Returns a restore function. The real modules are put back
+    after each test, so the other tests in this file are not
+    affected. No live network is used.
+    """
+    import types
+
+    saved = {}
+    for name in ("services.polygon_client", "services.finnhub_client",
+                 "services.twelve_step_service"):
+        saved[name] = sys.modules.get(name)
+    polygon_mod = types.ModuleType("services.polygon_client")
+    polygon_mod.get_financials = lambda ticker: polygon_fin
+    sys.modules["services.polygon_client"] = polygon_mod
+    finnhub_mod = types.ModuleType("services.finnhub_client")
+    finnhub_mod.get_company_profile = lambda ticker: dict(profile or {})
+    finnhub_mod.get_basic_financials = lambda ticker: dict(basics or {})
+    sys.modules["services.finnhub_client"] = finnhub_mod
+    twelve_mod = types.ModuleType("services.twelve_step_service")
+    twelve_mod._get_annual_financials_list = (
+        lambda ticker, years=5: list(yfinance_annuals))
+    sys.modules["services.twelve_step_service"] = twelve_mod
+
+    def restore():
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+    return restore
+
+
+def _profile(market_cap=100000, industry="Technology"):
+    return {"shareOutstanding": 1000, "marketCapitalization": market_cap,
+            "finnhubIndustry": industry}
+
+
+def test_statements_polygon_success_takes_no_fallback():
+    restore = _stub_statements_modules(
+        {"revenue": 100_000_000_000, "free_cash_flow": 30_000_000_000,
+         "total_debt": 20_000_000_000, "equity": 100_000_000_000},
+        [{"period": "2025", "revenue": 999_000_000_000,
+          "free_cash_flow": 999_000_000_000, "shares": 9_999_000_000}],
+        profile=_profile(), basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is not None, note
+    assert stm["statements_source"] == "polygon_sec", stm
+    assert stm["revenue"] == 100000.0, stm
+    assert stm["fcf"] == 30000.0, stm
+    assert stm["shares_outstanding"] == 1000.0, stm
+    assert "polygon_sec" in note, note
+
+
+def test_statements_polygon_empty_falls_back_to_yfinance_annual():
+    restore = _stub_statements_modules(
+        {},
+        [{"period": "2025", "revenue": 200_000_000_000,
+          "free_cash_flow": 50_000_000_000,
+          "shares": 2_000_000_000, "total_debt": 10_000_000_000}],
+        profile=_profile(market_cap=200000), basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is not None, note
+    assert stm["statements_source"] == "yfinance_annual", stm
+    assert stm["shares_source"] == "yfinance_annual", stm
+    assert stm["revenue"] == 200000.0, stm
+    assert stm["fcf"] == 50000.0, stm
+    assert stm["shares_outstanding"] == 2000.0, stm
+    assert "fallback" in note, note
+    assert "Polygon SEC" in note, note
+
+
+def test_statements_both_sources_empty_stays_blocked_naming_both():
+    restore = _stub_statements_modules(
+        {}, [], profile=_profile(), basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is None, stm
+    assert "polygon_sec" in note, note
+    assert "yfinance_annual" in note, note
+
+
+def test_statements_cross_check_failure_stays_blocked():
+    restore = _stub_statements_modules(
+        {"revenue": 100_000_000_000, "free_cash_flow": 30_000_000_000,
+         "total_debt": 20_000_000_000, "equity": 100_000_000_000},
+        [], profile=_profile(market_cap=10000), basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is None, stm
+    assert "does not reconcile" in note, note
+
+
+def test_statements_fallback_financial_sector_stays_blocked():
+    restore = _stub_statements_modules(
+        {},
+        [{"period": "2025", "revenue": 200_000_000_000,
+          "free_cash_flow": 50_000_000_000,
+          "shares": 2_000_000_000, "total_debt": 10_000_000_000}],
+        profile=_profile(market_cap=200000, industry="Banks"),
+        basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is not None, note
+    assert stm["sector"] == "Banks", stm
+    q = _quality()
+    lt = build_longterm("TEST", 100.0, q, statements=stm)
+    assert lt["verdict"] == "blocked", lt
+    assert lt["reason_code"] == "financial_sector", lt
+
+
+def test_statements_fallback_feeds_dcf_not_a_derivation():
+    restore = _stub_statements_modules(
+        {},
+        [{"period": "2025", "revenue": 200_000_000_000,
+          "free_cash_flow": 50_000_000_000,
+          "shares": 2_000_000_000, "total_debt": 10_000_000_000}],
+        profile=_profile(market_cap=200000), basics={"beta": 1.0})
+    try:
+        stm, note = fetch_statements("TEST", 100.0)
+    finally:
+        restore()
+    assert stm is not None, note
+    q = _quality()
+    lt = build_longterm("TEST", 100.0, q, statements=stm)
+    assert lt["dcf"] is not None, lt
+    assert lt["dcf"]["fair_value"]["base"] > 0, lt
 
 
 if __name__ == "__main__":

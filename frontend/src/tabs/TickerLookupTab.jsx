@@ -538,6 +538,9 @@ export default function TickerLookupTab() {
                 {ondemand.statements_note && (
                   <div style={S.note}>{ondemand.statements_note}</div>
                 )}
+                {ondemand.statements_source && (
+                  <div style={S.note}>Statements source: {ondemand.statements_source === 'yfinance_annual' ? 'yfinance annual, fallback because Polygon SEC returned no revenue or free cash flow' : 'Polygon SEC'}.</div>
+                )}
               </div>
 
               <div style={S.card}>

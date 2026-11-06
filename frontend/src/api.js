@@ -78,6 +78,11 @@ export const api = {
     saveSettings: (body) =>
       request('/api/today/settings', { method: 'PUT', body }),
   },
+  aiPicks: {
+    latest: () => request('/api/ai-picks/latest'),
+    generate: (tickers) =>
+      request('/api/ai-picks/generate', { method: 'POST', body: { tickers } }),
+  },
   book: {
     scoreboard: () => request('/api/book/scoreboard'),
     incomeCalendar: () => request('/api/book/income-calendar'),

@@ -456,6 +456,26 @@ class ClaudeAnalyst:
         )
         return self._explain_list(system, user)
 
+    def generate_ai_picks(self, context: dict) -> dict:
+        """Generate AI Picks ideas for the separate AI Picks section.
+
+        This is the ONLY method in this file where Claude may suggest
+        tickers, strikes, entries, and exits, because AI Picks is an
+        ideas-only research surface, not a rule-based path. It is never
+        called from Today's Book, the engines, the registry, or the
+        scoreboard. Returns the parsed JSON dict (possibly empty lists
+        on failure); the caller validates and prices it.
+        """
+        from services.ai_picks import build_prompt, parse_ai_picks_response
+
+        system, user = build_prompt(context)
+        try:
+            raw = self._call(system, user, max_tokens=4000)
+        except Exception as e:
+            logger.warning("generate_ai_picks failed: %s", e)
+            return {"options_ideas": [], "long_term_ideas": [], "parse_error": "Claude call failed."}
+        return parse_ai_picks_response(raw)
+
     def explain_today(self, items: list[dict]) -> list[dict]:
         """Explain Today's Book items that code already ranked and sized.
 

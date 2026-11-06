@@ -25,6 +25,14 @@ FIXTURES = os.path.join(TESTS_DIR, "fixtures")
 GOLDENS = os.path.join(TESTS_DIR, "goldens")
 ANCHOR_DATE = date(2026, 10, 23)
 
+# Both modules compute DTE from date.today(), so both must be frozen:
+# services.stock_data (the tiers functions under test) and
+# services.chain_provider (the chain fetch behind the yfinance path).
+# The goldens were generated with stock_data.date frozen (see
+# generate_goldens.py). Freezing only chain_provider.date lets the
+# DTEs drift with real time, which is how all 18 cases broke after
+# Oct 23, 2026 even though no production code changed.
+
 # All cases: (ticker, func_name, polygon_contract_type)
 TIERS_CASES = [
     ("MSFT", "get_put_tiers", "put"),
@@ -142,7 +150,8 @@ def test_polygon_path(ticker, func_name, ctype, fixed_date):
 
     with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_rows), \
          mock.patch("services.chain_provider.yf") as mock_yf, \
-         mock.patch("services.chain_provider.date", fixed_date):
+         mock.patch("services.chain_provider.date", fixed_date), \
+         mock.patch("services.stock_data.date", fixed_date):
         mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         result = getattr(svc, func_name)(ticker)
@@ -173,7 +182,8 @@ def test_yfinance_path(ticker, func_name, ctype, fixed_date):
 
     with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_empty), \
          mock.patch("services.chain_provider.yf") as mock_yf, \
-         mock.patch("services.chain_provider.date", fixed_date):
+         mock.patch("services.chain_provider.date", fixed_date), \
+         mock.patch("services.stock_data.date", fixed_date):
         mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         result = getattr(svc, func_name)(ticker)

@@ -11,9 +11,11 @@ import BookTab from './tabs/BookTab'
 import ChallengeTab from './tabs/ChallengeTab'
 import TickerLookupTab from './tabs/TickerLookupTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
+import TodayBookTab from './tabs/TodayBookTab'
 
 const TABS = [
-  { id: 'pulse',        label: '⚡ Today' },
+  { id: 'today',       label: '📖 Today\u2019s Book' },
+  { id: 'pulse',       label: '⚡ Market Pulse' },
   { id: 'buyhold',      label: '📊 Buy and Hold' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
   { id: 'options',      label: '📈 Directional' },
@@ -91,7 +93,7 @@ const styles = {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('pulse')
+  const [activeTab, setActiveTab] = useState('today')
   const [menuOpen, setMenuOpen] = useState(false)
 
   const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? ''
@@ -108,7 +110,7 @@ export default function App() {
         />
         <div style={styles.logoGroup}>
           <div style={styles.logo}>TradeIQ</div>
-          <div style={styles.subtitle}>AI-powered trading recommendations</div>
+          <div style={styles.subtitle}>Personal trading decision support</div>
         </div>
         <span style={styles.activeLabel}>{activeLabel}</span>
       </header>
@@ -117,6 +119,7 @@ export default function App() {
 
       <main style={styles.content}>
         <TabErrorBoundary key={activeTab}>
+          {activeTab === 'today'       && <TodayBookTab onGoToBook={() => setActiveTab('book')} />}
           {activeTab === 'pulse'        && <MarketPulseTab />}
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}

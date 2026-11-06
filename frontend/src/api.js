@@ -71,6 +71,13 @@ export const api = {
     score: (ticker) => request(`/api/watchlist/${ticker}/score`, { method: 'POST' }),
     quickScore: (ticker) => request(`/api/watchlist/${ticker}/quick-score`, { method: 'POST' }),
   },
+  today: {
+    get: (explainClaude = false) =>
+      request(`/api/today${explainClaude ? '?explain=claude' : ''}`),
+    getSettings: () => request('/api/today/settings'),
+    saveSettings: (body) =>
+      request('/api/today/settings', { method: 'PUT', body }),
+  },
   book: {
     scoreboard: () => request('/api/book/scoreboard'),
     incomeCalendar: () => request('/api/book/income-calendar'),

@@ -12,9 +12,11 @@ import ChallengeTab from './tabs/ChallengeTab'
 import TickerLookupTab from './tabs/TickerLookupTab'
 import CoveredCallsTab from './tabs/CoveredCallsTab'
 import TodayBookTab from './tabs/TodayBookTab'
+import AIPicksTab from './tabs/AIPicksTab'
 
 const TABS = [
   { id: 'today',       label: '📖 Today\u2019s Book' },
+  { id: 'aipicks',     label: '🤖 AI Picks' },
   { id: 'pulse',       label: '⚡ Market Pulse' },
   { id: 'buyhold',      label: '📊 Buy and Hold' },
   { id: 'wheel',        label: '🔄 Wheel Strategy' },
@@ -120,6 +122,7 @@ export default function App() {
       <main style={styles.content}>
         <TabErrorBoundary key={activeTab}>
           {activeTab === 'today'       && <TodayBookTab onGoToBook={() => setActiveTab('book')} />}
+          {activeTab === 'aipicks'     && <AIPicksTab />}
           {activeTab === 'pulse'        && <MarketPulseTab />}
           {activeTab === 'options'      && <OptionsTab />}
           {activeTab === 'wheel'        && <WheelTab />}

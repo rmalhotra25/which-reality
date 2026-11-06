@@ -456,6 +456,33 @@ class ClaudeAnalyst:
         )
         return self._explain_list(system, user)
 
+    def explain_today(self, items: list[dict]) -> list[dict]:
+        """Explain Today's Book items that code already ranked and sized.
+
+        Text only, 2-3 sentences per item: why it appeared, the risk in
+        plain words, and what invalidates it. Cite only the numbers
+        given. Never a different strike, entry, stop, rank, score, size,
+        or recommendation. Returns [{ticker, explanation}] in order.
+        """
+        if not items:
+            return []
+        system = (
+            "You are an options trading coach explaining setups that code has "
+            "already selected, ranked, sized, and priced. Your only job is to "
+            "write a clear 2-3 sentence explanation per item: why it appeared, "
+            "what the risk is in plain words, and what would invalidate it. "
+            "Cite only the numbers given to you. Do not suggest a different "
+            "strike, entry, exit, stop, rank, score, size, or trade. Do not "
+            "re-rank or drop any item. Respond ONLY with a valid JSON array."
+        )
+        user = (
+            "Write plain-language explanations for these quant-decided Today "
+            "items, in the same order:\n"
+            '[{"ticker":"MSFT","explanation":"2-3 sentence plain explanation."}, ...]\n\n'
+            f"Items:\n{json.dumps(items, indent=2)}"
+        )
+        return self._explain_list(system, user)
+
     def explain_wheel(self, picks: list[dict]) -> list[dict]:
         """Explain quant-decided wheel picks. Text only, no numbers set."""
         if not picks:

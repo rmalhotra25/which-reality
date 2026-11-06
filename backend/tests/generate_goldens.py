@@ -99,7 +99,15 @@ def make_mock_date():
 # ---------------------------------------------------------------------------
 
 def run_polygon_path(func_name: str, ticker: str, contract_type: str) -> dict | None:
-    """Run a tiers function using the Polygon fixture (mocks _polygon_options_chain)."""
+    """Run a tiers function using the Polygon fixture.
+
+    Uses the same seams as test_tiers_regression: ChainProvider
+    ._fetch_polygon_rows mocked, yf mocked, and date.today() frozen
+    at ANCHOR_DATE in BOTH services.stock_data and
+    services.chain_provider (both compute DTE from date.today()).
+    Patching only one lets the DTEs drift with real time.
+    """
+    from services.chain_provider import ChainProvider
     from services.stock_data import StockDataService
 
     poly_data = load_polygon_fixture(ticker, contract_type)
@@ -110,18 +118,19 @@ def run_polygon_path(func_name: str, ticker: str, contract_type: str) -> dict | 
     mock_ticker = make_mock_ticker(yf_data)
     FixedDate = make_mock_date()
 
-    def mock_polygon_chain(self, tkr, ctype, dte_min, dte_max, near_price=None):
-        # Return all rows; filter by dte_min/dte_max using the anchor date
+    def mock_polygon_rows(self, tkr, ctype_arg, dte_min, dte_max, near_price=None):
+        # Return rows in the DTE window, as the real fetch would.
         filtered = [
             r for r in rows
             if dte_min <= r["dte"] <= dte_max
         ]
-        return filtered, price
+        return filtered, price if filtered else ([], None)
 
-    with mock.patch.object(StockDataService, "_polygon_options_chain", mock_polygon_chain), \
-         mock.patch("services.stock_data.yf") as mock_yf, \
+    with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_rows), \
+         mock.patch("services.chain_provider.yf") as mock_yf, \
+         mock.patch("services.chain_provider.date", FixedDate), \
          mock.patch("services.stock_data.date", FixedDate):
-        mock_yf.Ticker.return_value = mock_ticker
+        mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         fn = getattr(svc, func_name)
         return fn(ticker)
@@ -133,19 +142,20 @@ def run_polygon_path(func_name: str, ticker: str, contract_type: str) -> dict | 
 
 def run_yfinance_path(func_name: str, ticker: str) -> dict | None:
     """Run a tiers function using the yfinance fixture (forces Polygon to return empty)."""
+    from services.chain_provider import ChainProvider
     from services.stock_data import StockDataService
 
     yf_data = load_yf_fixture(ticker)
     mock_ticker = make_mock_ticker(yf_data)
     FixedDate = make_mock_date()
 
-    def mock_polygon_empty(self, tkr, ctype, dte_min, dte_max, near_price=None):
+    def mock_polygon_empty(self, tkr, ctype_arg, dte_min, dte_max, near_price=None):
         return [], None
 
-    with mock.patch.object(StockDataService, "_polygon_options_chain", mock_polygon_empty), \
-         mock.patch("services.stock_data.yf") as mock_yf, \
+    with mock.patch.object(ChainProvider, "_fetch_polygon_rows", mock_polygon_empty), \
+         mock.patch("services.chain_provider.yf") as mock_yf, \
+         mock.patch("services.chain_provider.date", FixedDate), \
          mock.patch("services.stock_data.date", FixedDate):
-        mock_yf.Ticker.return_value = mock_ticker
         mock_yf.Ticker.side_effect = lambda t: mock_ticker
         svc = StockDataService()
         fn = getattr(svc, func_name)

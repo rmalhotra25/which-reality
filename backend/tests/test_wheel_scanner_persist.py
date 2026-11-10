@@ -25,7 +25,7 @@ def _session():
     return sessionmaker(bind=engine)()
 
 
-def _result():
+def _result(run_at="2026-11-10T15:32:10.884939+00:00"):
     return {
         "candidates": [
             {
@@ -74,7 +74,7 @@ def _result():
             },
         ],
         "excluded": [],
-        "run_at": "2026-11-10T15:32:10.884939+00:00",
+        "run_at": run_at,
         "universe_size": 607,
         "mode": "wheel",
     }
@@ -109,7 +109,8 @@ def test_persist_empty_result_writes_nothing():
 def test_todays_book_reads_persisted_batch_by_premium_at_risk():
     db = _session()
     persist_wheel_candidates(db, _result())
-    cands, run_at = wheel_candidates(db)
+    cands, run_at, stale = wheel_candidates(db)
+    assert stale is False
     assert run_at.startswith("2026-11-10T15:32:10.884939")
     assert [c["ticker"] for c in cands] == ["FLEX", "BE", "RKLB", "HOOD"]
     flex = cands[0]
@@ -119,3 +120,40 @@ def test_todays_book_reads_persisted_batch_by_premium_at_risk():
     # Assignment worst case is still reported, not sized on.
     assert flex["max_loss_per_contract"] == 6600.0
     assert flex["notional_per_contract"] == 7000.0
+
+
+# --- 36-hour wheel batch expiry -----------------------------------------
+# A batch older than 36 hours is stale and returns no candidates, so a
+# weeks-old pick is never presented as a live trade. QCOM Nov 10 2026:
+# the Oct 27 batch still offered a $175 put after QCOM had closed at
+# $171.47, below its own invalidation level.
+
+def test_wheel_candidates_expires_batch_older_than_36h():
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    db = _session()
+    persist_wheel_candidates(db, _result(run_at=old))
+    cands, run_at, stale = wheel_candidates(db)
+    assert cands == []
+    assert stale is True
+    assert run_at is not None
+
+
+def test_wheel_candidates_keeps_yesterdays_batch():
+    from datetime import datetime, timedelta, timezone
+
+    recent = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+    db = _session()
+    persist_wheel_candidates(db, _result(run_at=recent))
+    cands, run_at, stale = wheel_candidates(db)
+    assert stale is False
+    assert [c["ticker"] for c in cands] == ["FLEX", "BE", "RKLB", "HOOD"]
+
+
+def test_wheel_candidates_empty_when_no_batch():
+    db = _session()
+    cands, run_at, stale = wheel_candidates(db)
+    assert cands == []
+    assert run_at is None
+    assert stale is False

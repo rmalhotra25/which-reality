@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import StorySection from './StorySection'
 
 // Ticker Lookup tab: a query, not a trade. Type a ticker, get the same
 // rule registry check the alert engine would run for that ticker, at
@@ -560,6 +561,8 @@ export default function TickerLookupTab() {
             <div style={S.verdictNote}>What would change this: {result.verdict.stock.what_would_change}</div>
           </div>
 
+          <StorySection ticker={result.ticker} />
+
           <details style={S.details}>
             <summary style={S.summary}>Short-term: trend, setup, trigger, invalidation</summary>
             <div style={{ marginTop: '12px' }}>
@@ -794,6 +797,7 @@ export default function TickerLookupTab() {
               <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6 }}>{result.summary}</div>
             </div>
           )}
+          <StorySection ticker={result.ticker} />
           {result.verdict.dca && (
             <div style={S.card}>
               <div style={S.sectionLabel}>Long-term accumulation, not a timed trade</div>

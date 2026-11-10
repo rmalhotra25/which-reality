@@ -4,15 +4,16 @@ The Story is a read-only explainer, never a trade call: no LIVE label,
 no sizing, no entry, no put or call. Quant decides every number, gauge,
 grade, tailwind and headwind from the rules below. Claude only explains.
 
-Panels, matching the reference layout:
-1. Where it stands: peer market-cap shares plus four health gauges
-   (Growth, Margins, Debt, Price) and an overall grade.
-2. What it sells: revenue by product and by region, with growth.
-3. How fast it is growing: reported revenue bars plus analyst
+Panels, in professional wording rather than the reference's phrasing:
+1. Market position: peer market-cap shares plus four health gauges
+   (Growth, Margins, Debt, Valuation) and an overall grade.
+2. Revenue mix: revenue by segment and by geography, with growth.
+3. Growth and profitability: reported revenue bars plus analyst
    estimate years, with the headline multiples.
-4. What is ahead: analyst price targets and Buy/Hold/Sell counts,
+4. Outlook: analyst price targets and Buy/Hold/Sell counts,
    the long-term lane DCF base next to the analyst mean, rule-based
-   tailwinds and headwinds, and one "what would change the story" line.
+   tailwinds and headwinds, and one "what would change this
+   assessment" line.
 
 Enhancements over the reference, agreed with Rohit Nov 10 2026:
 - The grade always shows its reasoning in one line.
@@ -223,7 +224,7 @@ def grade_gauges(growth_cagr, gross_margin, operating_margin,
              if g["label"] in ("Weak", "Moderate", "High", "Expensive")]
     unknown = [k for k, g in gauges.items() if g["label"] == "Unknown"]
     names = {"growth": "Growth", "margins": "Margins",
-             "debt": "Debt", "price": "Price"}
+             "debt": "Debt", "price": "Valuation"}
     reason_parts = []
     if good:
         reason_parts.append(
@@ -371,16 +372,16 @@ def _break_plain(title, detail):
 
 
 def what_would_change(headwinds):
-    """One line naming what breaks the story, from the headwinds."""
+    """One line naming what changes the assessment, from the headwinds."""
     if not headwinds:
-        return ("This story breaks if revenue growth slows well below "
-                "its recent pace.")
+        return ("What would change this assessment: if revenue growth "
+                "slows well below its recent pace.")
     top = sorted(headwinds, key=lambda h: h.get("strength", 1),
                  reverse=True)[:2]
     parts = [_break_plain(h["title"], h.get("detail", "")) for h in top]
     if len(parts) == 1:
-        return f"This story breaks if {parts[0]}."
-    return f"This story breaks if {parts[0]} or if {parts[1]}."
+        return f"What would change this assessment: if {parts[0]}."
+    return f"What would change this assessment: if {parts[0]} or if {parts[1]}."
 
 
 def story_line(name, industry, growth_cagr, gross_margin, forward_pe):

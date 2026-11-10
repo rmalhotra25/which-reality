@@ -41,7 +41,7 @@ def _pltr_segments():
 
 # --- grade and gauges -------------------------------------------------------
 
-def test_pltr_like_inputs_grade_b_price_is_the_drag():
+def test_pltr_like_inputs_grade_b_valuation_is_the_drag():
     # PLTR Nov 10 2026: CAGR ~33%, gross 84.7%, operating 46.9%,
     # net cash (D/E ~0.1), forward P/E 66.5 vs peer median ~42.
     # The honest grade is B, not the reference screenshot's A,
@@ -54,7 +54,7 @@ def test_pltr_like_inputs_grade_b_price_is_the_drag():
     assert "net cash $10.3B" in out["gauges"]["debt"]["basis"]
     assert out["gauges"]["price"]["label"] == "Expensive"
     assert "vs peer median 42.0" in out["gauges"]["price"]["basis"]
-    assert "Price Expensive is the drag" in out["grade_reason"]
+    assert "Valuation Expensive is the drag" in out["grade_reason"]
 
 
 def test_grade_a_when_all_four_favorable():
@@ -73,7 +73,7 @@ def test_unknown_gauge_does_not_count_and_is_named():
     assert out["gauges"]["debt"]["label"] == "Unknown"
     assert out["gauges"]["price"]["label"] == "Unknown"
     assert out["grade"] == "C"  # Growth + Margins favorable only
-    assert "Debt" in out["grade_reason"] and "Price" in out["grade_reason"]
+    assert "Debt" in out["grade_reason"] and "Valuation" in out["grade_reason"]
 
 
 def test_price_gauge_boundaries():
@@ -159,14 +159,14 @@ def test_what_would_change_names_the_break():
     _, head = build_tailwinds_headwinds(
         _pltr_segments(), 0.329, 0.847, 0.469, 66.5)
     line = what_would_change(head)
-    assert line.startswith("This story breaks if")
+    assert line.startswith("What would change this assessment:")
     assert "government contracts" in line or "multiple" in line
 
 
 def test_what_would_change_without_headwinds():
     assert what_would_change([]) == (
-        "This story breaks if revenue growth slows well below "
-        "its recent pace.")
+        "What would change this assessment: if revenue growth slows "
+        "well below its recent pace.")
 
 
 # --- segment parsing ---------------------------------------------------------
@@ -255,7 +255,7 @@ def test_builder_pltr_payload_shape(monkeypatch):
     assert payload["ticker"] == "PLTR"
     assert payload["price"] == 169.14
     assert payload["grade"] == "B"
-    assert "Price Expensive is the drag" in payload["grade_reason"]
+    assert "Valuation Expensive is the drag" in payload["grade_reason"]
     assert payload["gauges"]["debt"]["label"] == "Low"
     assert "net cash" in payload["gauges"]["debt"]["basis"]
     assert payload["earnings_date"] == "2026-11-17"
@@ -269,7 +269,7 @@ def test_builder_pltr_payload_shape(monkeypatch):
     assert payload["targets"]["dcf_base"] == 120.0
     assert payload["targets"]["analysts"]["buy"] == 22
     assert payload["consistency_note"] is None
-    assert payload["what_would_change"].startswith("This story breaks if")
+    assert payload["what_would_change"].startswith("What would change this assessment:")
 
 
 def test_builder_unavailable_without_price(monkeypatch):

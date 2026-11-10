@@ -75,11 +75,11 @@ export default function StorySection({ ticker }) {
   return (
     <div style={S.card}>
       <button style={S.button} type="button" onClick={toggle}>
-        {open ? 'Hide the story' : 'View the story'}
+        {open ? 'Hide company overview' : 'View company overview'}
       </button>
       {!open && (
         <div style={{ ...S.note, marginTop: '8px' }}>
-          The company in plain language: where it stands, what it sells, how fast it is growing, and what is ahead. Read-only, no trade call.
+          A plain-language profile of the company: market position, revenue mix, growth, and outlook. Read-only, no trade call.
         </div>
       )}
       {open && loading && <div style={{ ...S.note, marginTop: '12px' }}>Loading the story…</div>}
@@ -123,10 +123,10 @@ export default function StorySection({ ticker }) {
 
           <div style={S.grid}>
             <div style={S.panel}>
-              <div style={S.panelTitle}>1. Where it stands</div>
+              <div style={S.panelTitle}>Market position</div>
               {story.peers ? (
                 <div style={{ marginTop: '8px' }}>
-                  <div style={S.note}>{story.industry || story.sector || ''} · share of the top peers by market cap</div>
+                  <div style={S.note}>{story.industry || story.sector || ''} · share of combined market value, top peers</div>
                   {story.peers.map((p) => (
                     <div key={p.ticker} style={S.barRow}>
                       <span style={{ ...S.barLabel, color: p.is_subject ? '#4299e1' : '#e2e8f0' }}>{p.ticker}</span>
@@ -141,7 +141,7 @@ export default function StorySection({ ticker }) {
               <div style={{ marginTop: '12px' }}>
                 {Object.entries(story.gauges).map(([key, g]) => (
                   <div key={key} style={S.gauge}>
-                    <span style={S.gaugeLabel}>{key[0].toUpperCase() + key.slice(1)}: {g.label}</span>
+                    <span style={S.gaugeLabel}>{({ growth: 'Growth', margins: 'Margins', debt: 'Debt', price: 'Valuation' })[key] || key}: {g.label}</span>
                     <span style={S.gaugeBasis}> · {g.basis}</span>
                   </div>
                 ))}
@@ -149,13 +149,13 @@ export default function StorySection({ ticker }) {
             </div>
 
             <div style={S.panel}>
-              <div style={S.panelTitle}>2. What it sells</div>
+              <div style={S.panelTitle}>Revenue mix</div>
               {story.segments ? (
                 <>
                   <div style={{ ...S.note, marginTop: '4px' }}>Revenue mix, {story.segments.as_of || ''}</div>
                   {story.segments.product && story.segments.product.length > 0 && (
                     <div style={{ marginTop: '8px' }}>
-                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>By product</div>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>By segment</div>
                       {story.segments.product.map((s) => (
                         <div key={s.name} style={S.barRow}>
                           <span style={{ ...S.barLabel, width: '110px' }}>{s.name}</span>
@@ -167,7 +167,7 @@ export default function StorySection({ ticker }) {
                   )}
                   {story.segments.region && story.segments.region.length > 0 && (
                     <div style={{ marginTop: '8px' }}>
-                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>By region</div>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>By geography</div>
                       {story.segments.region.map((s) => (
                         <div key={s.name} style={S.barRow}>
                           <span style={{ ...S.barLabel, width: '110px' }}>{s.name}</span>
@@ -184,7 +184,7 @@ export default function StorySection({ ticker }) {
             </div>
 
             <div style={S.panel}>
-              <div style={S.panelTitle}>3. How fast it is growing</div>
+              <div style={S.panelTitle}>Growth and profitability</div>
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
                 {story.growth.multiple_text && (
                   <div><div style={{ fontSize: '20px', fontWeight: 800, color: '#68d391' }}>{story.growth.multiple_text.split(' ')[0]}</div>
@@ -196,7 +196,7 @@ export default function StorySection({ ticker }) {
                 )}
                 {story.growth.eps_ttm != null && (
                   <div><div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>${story.growth.eps_ttm}</div>
-                  <div style={S.note}>earnings per share, last year</div></div>
+                  <div style={S.note}>earnings per share, trailing 12 months</div></div>
                 )}
               </div>
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', marginTop: '14px', height: '120px' }}>
@@ -218,11 +218,11 @@ export default function StorySection({ ticker }) {
                   )
                 })}
               </div>
-              <div style={{ ...S.note, marginTop: '6px' }}>Solid bars are reported revenue; hatched bars are analyst estimates.</div>
+              <div style={{ ...S.note, marginTop: '6px' }}>Solid bars are reported results; hatched bars are analyst estimates.</div>
             </div>
 
             <div style={S.panel}>
-              <div style={S.panelTitle}>4. What is ahead</div>
+              <div style={S.panelTitle}>Outlook</div>
               {story.targets ? (
                 <>
                   <div style={{ ...S.note, marginTop: '4px' }}>Analyst price targets</div>
@@ -244,7 +244,7 @@ export default function StorySection({ ticker }) {
                   )}
                   {story.targets.dcf_base != null && (
                     <div style={{ ...S.note, marginTop: '8px' }}>
-                      Long-term lane DCF base: ${story.targets.dcf_base} a share, the same DCF as the long-term card, shown next to the analyst mean so the two anchors can be compared.
+                      DCF fair value, base case: ${story.targets.dcf_base} a share. This is the same DCF as the long-term card, shown next to the analyst mean so the two anchors can be compared.
                     </div>
                   )}
                 </>
@@ -273,7 +273,7 @@ export default function StorySection({ ticker }) {
               </div>
               <div style={{ ...S.note, marginTop: '12px', color: '#e2e8f0' }}>{story.what_would_change}</div>
               <div style={{ ...S.note, marginTop: '8px' }}>
-                Long-term lane verdict: {story.longterm_verdict || 'unavailable'}. See the long-term card below for the DCF detail.
+                Long-term assessment: {story.longterm_verdict || 'unavailable'}. See the long-term card below for the DCF detail.
               </div>
             </div>
           </div>

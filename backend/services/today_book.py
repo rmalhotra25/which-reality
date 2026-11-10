@@ -35,9 +35,13 @@ Pricing rules (non-negotiable):
 Sizing rules (portfolio simulator, backtest_harness.SimulatorParams):
   - risk_budget = equity * risk_pct, halved once equity is at least
     10% below its saved peak, zero (paused) at 15% below peak.
-  - contracts = floor(risk_budget / max_loss_per_contract), capped so
-    one position's notional never exceeds max_position_pct of equity.
-  - Heat = sum of max-loss dollars on open positions plus the new
+  - contracts = floor(risk_budget / risk_per_contract), capped so
+    one position's risk never exceeds max_position_pct of equity.
+    risk_per_contract is the premium at risk for a wheel put (the
+    premium collected per contract) and the max loss for anything
+    else. The assignment worst case for a wheel put is still shown
+    as max_loss_per_contract; it is not the sizing risk.
+  - Heat = sum of risk dollars on open positions plus the new
     items, capped at max_heat_pct of equity; concurrency capped at
     max_positions. Anything that would breach a cap goes to `blocked`
     with the reason, never silently shrunk to fit.
@@ -146,26 +150,34 @@ def risk_budget_dollars(equity, risk_pct, dd_pct):
 
 
 def size_contracts(max_loss_per_contract, risk_budget, notional_per_contract,
-                   equity, max_position_pct):
+                   equity, max_position_pct, risk_per_contract=None,
+                   cap_basis="notional"):
     """Contracts for one item, or (0, reason) when it cannot be sized.
 
     max_loss_per_contract is the worst case per contract in dollars.
-    notional_per_contract is the capital the position ties up per
-    contract (strike x 100 for a cash-secured put, premium x 100 for a
-    long call, 0 for a covered call against shares already owned).
+    risk_per_contract is the sizing risk per contract: for a wheel put
+    it is the premium at risk (the premium collected), for anything
+    else it defaults to max_loss_per_contract. notional_per_contract
+    is the capital the position ties up per contract (strike x 100
+    for a cash-secured put, premium x 100 for a long call, 0 for a
+    covered call against shares already owned). cap_basis "risk"
+    caps one position by its risk dollars instead of its notional;
+    wheel puts use it because their sizing risk is the premium.
     """
-    max_loss = _num(max_loss_per_contract)
-    if not max_loss or max_loss <= 0:
+    risk = _num(risk_per_contract)
+    if risk is None:
+        risk = _num(max_loss_per_contract)
+    if not risk or risk <= 0:
         return 0, "max_loss_unknown"
     budget = _num(risk_budget) or 0.0
     if budget <= 0:
         return 0, "risk_budget_zero"
-    contracts = int(budget // max_loss)
+    contracts = int(budget // risk)
     if contracts < 1:
         return 0, "risk_budget_too_small"
-    notional = _num(notional_per_contract) or 0.0
-    if notional > 0 and equity:
-        cap = int((_num(max_position_pct) / 100.0 * equity) // notional)
+    cap_base = risk if cap_basis == "risk" else (_num(notional_per_contract) or 0.0)
+    if cap_base > 0 and equity:
+        cap = int((_num(max_position_pct) / 100.0 * equity) // cap_base)
         contracts = min(contracts, cap)
         if contracts < 1:
             return 0, "single_position_cap"
@@ -249,9 +261,11 @@ def _risk_text(item):
     max_loss = item.get("max_loss_per_contract")
     if kind == "wheel":
         return (
-            "If the stock falls below the strike you may be assigned "
-            "shares at the strike. The maximum loss is the cost of the "
-            "shares minus the premium collected."
+            "Sizing uses the premium at risk: the premium collected is "
+            "what this trade risks per contract. If the stock falls below "
+            "the strike you may still be assigned shares at the strike, "
+            "and the worst case is the cost of the shares minus the "
+            "premium collected."
         )
     if kind == "covered_call":
         return (
@@ -313,7 +327,9 @@ def rank_and_size(candidates, settings, current_heat_dollars, open_positions):
 
     Returns (items, blocked). Candidates are dicts with at least kind,
     ticker, strike, premium_net_per_share (or premium_net_per_contract),
-    max_loss_per_contract, notional_per_contract, status. SHADOW
+    max_loss_per_contract, notional_per_contract, status. A wheel
+    candidate also carries risk_per_contract (the premium at risk);
+    without it the max loss is the sizing risk. SHADOW
     candidates must not be passed here; they go to research_only.
     """
     equity = _num(settings.get("account_equity")) or 0.0
@@ -326,16 +342,22 @@ def rank_and_size(candidates, settings, current_heat_dollars, open_positions):
     heat_cap = equity * max_heat_pct / 100.0
     heat = _num(current_heat_dollars) or 0.0
 
+    def risk_per_contract(c):
+        risk = _num(c.get("risk_per_contract"))
+        if risk is not None:
+            return risk
+        return _num(c.get("max_loss_per_contract")) or 0.0
+
     def rank_score(c):
-        max_loss = _num(c.get("max_loss_per_contract")) or 0.0
+        risk = risk_per_contract(c)
         premium = _num(c.get("premium_net_per_contract")) or 0.0
         if c.get("kind") == "covered_call":
             price = _num(c.get("current_price")) or 0.0
             if price > 0 and premium > 0:
                 return premium / (price * 100.0)
             return 0.0
-        if max_loss > 0 and premium > 0:
-            return premium / max_loss
+        if risk > 0 and premium > 0:
+            return premium / risk
         return 0.0
 
     ordered = sorted(candidates, key=lambda c: (rank_score(c), _num(c.get("quant_score")) or 0.0), reverse=True)
@@ -381,7 +403,9 @@ def rank_and_size(candidates, settings, current_heat_dollars, open_positions):
             continue
         contracts, reason = size_contracts(
             base.get("max_loss_per_contract"), budget,
-            base.get("notional_per_contract"), equity, max_position_pct)
+            base.get("notional_per_contract"), equity, max_position_pct,
+            risk_per_contract=risk_per_contract(base),
+            cap_basis="risk" if base.get("kind") == "wheel" else "notional")
         if contracts < 1:
             blocked.append(normalize_item(base, {
                 "contracts": 0, "capital_at_risk": 0.0, "risk_dollars": 0.0,
@@ -389,7 +413,7 @@ def rank_and_size(candidates, settings, current_heat_dollars, open_positions):
                 "blocked_text": "Blocked: the risk budget does not cover even one contract at this size.",
             }))
             continue
-        risk_dollars = round(contracts * (_num(base.get("max_loss_per_contract")) or 0.0), 2)
+        risk_dollars = round(contracts * risk_per_contract(base), 2)
         if heat + risk_dollars > heat_cap:
             blocked.append(normalize_item(base, {
                 "contracts": 0, "capital_at_risk": 0.0, "risk_dollars": 0.0,
@@ -531,6 +555,12 @@ def wheel_candidates(db):
             "premium_net_per_contract": round(premium * 100, 2),
             "premium_source": r.premium_source or "bid",
             "chain_source": None,
+            # Wheel puts are sized by the premium at risk, not by the
+            # assignment worst case: risk_per_contract is the premium
+            # collected per contract. max_loss_per_contract below stays
+            # the assignment worst case and is shown, not sized on.
+            "risk_per_contract": round(premium * 100, 2),
+            "risk_measure": "premium_at_risk",
             "max_loss_per_contract": max_loss,
             "notional_per_contract": round(strike * 100, 2),
             "current_price": None,

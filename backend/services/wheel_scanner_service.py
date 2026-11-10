@@ -584,16 +584,22 @@ def _evaluate_call_ticker(ticker: str, cost_basis: Optional[float] = None) -> di
 def run_put_scanner(db, max_workers: int = 8, mode: str = WHEEL_MODE) -> dict:
     """
     Run the put-seller scanner across the full universe in the given mode.
-    Updates run_status["wheel_scanner"] and populates the per-mode cache.
+    Updates run_status["wheel_scanner"] (wheel mode) or
+    run_status["harvest_scanner"] (harvest mode) and populates the
+    per-mode cache. The two modes share one function but must not share
+    one status key: the harvest run used to overwrite the wheel run's
+    status, so the status page showed 0 harvest candidates while the
+    wheel run had found 64.
     """
     global _put_cache
     if mode not in VALID_MODES:
         mode = WHEEL_MODE
-    run_status.set_running("wheel_scanner")
+    status_key = "harvest_scanner" if mode == HARVEST_MODE else "wheel_scanner"
+    run_status.set_running(status_key)
 
     universe = _load_universe()
     if not universe:
-        run_status.set_error("wheel_scanner", "universe empty or failed to load")
+        run_status.set_error(status_key, "universe empty or failed to load")
         return {"candidates": [], "excluded": [], "run_at": None, "mode": mode}
 
     candidates = []
@@ -632,18 +638,119 @@ def run_put_scanner(db, max_workers: int = 8, mode: str = WHEEL_MODE) -> dict:
     }
 
     _put_cache[mode] = result
-    run_status.set_success_with_counts("wheel_scanner", {
+    run_status.set_success_with_counts(status_key, {
         "candidates": len(candidates),
         "excluded": len(excluded),
         "errors": errors,
         "universe_size": len(universe),
         "mode": mode,
     })
+    if mode == WHEEL_MODE:
+        try:
+            persist_wheel_candidates(db, result)
+        except Exception as e:
+            # Persisting must never break the scan itself: the cache
+            # and the run receipt above are already stored.
+            logger.error("wheel_scanner: failed to persist wheel candidates: %s", e, exc_info=True)
     logger.info(
         "wheel_scanner: complete. mode=%s candidates=%d excluded=%d errors=%d",
         mode, len(candidates), len(excluded), errors,
     )
     return result
+
+
+def persist_wheel_candidates(db, result: dict) -> int:
+    """Store wheel-mode scanner candidates as WheelRecommendation rows.
+
+    This is what keeps Today's Book fresh: today_book.wheel_candidates
+    reads the latest WheelRecommendation batch, and since the Oct 27
+    2026 W9 change the old WheelEngine no longer writes that table on
+    any schedule. The scheduled scanner is the only fresh source, so
+    each wheel-mode run persists its candidates here with the scanner's
+    run_at. Harvest mode is not persisted: its low-delta tier is a
+    different trade and Today's Book reads the classic wheel batch.
+
+    Mapping notes, kept honest about the two different scoring scales:
+    the scanner ranks by EV per dollar of secured capital (rank_score,
+    roughly 0.006-0.05), not by the old 0-100 quant composite, so
+    score/quant_score/combined_score store the raw rank_score and the
+    full rank inputs ride in quant_components. Grade is relative
+    within the batch (top quarter A, then B, C, D) because the EV
+    rank has no absolute 0-100 scale to grade against.
+    """
+    from models.wheel import WheelRecommendation
+    from services.ai_boundary import assignment_risk_from_chance
+
+    candidates = (result or {}).get("candidates") or []
+    if not candidates:
+        return 0
+    run_at_raw = (result or {}).get("run_at")
+    try:
+        run_at = datetime.fromisoformat(run_at_raw) if run_at_raw else datetime.now(timezone.utc)
+    except ValueError:
+        run_at = datetime.now(timezone.utc)
+    if run_at.tzinfo is None:
+        run_at = run_at.replace(tzinfo=timezone.utc)
+    stored = 0
+    total = len(candidates)
+    for rank, cand in enumerate(candidates, start=1):
+        ticker = str(cand.get("ticker", "")).upper()
+        strike = cand.get("strike")
+        premium = cand.get("sale_price")
+        if not ticker or not strike or not premium:
+            continue
+        price = cand.get("current_price")
+        pct_otm = None
+        if price and strike:
+            pct_otm = round((price - strike) / price * 100, 2)
+        # Relative grade: the EV rank has no absolute 0-100 scale.
+        quartile = (rank - 1) * 4 // total if total else 3
+        grade = ("A", "B", "C", "D")[quartile]
+        rank_score = cand.get("rank_score") or 0.0
+        breakeven = cand.get("breakeven")
+        if breakeven is None:
+            breakeven = round(strike - premium, 2)
+        obj = WheelRecommendation(
+            ticker=ticker,
+            rank=rank,
+            score=float(rank_score),
+            grade=grade,
+            explanation=(
+                f"Wheel put on {ticker}: sell the ${strike:g} put expiring "
+                f"{cand.get('expiry')} for ${premium:g} at the bid, breakeven "
+                f"${breakeven:g}. EV rank {rank_score:.4f}."
+            ),
+            put_strike=float(strike),
+            put_expiry=cand.get("expiry"),
+            put_premium=float(premium),
+            premium_source=cand.get("premium_source") or "bid",
+            iv_rank=cand.get("iv_percentile"),
+            quant_score=float(rank_score),
+            qual_score=None,
+            combined_score=float(rank_score),
+            quant_components=json.dumps({
+                "rank_score": rank_score,
+                "ev_per_contract": cand.get("ev_per_contract"),
+                "raw_pppd": cand.get("raw_pppd"),
+                "tier_name": cand.get("tier_name"),
+                "mode": cand.get("mode"),
+                "penalties": cand.get("penalties"),
+                "delta_abs": cand.get("delta_abs"),
+                "open_interest": cand.get("open_interest"),
+                "spread_pct": cand.get("spread_pct"),
+            }),
+            pct_otm=pct_otm,
+            breakeven=breakeven,
+            assignment_chance_pct=cand.get("assignment_chance_pct"),
+            assignment_risk=assignment_risk_from_chance(cand.get("assignment_chance_pct")),
+            run_at=run_at,
+        )
+        db.add(obj)
+        stored += 1
+    if stored:
+        db.commit()
+    logger.info("wheel_scanner: persisted %d wheel candidates to WheelRecommendation", stored)
+    return stored
 
 
 def run_call_scanner(db, max_workers: int = 8) -> dict:

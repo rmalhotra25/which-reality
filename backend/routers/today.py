@@ -118,7 +118,7 @@ def get_today(explain: str = Query(default="quant"), db: Session = Depends(get_d
     heat, open_positions, assigned = tb.open_wheel_heat(db)
     risk_bar = tb.build_risk_bar(settings, heat, open_positions)
 
-    wheel, wheel_run_at = tb.wheel_candidates(db)
+    wheel, wheel_run_at, wheel_stale = tb.wheel_candidates(db)
     live_alerts, shadow_alerts = tb.alert_candidates(db)
     directional = tb.directional_research(db)
 
@@ -209,10 +209,20 @@ def get_today(explain: str = Query(default="quant"), db: Session = Depends(get_d
         except Exception as exc:
             logger.warning("today Claude explanations unavailable, keeping quant text: %s", exc)
 
+    data_note = tb.DATA_NOTE
+    if wheel_stale:
+        # The frontend renders data_note at the top of the tab, so a
+        # stale batch is visible there, not just in sources.
+        data_note = (
+            data_note
+            + f" Wheel picks are stale: the latest batch ran {wheel_run_at}, "
+            "more than 36 hours ago, so no wheel trades are shown."
+        )
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "as_of_date": datetime.now(timezone.utc).date().isoformat(),
-        "data_note": tb.DATA_NOTE,
+        "data_note": data_note,
         "settings": settings,
         "risk_bar": risk_bar,
         "items": items,
@@ -222,6 +232,7 @@ def get_today(explain: str = Query(default="quant"), db: Session = Depends(get_d
         "scoreboard": scoreboard,
         "sources": {
             "wheel_run_at": wheel_run_at,
+            "wheel_stale": wheel_stale,
             "alerts_window_hours": 36,
             "covered_call_tickers": cc_tickers,
         },

@@ -61,6 +61,15 @@ logger = logging.getLogger(__name__)
 # price is not a price you can actually get.
 MAX_SPREAD_PCT = 25.0
 
+# A wheel batch older than this is stale and is never shown as live
+# trades: a pick made two weeks ago can be invalidated by the move
+# since (QCOM Nov 10 2026: the Oct 27 batch still offered a $175 put
+# after QCOM had closed at $171.47, below its own invalidation level).
+# 36 hours matches the setup-alert window, so a batch from yesterday's
+# runs still counts in the morning, when those picks were made for
+# today's open.
+WHEEL_MAX_AGE_HOURS = 36.0
+
 # Delayed-data note shown wherever a chain quote is used. Massive
 # Starter has no live quotes entitlement; CBOE delayed quotes lag
 # about 15 minutes.
@@ -512,7 +521,14 @@ def open_wheel_heat(db):
 
 
 def wheel_candidates(db):
-    """Latest wheel batch as normalized candidates (LIVE only)."""
+    """Latest wheel batch as normalized candidates (LIVE only).
+
+    Returns (candidates, run_at_iso, stale). A batch older than
+    WHEEL_MAX_AGE_HOURS is stale: it returns no candidates, so a
+    weeks-old pick is never presented as a live trade. Yesterday's
+    batch is still fresh in the morning, when its picks were made for
+    today's open.
+    """
     from models.wheel import WheelRecommendation
     from sqlalchemy import desc
 
@@ -522,7 +538,14 @@ def wheel_candidates(db):
         .first()
     )
     if not latest:
-        return [], None
+        return [], None, False
+    run_at = latest[0]
+    run_at_iso = run_at.isoformat() if run_at else None
+    if run_at is not None:
+        aware = run_at if run_at.tzinfo is not None else run_at.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - aware).total_seconds() / 3600.0
+        if age_hours > WHEEL_MAX_AGE_HOURS:
+            return [], run_at_iso, True
     rows = (
         db.query(WheelRecommendation)
         .filter(WheelRecommendation.run_at == latest[0])
@@ -572,7 +595,7 @@ def wheel_candidates(db):
             "entry_modeled_at": "next open",
             "delay_note": DELAY_NOTE,
         })
-    return out, (rows[0].run_at.isoformat() if rows and rows[0].run_at else None)
+    return out, (rows[0].run_at.isoformat() if rows and rows[0].run_at else None), False
 
 
 def alert_candidates(db):

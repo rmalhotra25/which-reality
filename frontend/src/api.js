@@ -163,6 +163,10 @@ export const api = {
     alignOndemand: (ticker, body) =>
       request(`/api/lookup/${encodeURIComponent(ticker)}/ondemand/align`, { method: 'POST', body }),
   },
+  story: {
+    get: (ticker) =>
+      request(`/api/story/${encodeURIComponent(ticker)}`),
+  },
   challenge: {
     getState: () => request('/api/challenge'),
     initAccount: (body) => request('/api/challenge/account', { method: 'POST', body }),

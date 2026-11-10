@@ -112,14 +112,20 @@ def get_insider_sentiment(symbol: str, days: int = 90) -> dict:
         return {}
 
 
-def get_earnings_this_month(symbol: str) -> int | None:
+def get_earnings_within(symbol: str, days: int = 120) -> int | None:
     """
     Returns days until next earnings announcement, or None if unknown.
-    Only checks the next 30 days.
+
+    Checks the next `days` days on the Finnhub calendar. The alert
+    engine's earnings gate must keep using the 30-day window through
+    get_earnings_this_month, so a missing feed still blocks a setup;
+    the Story display uses the wider window so a next earnings date
+    a quarter out (for example, a name that reported this month)
+    still shows instead of reading unknown.
     """
     try:
         today = datetime.now(timezone.utc).date()
-        end = today + timedelta(days=30)
+        end = today + timedelta(days=days)
         cal = _get_client().earnings_calendar(
             _from=today.strftime("%Y-%m-%d"),
             to=end.strftime("%Y-%m-%d"),
@@ -141,3 +147,11 @@ def get_earnings_this_month(symbol: str) -> int | None:
     except Exception as e:
         logger.debug("Finnhub earnings failed for %s: %s", symbol, e)
         return None
+
+
+def get_earnings_this_month(symbol: str) -> int | None:
+    """
+    Returns days until next earnings announcement, or None if unknown.
+    Only checks the next 30 days.
+    """
+    return get_earnings_within(symbol, days=30)

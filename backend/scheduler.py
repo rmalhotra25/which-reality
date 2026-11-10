@@ -306,7 +306,15 @@ def run_champion_outcome_job() -> None:
 
 
 def run_wheel_scanner_job() -> None:
-    """Run the wheel put + call scanner after market open and mid-afternoon."""
+    """Run the wheel put + call scanner after market open and mid-afternoon.
+
+    Wheel mode only. Harvest runs as its own job five minutes later
+    (run_harvest_scanner_job): running both put sweeps back to back
+    starved the second sweep of chain data (Nov 10 2026: harvest got
+    no options data for 533 of 607 tickers one minute after the wheel
+    sweep succeeded). The wheel run also persists its candidates to
+    WheelRecommendation, which is what Today's Book reads.
+    """
     import datetime as _dt
     from database import SessionLocal
     from services.run_receipts import job_receipt, JOB_WHEEL_SCANNER
@@ -323,39 +331,76 @@ def run_wheel_scanner_job() -> None:
                 return
 
             logger.info("Scheduler: running wheel scanner")
-            from services.wheel_modes import HARVEST_MODE, WHEEL_MODE
+            from services.wheel_modes import WHEEL_MODE
             from services.wheel_scanner_service import run_put_scanner, run_call_scanner
-            # W9: both put modes run on the scheduler. Harvest used to
-            # fill only on a manual tab refresh, so it was stale until
-            # someone opened the tab. Call scanner is mode-independent.
             put_result = run_put_scanner(db, mode=WHEEL_MODE)
-            harvest_result = run_put_scanner(db, mode=HARVEST_MODE)
             call_result = run_call_scanner(db)
             put_candidates = put_result.get("candidates", []) or []
             put_excluded = put_result.get("excluded", []) or []
-            harvest_candidates = harvest_result.get("candidates", []) or []
-            harvest_excluded = harvest_result.get("excluded", []) or []
             call_candidates = call_result.get("candidates", []) or []
             call_excluded = call_result.get("excluded", []) or []
             counts["tickers_evaluated"] = (
                 len(put_candidates) + len(put_excluded)
-                + len(harvest_candidates) + len(harvest_excluded)
                 + len(call_candidates) + len(call_excluded)
             )
             counts["alerts_fired"] = (
-                len(put_candidates) + len(harvest_candidates) + len(call_candidates)
+                len(put_candidates) + len(call_candidates)
             )
             counts["suppressed"] = (
-                len(put_excluded) + len(harvest_excluded) + len(call_excluded)
+                len(put_excluded) + len(call_excluded)
             )
             logger.info(
-                "Scheduler: wheel scanner complete: classic %d, harvest %d, calls %d",
-                len(put_candidates), len(harvest_candidates), len(call_candidates),
+                "Scheduler: wheel scanner complete: classic %d, calls %d",
+                len(put_candidates), len(call_candidates),
             )
     except Exception as e:
         logger.error("Wheel scanner failed: %s", e, exc_info=True)
         import services.run_status as run_status
         run_status.set_error("wheel_scanner", str(e))
+    finally:
+        db.close()
+
+
+def run_harvest_scanner_job() -> None:
+    """Run the harvest-mode put scanner, five minutes after the wheel run.
+
+    Kept separate so the two full-universe chain sweeps do not run
+    back to back and starve the second one of data. Harvest results
+    stay in the in-memory cache only; Today's Book reads the classic
+    wheel batch, not harvest.
+    """
+    import datetime as _dt
+    from database import SessionLocal
+    from services.run_receipts import job_receipt, JOB_HARVEST_SCANNER
+
+    today_eastern = _dt.datetime.now(EASTERN).date()
+
+    db = SessionLocal()
+    try:
+        with job_receipt(db, JOB_HARVEST_SCANNER) as counts:
+            if not is_trading_day(today_eastern):
+                counts["state"] = "skipped"
+                counts["errors"] = [f"not a trading day: {today_eastern}"]
+                logger.info("Scheduler: skipping harvest scanner -- not a trading day")
+                return
+
+            logger.info("Scheduler: running harvest scanner")
+            from services.wheel_modes import HARVEST_MODE
+            from services.wheel_scanner_service import run_put_scanner
+            harvest_result = run_put_scanner(db, mode=HARVEST_MODE)
+            harvest_candidates = harvest_result.get("candidates", []) or []
+            harvest_excluded = harvest_result.get("excluded", []) or []
+            counts["tickers_evaluated"] = len(harvest_candidates) + len(harvest_excluded)
+            counts["alerts_fired"] = len(harvest_candidates)
+            counts["suppressed"] = len(harvest_excluded)
+            logger.info(
+                "Scheduler: harvest scanner complete: harvest %d",
+                len(harvest_candidates),
+            )
+    except Exception as e:
+        logger.error("Harvest scanner failed: %s", e, exc_info=True)
+        import services.run_status as run_status
+        run_status.set_error("harvest_scanner", str(e))
     finally:
         db.close()
 
@@ -543,7 +588,11 @@ def start_scheduler() -> BackgroundScheduler:
         misfire_grace_time=1800,
     )
 
-    # Wheel scanner: 10:30 AM and 14:00 Eastern (after open + mid-afternoon)
+    # Wheel scanner: 10:30 AM and 14:00 Eastern (after open + mid-afternoon).
+    # Harvest runs five minutes later as its own job, so the two
+    # full-universe chain sweeps do not run back to back and starve the
+    # second one of data (Nov 10 2026: harvest got no options data for
+    # 533 of 607 tickers one minute after the wheel sweep succeeded).
     for scanner_hour, scanner_minute in [(10, 30), (14, 0)]:
         scheduler.add_job(
             run_wheel_scanner_job,
@@ -554,6 +603,19 @@ def start_scheduler() -> BackgroundScheduler:
                 timezone=EASTERN,
             ),
             id=f"wheel_scanner_{scanner_hour:02d}{scanner_minute:02d}",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
+    for harvest_hour, harvest_minute in [(10, 35), (14, 5)]:
+        scheduler.add_job(
+            run_harvest_scanner_job,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=harvest_hour,
+                minute=harvest_minute,
+                timezone=EASTERN,
+            ),
+            id=f"harvest_scanner_{harvest_hour:02d}{harvest_minute:02d}",
             replace_existing=True,
             misfire_grace_time=1800,
         )

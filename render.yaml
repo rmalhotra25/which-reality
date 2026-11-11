@@ -1,20 +1,18 @@
-# TradeIQ on Render (free plan).
+# TradeIQ on Render (Standard plan, 2 GB RAM).
 #
 # Scheduler note: there is deliberately NO cron job service in this
-# blueprint. Render cron jobs have no free plan (cheapest is Starter),
-# so the free path is an external uptime pinger hitting the public
-# /api/keepalive endpoint every 5 minutes. That keeps the web service
-# awake so the in-process APScheduler fires the 6:00 AM discovery scan,
-# 8:00 AM outcome job, and 9:10 AM champions scan on time. See
-# docs/infra-operations.md for the UptimeRobot setup (5 minutes in the
-# dashboard, no code change) and for why the in-process scheduler alone
-# is not sufficient on the free plan.
+# blueprint. The Standard plan instance stays awake, so the in-process
+# APScheduler fires the 6:00 AM discovery scan, 8:00 AM outcome job,
+# and 9:10 AM champions scan on time without an external pinger. The
+# UptimeRobot pinger (5 minutes, /api/keepalive) was for the free plan,
+# when the instance spun down; it is no longer required on Standard
+# but is harmless to leave running. See docs/infra-operations.md.
 services:
   - type: web
     name: tradeiq
     runtime: python
     region: ohio
-    plan: free
+    plan: standard
     buildCommand: pip install -r backend/requirements.txt && cd frontend && npm install && npm run build
     startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:

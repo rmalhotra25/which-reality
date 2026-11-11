@@ -508,3 +508,15 @@ def test_fetch_peer_facts_pe_chain(monkeypatch):
     assert out["BBB"]["forward_pe"] == 30.0  # FMP ratios
     assert out["CCC"]["forward_pe"] == 40.0  # Polygon-computed
     assert out["BBB"]["market_cap"] == 200e9
+
+
+def test_story_cache_bounded():
+    """Nov 10 2026: the Story cache grew one entry per ticker until
+    the process restarted. It now caps at _CACHE_MAX_ENTRIES."""
+    import services.story as story
+
+    story.clear_story_cache()
+    for i in range(250):
+        story._cache_put(f"T{i:03d}", {"status": "ok"})
+    assert len(story._CACHE) <= story._CACHE_MAX_ENTRIES
+    assert story._cache_get("T249") is not None

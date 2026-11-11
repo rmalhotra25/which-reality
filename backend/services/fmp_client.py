@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 _FMP_BASE = "https://financialmodelingprep.com/api/v3"
 _SCREENER_CACHE: dict = {}
 _CACHE_TTL = 3600
+_SCREENER_CACHE_MAX_ENTRIES = 20
+
+
+def _screener_cache_put(cache_key: str, payload: dict) -> None:
+    from services.cache_utils import bounded_put
+
+    bounded_put(_SCREENER_CACHE, cache_key, payload, now=time.time(),
+                ttl_seconds=_CACHE_TTL,
+                max_entries=_SCREENER_CACHE_MAX_ENTRIES)
 
 
 def _get(path: str, params: dict | None = None, timeout: int = 15):
@@ -139,7 +148,7 @@ def run_screener(
     candidates = _get("/stock-screener", params)
     if not candidates or not isinstance(candidates, list):
         payload = {"status": "ok", "results": [], "filters_omitted": filters_omitted}
-        _SCREENER_CACHE[cache_key] = (time.time(), payload)
+        _screener_cache_put(cache_key, payload)
         return payload
 
     top = candidates[:limit]
@@ -203,5 +212,5 @@ def run_screener(
     result.sort(key=lambda r: r["rule_of_40"] if r["rule_of_40"] is not None else -1e9, reverse=True)
     result = result[:100]
     payload = {"status": "ok", "results": result, "filters_omitted": filters_omitted}
-    _SCREENER_CACHE[cache_key] = (time.time(), payload)
+    _screener_cache_put(cache_key, payload)
     return payload

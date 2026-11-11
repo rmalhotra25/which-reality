@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 # ── Result cache ──────────────────────────────────────────────────────────────
 _ANALYSIS_CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_TTL = 4 * 3600  # 4 hours
+_ANALYSIS_CACHE_MAX_ENTRIES = 200
+
+
+def _analysis_cache_put(ticker: str, result: dict) -> None:
+    from services.cache_utils import bounded_put
+
+    bounded_put(_ANALYSIS_CACHE, ticker, result, now=time.time(),
+                ttl_seconds=_CACHE_TTL,
+                max_entries=_ANALYSIS_CACHE_MAX_ENTRIES)
 
 # ── SPY 20-day return cache (shared across all ticker analyses in a session) ──
 _SPY_CACHE: dict = {"ts": 0.0, "ret": None}
@@ -520,5 +529,5 @@ def analyze_trigger(ticker: str) -> dict:
         "combined_rec_desc": combined_desc,
     }
 
-    _ANALYSIS_CACHE[ticker] = (time.time(), result)
+    _analysis_cache_put(ticker, result)
     return result

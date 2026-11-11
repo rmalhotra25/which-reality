@@ -204,6 +204,15 @@ def _historical_volatility(ticker: str) -> float | None:
 # enough to cover one lookup. Keyed by ticker only, never by price.
 _CBOE_CACHE: dict = {}
 _CBOE_CACHE_TTL_SECONDS = 120.0
+_CBOE_CACHE_MAX_ENTRIES = 50
+
+
+def _cboe_cache_put(key: str, options) -> None:
+    from services.cache_utils import bounded_put
+
+    bounded_put(_CBOE_CACHE, key, options, now=time.monotonic(),
+                ttl_seconds=_CBOE_CACHE_TTL_SECONDS,
+                max_entries=_CBOE_CACHE_MAX_ENTRIES)
 _CBOE_SYMBOL_RE = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
 
 
@@ -608,7 +617,7 @@ class ChainProvider:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
             options = (payload or {}).get("data", {}).get("options") or []
-            _CBOE_CACHE[key] = (time.monotonic(), options)
+            _cboe_cache_put(key, options)
             return options
         except Exception as e:
             self.last_cboe_note = f"cboe failed: {type(e).__name__}: {e}"

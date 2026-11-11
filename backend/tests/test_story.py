@@ -540,3 +540,15 @@ def test_to_float_and_sanitize_reject_nonfinite():
                             "b": [1.0, float("inf")],
                             "c": {"d": float("nan")}}) == {
         "a": None, "b": [1.0, None], "c": {"d": None}}
+
+
+def test_story_cache_bounded():
+    """Nov 10 2026: the Story cache grew one entry per ticker until
+    the process restarted. It now caps at _CACHE_MAX_ENTRIES."""
+    import services.story as story
+
+    story.clear_story_cache()
+    for i in range(250):
+        story._cache_put(f"T{i:03d}", {"status": "ok"})
+    assert len(story._CACHE) <= story._CACHE_MAX_ENTRIES
+    assert story._cache_get("T249") is not None

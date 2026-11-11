@@ -552,3 +552,95 @@ def test_story_cache_bounded():
         story._cache_put(f"T{i:03d}", {"status": "ok"})
     assert len(story._CACHE) <= story._CACHE_MAX_ENTRIES
     assert story._cache_get("T249") is not None
+
+
+def _news_article(title, days_ago=2, publisher="New York Times"):
+    from datetime import datetime, timedelta, timezone
+
+    published = (datetime.now(timezone.utc)
+                 - timedelta(days=days_ago)).isoformat()
+    return {"title": title, "published_at": published,
+            "publisher": publisher, "url": "https://example.com/a"}
+
+
+def test_news_headwind_flags_investigation(monkeypatch):
+    """Nov 10 2026: NVDA's Story read 'none flagged' while the Jensen
+    Huang investigation was the biggest thing about the company. The
+    quant headwinds come from numbers only, so a governance event is
+    invisible to them; recent news now fills that gap."""
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_news=lambda t: ([
+            _news_article(
+                "Nvidia Stock Plunges on Jensen Huang Investigation",
+                days_ago=2),
+        ], None))
+    titles = [h["title"] for h in payload["headwinds"]]
+    assert "Governance investigation" in titles
+    item = next(h for h in payload["headwinds"]
+                if h["title"] == "Governance investigation")
+    assert "Jensen Huang Investigation" in item["detail"]
+    assert "New York Times" in item["detail"]
+    assert item["source"] == "news"
+    assert "the investigation clears the company" in \
+        payload["what_would_change"]
+
+
+def test_news_headwind_adds_to_quant_headwinds(monkeypatch):
+    """The news headwind is additive: the PLTR stub already has a
+    Rich valuation headwind from its 66.5 forward P/E, and the news
+    headwind sits beside it instead of replacing it."""
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_news=lambda t: ([
+            _news_article("Palantir CEO resigns after board dispute",
+                          days_ago=1),
+        ], None))
+    titles = [h["title"] for h in payload["headwinds"]]
+    assert "Rich valuation" in titles
+    assert "Leadership change" in titles
+
+
+def test_news_headwind_skips_stale(monkeypatch):
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_news=lambda t: ([
+            _news_article("Nvidia Stock Plunges on Jensen Huang "
+                          "Investigation", days_ago=40),
+        ], None))
+    titles = [h["title"] for h in payload["headwinds"]]
+    assert "Governance investigation" not in titles
+
+
+def test_news_headwind_skips_untimestamped(monkeypatch):
+    article = _news_article("Nvidia Stock Plunges on Jensen Huang "
+                            "Investigation")
+    article["published_at"] = None
+    payload = _stub_build(
+        monkeypatch, _fetch_news=lambda t: ([article], None))
+    titles = [h["title"] for h in payload["headwinds"]]
+    assert "Governance investigation" not in titles
+
+
+def test_news_headwind_word_boundaries(monkeypatch):
+    """'sues' must not match inside 'issues', and 'sec' must not match
+    inside 'sector': word boundaries, not substrings."""
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_news=lambda t: ([
+            _news_article("Nvidia issues new chip as sector demand "
+                          "rises", days_ago=1),
+        ], None))
+    titles = [h["title"] for h in payload["headwinds"]]
+    assert "Legal action" not in titles
+
+
+def test_news_headwind_fetch_failure_degrades(monkeypatch):
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_news=lambda t: ([], "company news unavailable"))
+    assert payload["status"] == "ok"
+    assert payload["grade"] == "B"
+    assert "company news unavailable" in payload["notes"]
+    assert not [h for h in payload["headwinds"]
+                if h.get("source") == "news"]

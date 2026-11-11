@@ -2,7 +2,9 @@
 
 The Story is a read-only explainer, never a trade call: no LIVE label,
 no sizing, no entry, no put or call. Quant decides every number, gauge,
-grade, tailwind and headwind from the rules below. Claude only explains.
+grade and tailwind from the rules below, and recent company news decides
+the news headwinds: a board investigation, a lawsuit, or a CEO departure
+is a headwind even when no number has moved yet. Claude only explains.
 
 Panels, in professional wording rather than the reference's phrasing:
 1. Market position: peer market-cap shares plus four health gauges
@@ -38,6 +40,9 @@ Data sources:
 - DCF base: longterm_valuation.build_longterm with statements from
   ondemand_review.fetch_statements, the same DCF the long-term lane
   shows, so the two anchors can never disagree.
+- news headwinds: Polygon ticker news (the same get_news the covered
+  calls and scanner use). Only fresh, timestamped articles count, and
+  each headwind shows its headline, publisher and date.
 
 Missing data is shown as missing, never invented. A panel whose
 source is unavailable reports that, with the source named.
@@ -46,6 +51,7 @@ source is unavailable reports that, with the source named.
 import concurrent.futures
 import logging
 import math
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -402,6 +408,156 @@ def build_tailwinds_headwinds(segments, growth_cagr, gross_margin,
     return tailwinds, headwinds
 
 
+# News-driven headwinds. The quant headwinds above come from numbers
+# only, so a governance or legal event is invisible to them: a board
+# investigation, a lawsuit, or a CEO departure moves no number yet,
+# but it is a headwind all the same. Recent company news fills that
+# gap. One headwind per category, the clearest fresh article: an
+# article matching a primary keyword beats one matching only a
+# secondary keyword, and the freshest wins within that. Only articles
+# published within _NEWS_FRESH_DAYS count; an article with no
+# timestamp is unverifiable and skipped. A news outage returns no
+# headwinds plus a note, never an exception.
+_NEWS_FRESH_DAYS = 30
+_NEWS_LIMIT = 30
+_NEWS_CATEGORIES = (
+    {
+        "title": "Governance investigation",
+        "primary": ("investigation", "investigations", "investigating",
+                    "probe", "probes", "probed", "subpoena", "subpoenas"),
+        "secondary": ("inquiry", "inquiries", "affair", "affairs",
+                      "governance woes", "governance concerns",
+                      "governance crisis"),
+        "strength": 3,
+        "break": "the investigation clears the company",
+    },
+    {
+        "title": "Legal action",
+        "primary": ("lawsuit", "lawsuits", "fraud", "indictment",
+                    "indictments", "indicted", "guilty"),
+        "secondary": ("sued", "sues", "suing", "settlement",
+                      "settlements", "sec", "charged",
+                      "charges against", "criminal charges"),
+        "strength": 3,
+        "break": "the legal case resolves",
+    },
+    {
+        "title": "Leadership change",
+        "primary": ("resign", "resigns", "resigned", "resignation",
+                    "fired", "ousted"),
+        "secondary": ("steps down", "step down", "oust", "ousts",
+                      "departs", "departure"),
+        "strength": 2,
+        "break": "a successor is named and the transition steadies",
+    },
+)
+
+
+def _news_keyword_re(keyword):
+    """Regex for one keyword. A single word gets word boundaries, so
+    'sues' does not match inside 'issues' and 'sec' does not match
+    inside 'sector'; a multi-word phrase matches as a phrase."""
+    if " " in keyword:
+        return re.compile(re.escape(keyword))
+    return re.compile(r"\b" + re.escape(keyword) + r"\b")
+
+
+def _compile_news_patterns():
+    compiled = []
+    for category in _NEWS_CATEGORIES:
+        pats = [(_news_keyword_re(k), True)
+                for k in category["primary"]]
+        pats += [(_news_keyword_re(k), False)
+                 for k in category["secondary"]]
+        compiled.append((category, pats))
+    return compiled
+
+
+_NEWS_PATTERNS = _compile_news_patterns()
+
+
+def _fetch_news(ticker):
+    """Recent company news via Polygon, as plain dicts with title,
+    published_at, publisher, url. Returns (articles, note); a news
+    outage returns ([], note) so the Story degrades gracefully."""
+    try:
+        from services.polygon_client import get_news
+        return get_news(ticker, limit=_NEWS_LIMIT) or [], None
+    except Exception as exc:
+        logger.warning("story news failed for %s: %s", ticker, exc)
+        return [], "company news unavailable"
+
+
+def _parse_news_date(value):
+    """Parse a Polygon published_utc string to an aware datetime, or
+    None when it is missing or unparseable."""
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _news_headwinds(ticker):
+    """Headwinds from recent company news. Returns (headwinds, note)."""
+    articles, note = _fetch_news(ticker)
+    if note:
+        return [], note
+    now = datetime.now(timezone.utc)
+    fresh = []
+    for article in articles or []:
+        published = _parse_news_date(article.get("published_at"))
+        if published is None:
+            continue
+        if (now - published).days > _NEWS_FRESH_DAYS:
+            continue
+        title = (article.get("title") or "").strip()
+        if not title:
+            continue
+        fresh.append((published, article))
+    headwinds = []
+    for category, pats in _NEWS_PATTERNS:
+        best = None
+        for published, article in fresh:
+            low = (article.get("title") or "").lower()
+            primary = any(p.search(low) for p, is_primary in pats
+                          if is_primary)
+            secondary = any(p.search(low) for p, is_primary in pats
+                            if not is_primary)
+            if not primary and not secondary:
+                continue
+            key = (2 if primary else 1, published)
+            if best is None or key > best[0]:
+                best = (key, published, article)
+        if best is None:
+            continue
+        _, published, article = best
+        headline = (article.get("title") or "").strip()
+        if len(headline) > 140:
+            headline = headline[:137] + "..."
+        publisher = (article.get("publisher") or "").strip()
+        day = published.strftime("%b %d, %Y").replace(" 0", " ")
+        detail = headline
+        if publisher:
+            detail += f" ({publisher}, {day})"
+        else:
+            detail += f" ({day})"
+        entry = {"title": category["title"], "detail": detail,
+                 "strength": category["strength"], "source": "news"}
+        url = (article.get("url") or "").strip()
+        if url:
+            entry["url"] = url
+        headwinds.append(entry)
+    return headwinds, None
+
+
 def _break_plain(title, detail):
     """Plain-language break condition for one headwind."""
     if title == "Rich valuation":
@@ -412,6 +568,12 @@ def _break_plain(title, detail):
         return "international sales keep stalling"
     if title == "Concentrated in one region":
         return "its biggest region slows down"
+    if title == "Governance investigation":
+        return "the investigation clears the company"
+    if title == "Legal action":
+        return "the legal case resolves"
+    if title == "Leadership change":
+        return "a successor is named and the transition steadies"
     return detail.lower() if detail else "conditions change"
 
 
@@ -1207,6 +1369,11 @@ def build_story(ticker):
 
     tailwinds, headwinds = build_tailwinds_headwinds(
         segments, growth_cagr, gross_margin, operating_margin, forward_pe)
+
+    news_headwinds, news_note = _news_headwinds(ticker)
+    if news_note:
+        notes.append(news_note)
+    headwinds = headwinds + news_headwinds
 
     targets = None
     try:

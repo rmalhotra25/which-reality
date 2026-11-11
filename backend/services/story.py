@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 _CACHE: dict = {}
 _CACHE_TTL = 3600
+_CACHE_MAX_ENTRIES = 200
 
 
 def _cache_get(ticker: str):
@@ -63,7 +64,10 @@ def _cache_get(ticker: str):
 
 
 def _cache_put(ticker: str, payload: dict):
-    _CACHE[ticker] = (time.time(), payload)
+    from services.cache_utils import bounded_put
+
+    bounded_put(_CACHE, ticker, payload, now=time.time(),
+                ttl_seconds=_CACHE_TTL, max_entries=_CACHE_MAX_ENTRIES)
 
 
 def clear_story_cache():

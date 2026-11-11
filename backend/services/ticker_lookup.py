@@ -105,6 +105,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 LOOKUP_CACHE_TTL_SECONDS = 120
+_LOOKUP_CACHE_MAX_ENTRIES = 100
 _TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 
 # Display names, matching the rule registry rows in
@@ -1962,7 +1963,7 @@ def lookup_ticker(ticker: str, db=None, explain_fn=None,
     now = time.monotonic()
     entry = _CACHE.get(ticker)
     if entry is not None:
-        result, stored_at = entry
+        stored_at, result = entry
         if now - stored_at < LOOKUP_CACHE_TTL_SECONDS:
             cached = copy.deepcopy(result)
             cached["cached"] = True
@@ -1970,7 +1971,11 @@ def lookup_ticker(ticker: str, db=None, explain_fn=None,
             return _attach_explanation(cached, ticker, explain_fn)
         del _CACHE[ticker]
     result = evaluate_lookup(ticker, db=db, signal_date=signal_date)
-    _CACHE[ticker] = (copy.deepcopy(result), now)
+    from services.cache_utils import bounded_put
+
+    bounded_put(_CACHE, ticker, copy.deepcopy(result), now=now,
+                ttl_seconds=LOOKUP_CACHE_TTL_SECONDS,
+                max_entries=_LOOKUP_CACHE_MAX_ENTRIES)
     fresh = copy.deepcopy(result)
     return _attach_explanation(fresh, ticker, explain_fn)
 

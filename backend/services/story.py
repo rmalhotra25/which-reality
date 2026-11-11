@@ -45,6 +45,7 @@ source is unavailable reports that, with the source named.
 
 import concurrent.futures
 import logging
+import math
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -89,11 +90,43 @@ def _pct1(value):
     return round(float(value) * 100, 1)
 
 
-def _to_float(value):
+def _finite(value):
+    """A finite float, or None.
+
+    NaN and infinities are not usable numbers and must never reach
+    the payload: Starlette's JSON encoder rejects them
+    (allow_nan=False) and the endpoint 500s. The price feed returns
+    a NaN close when Yahoo's history is degraded, so this is a live
+    failure mode, not a theoretical one (Nov 10 2026).
+    """
     try:
-        return float(value) if value is not None else None
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
+
+
+def _to_float(value):
+    return _finite(value)
+
+
+def _sanitize(value):
+    """Recursively replace non-finite floats with None.
+
+    Safety net for the payload: any NaN or infinity that slips
+    past the per-field guards becomes null instead of 500ing the
+    endpoint. Applied to the finished payload before it is cached
+    or returned.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _sanitize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize(v) for v in value)
+    return value
 
 
 def grade_gauges(growth_cagr, gross_margin, operating_margin,
@@ -570,17 +603,11 @@ def _fetch_peer_facts(tickers):
         if cap is None:
             raw_cap = info.get("marketCap")
             if raw_cap:
-                try:
-                    cap = float(raw_cap)
-                except (TypeError, ValueError):
-                    cap = None
+                cap = _finite(raw_cap)
         raw_pe = info.get("forwardPE")
         if raw_pe:
-            try:
-                pe = float(raw_pe)
-            except (TypeError, ValueError):
-                pe = None
-        return sym, (float(cap) if cap else None), pe, shares
+            pe = _finite(raw_pe)
+        return sym, _finite(cap), pe, shares
 
     out = {}
     shares_map = {}
@@ -825,18 +852,18 @@ def _fetch_polygon_fundamentals(ticker):
         if rev and rev > 0:
             gp = fin.get("gross_profit")
             oi = fin.get("operating_income")
-            if gp is not None:
-                out["gross_margin"] = float(gp) / float(rev)
-            if oi is not None:
-                out["operating_margin"] = float(oi) / float(rev)
-        cash = fin.get("cash")
-        debt = fin.get("total_debt")
+            if gp is not None and _finite(gp) is not None:
+                out["gross_margin"] = _finite(gp) / _finite(rev)
+            if oi is not None and _finite(oi) is not None:
+                out["operating_margin"] = _finite(oi) / _finite(rev)
+        cash = _finite(fin.get("cash"))
+        debt = _finite(fin.get("total_debt"))
         if cash is not None and debt is not None:
-            out["net_cash"] = float(cash) - float(debt)
-            out["total_debt"] = float(debt)
-        fcf = fin.get("free_cash_flow")
+            out["net_cash"] = cash - debt
+            out["total_debt"] = debt
+        fcf = _finite(fin.get("free_cash_flow"))
         if fcf is not None:
-            out["free_cashflow"] = float(fcf)
+            out["free_cashflow"] = fcf
         det = get_ticker_details(ticker) or {}
         if det.get("name"):
             out["name"] = det["name"]
@@ -961,7 +988,7 @@ def _polygon_pe(ticker, shares=None):
         eps = float(ni) / float(shares)
         if eps <= 0:
             return None
-        return round(float(price) / eps, 2)
+        return _finite(round(float(price) / eps, 2))
     except Exception as exc:
         logger.warning("story Polygon P/E failed for %s: %s", ticker, exc)
         return None
@@ -983,8 +1010,11 @@ def _fetch_week52(ticker, price):
             low = float(hist["Low"].min())
             high = float(hist["High"].max())
             if low and high and high > low:
+                pos = None
+                if price is not None and price == price:
+                    pos = round((price - low) / (high - low) * 100, 1)
                 return {"low": round(low, 2), "high": round(high, 2),
-                        "position_pct": round((price - low) / (high - low) * 100, 1)}
+                        "position_pct": pos}
     except Exception as exc:
         logger.warning("story week52 Yahoo failed for %s: %s", ticker, exc)
     try:
@@ -996,8 +1026,11 @@ def _fetch_week52(ticker, price):
             low = min(closes)
             high = max(closes)
             if low and high and high > low:
+                pos = None
+                if price is not None and price == price:
+                    pos = round((price - low) / (high - low) * 100, 1)
                 return {"low": round(low, 2), "high": round(high, 2),
-                        "position_pct": round((price - low) / (high - low) * 100, 1)}
+                        "position_pct": pos}
     except Exception as exc:
         logger.warning("story week52 Polygon failed for %s: %s", ticker, exc)
     return None
@@ -1021,6 +1054,12 @@ def build_story(ticker):
                    "reason": price_error or "no price available"}
         _cache_put(ticker, payload)
         return payload
+    if price != price:
+        # NaN: the price feed returned no usable close. Keep the
+        # Story (the grade does not need the price) with the
+        # price-dependent fields null, instead of 500ing on NaN.
+        price = None
+        price_as_of = None
 
     info = _fetch_yinfo(ticker) or {}
     # Fallback sources, used only for fields Yahoo company data did
@@ -1085,15 +1124,11 @@ def build_story(ticker):
     net_cash = None
     total_debt = None
     free_cashflow = _to_float(info.get("freeCashflow"))
-    total_cash = info.get("totalCash")
-    info_debt = info.get("totalDebt")
+    total_cash = _to_float(info.get("totalCash"))
+    info_debt = _to_float(info.get("totalDebt"))
     if total_cash is not None and info_debt is not None:
-        try:
-            net_cash = float(total_cash) - float(info_debt)
-            total_debt = float(info_debt)
-        except (TypeError, ValueError):
-            net_cash = None
-            total_debt = None
+        net_cash = total_cash - info_debt
+        total_debt = info_debt
     if net_cash is None:
         p = _poly()
         if p.get("net_cash") is not None:
@@ -1177,8 +1212,10 @@ def build_story(ticker):
         if mean is not None and low is not None and high is not None:
             mean = float(mean)
             targets = {"low": round(float(low), 2), "mean": round(mean, 2),
-                       "high": round(float(high), 2), "now": round(price, 2),
-                       "mean_vs_now_pct": round((mean - price) / price * 100, 1),
+                       "high": round(float(high), 2),
+                       "now": round(price, 2) if price is not None else None,
+                       "mean_vs_now_pct": round((mean - price) / price * 100, 1)
+                       if price else None,
                        "analysts": _fetch_recommendations(ticker),
                        "source": "yahoo"}
     except (TypeError, ValueError):
@@ -1188,8 +1225,9 @@ def build_story(ticker):
         if fmp:
             mean = fmp["mean"]
             targets = {"low": fmp["low"], "mean": mean, "high": fmp["high"],
-                       "now": round(price, 2),
-                       "mean_vs_now_pct": round((mean - price) / price * 100, 1),
+                       "now": round(price, 2) if price is not None else None,
+                       "mean_vs_now_pct": round((mean - price) / price * 100, 1)
+                       if price else None,
                        "analysts": None, "source": "fmp"}
             _used("FMP", "targets")
     if targets is None:
@@ -1197,8 +1235,9 @@ def build_story(ticker):
         if benz:
             mean = benz["mean"]
             targets = {"low": benz["low"], "mean": mean, "high": benz["high"],
-                       "now": round(price, 2),
-                       "mean_vs_now_pct": round((mean - price) / price * 100, 1),
+                       "now": round(price, 2) if price is not None else None,
+                       "mean_vs_now_pct": round((mean - price) / price * 100, 1)
+                       if price else None,
                        "analysts": None, "source": "benzinga",
                        "count": benz.get("count")}
             _used("Polygon Benzinga actions", "targets")
@@ -1241,7 +1280,7 @@ def build_story(ticker):
         "status": "ok",
         "ticker": ticker,
         "name": name,
-        "price": round(price, 2),
+        "price": round(price, 2) if price is not None else None,
         "price_as_of": price_as_of,
         "sector": sector,
         "industry": industry,
@@ -1267,5 +1306,6 @@ def build_story(ticker):
         "consistency_note": consistency_note,
         "notes": notes,
     }
+    payload = _sanitize(payload)
     _cache_put(ticker, payload)
     return payload

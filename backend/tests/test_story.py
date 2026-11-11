@@ -508,3 +508,35 @@ def test_fetch_peer_facts_pe_chain(monkeypatch):
     assert out["BBB"]["forward_pe"] == 30.0  # FMP ratios
     assert out["CCC"]["forward_pe"] == 40.0  # Polygon-computed
     assert out["BBB"]["market_cap"] == 200e9
+
+
+def test_nan_price_does_not_500(monkeypatch):
+    """Nov 10 2026: the live /api/story/PLTR 500'd after the
+    fallback merge. The price feed returned a NaN close, and the
+    NaN reached the payload; Starlette's JSON encoder rejects
+    non-finite floats (allow_nan=False). The Story now keeps its
+    grade with the price-dependent fields null, and the payload
+    serializes under the same rule Starlette uses."""
+    import json
+
+    payload = _stub_build(
+        monkeypatch,
+        _fetch_price=lambda t: (float("nan"), None, None))
+    assert payload["status"] == "ok"
+    assert payload["grade"] == "B"
+    assert payload["price"] is None
+    assert payload["targets"]["now"] is None
+    assert payload["targets"]["mean_vs_now_pct"] is None
+    json.dumps(payload, allow_nan=False)
+
+
+def test_to_float_and_sanitize_reject_nonfinite():
+    import services.story as story
+
+    assert story._to_float(float("nan")) is None
+    assert story._to_float(float("inf")) is None
+    assert story._to_float(42.5) == 42.5
+    assert story._sanitize({"a": float("nan"),
+                            "b": [1.0, float("inf")],
+                            "c": {"d": float("nan")}}) == {
+        "a": None, "b": [1.0, None], "c": {"d": None}}

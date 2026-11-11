@@ -18,7 +18,7 @@ _SCREENER_CACHE: dict = {}
 _CACHE_TTL = 3600
 
 
-def _get(path: str, params: dict | None = None):
+def _get(path: str, params: dict | None = None, timeout: int = 15):
     key = settings.fmp_api_key
     if not key:
         return None
@@ -27,7 +27,7 @@ def _get(path: str, params: dict | None = None):
     url = f"{_FMP_BASE}{path}?{urlencode(q)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "TradeIQ/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception as e:
         logger.warning("FMP %s failed: %s", path, e)

@@ -315,6 +315,57 @@ def get_ticker_snapshot(ticker: str) -> dict:
         return {}
 
 
+def get_ticker_details(ticker: str) -> dict:
+    """Company name, market cap, shares outstanding, industry text.
+
+    From Polygon ticker details (v3 reference). Returns {} on any
+    failure. Market cap here is the source the Story uses for peer
+    shares when Yahoo company data is unavailable on the server.
+    """
+    c = _client()
+    try:
+        det = c.get_ticker_details(ticker)
+        if not det:
+            return {}
+        return {
+            "name": getattr(det, "name", None),
+            "market_cap": _num(getattr(det, "market_cap", None)),
+            "shares_outstanding": _num(
+                getattr(det, "weighted_shares_outstanding", None)),
+            "sic_description": getattr(det, "sic_description", None),
+        }
+    except Exception as e:
+        logger.debug("get_ticker_details failed for %s: %s", ticker, e)
+        return {}
+
+
+def _num(value):
+    try:
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def get_related_companies(ticker: str) -> list[str]:
+    """Tickers related to this one, from Polygon (news and returns).
+
+    The Story's peer-list fallback when FMP stock-peers is
+    unavailable. Returns [] on any failure.
+    """
+    c = _client()
+    try:
+        items = c.get_related_companies(ticker)
+        out = []
+        for item in (items or []):
+            sym = getattr(item, "ticker", None)
+            if sym:
+                out.append(str(sym).upper())
+        return out
+    except Exception as e:
+        logger.debug("get_related_companies failed for %s: %s", ticker, e)
+        return []
+
+
 def get_analyst_ratings(ticker: str, limit: int = 5) -> list[dict]:
     """Recent analyst upgrades/downgrades and price targets via Polygon Benzinga feed."""
     c = _client()

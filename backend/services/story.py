@@ -89,6 +89,13 @@ def _pct1(value):
     return round(float(value) * 100, 1)
 
 
+def _to_float(value):
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def grade_gauges(growth_cagr, gross_margin, operating_margin,
                  forward_pe, peer_median_pe,
                  net_cash=None, total_debt=None,
@@ -532,56 +539,125 @@ def _fetch_recommendations(ticker):
         return None
 
 
-def _fetch_peer_market_caps(tickers):
-    """marketCap per ticker via yfinance info, in parallel."""
-    def _one(sym):
+def _fetch_peer_facts(tickers):
+    """market_cap and forward_pe per ticker, from the working sources.
+
+    Caps come from Polygon ticker details first, Yahoo info second.
+    P/E comes from Yahoo info first; for the largest caps still
+    missing one after ranking, FMP ratios second and a
+    Polygon-computed P/E third. A peer with no market cap is dropped
+    by the caller; a peer with no P/E is kept but skipped by the
+    median. Runs in parallel.
+    """
+    def _caps(sym):
+        cap = None
+        pe = None
+        shares = None
+        try:
+            from services.polygon_client import get_ticker_details
+
+            det = get_ticker_details(sym) or {}
+            cap = det.get("market_cap")
+            shares = det.get("shares_outstanding")
+        except Exception:
+            pass
         try:
             import yfinance as yf
 
             info = yf.Ticker(sym).info or {}
-            cap = info.get("marketCap")
-            pe = info.get("forwardPE")
-            return sym, (float(cap) if cap else None), (float(pe) if pe else None)
         except Exception:
-            return sym, None, None
+            info = {}
+        if cap is None:
+            raw_cap = info.get("marketCap")
+            if raw_cap:
+                try:
+                    cap = float(raw_cap)
+                except (TypeError, ValueError):
+                    cap = None
+        raw_pe = info.get("forwardPE")
+        if raw_pe:
+            try:
+                pe = float(raw_pe)
+            except (TypeError, ValueError):
+                pe = None
+        return sym, (float(cap) if cap else None), pe, shares
 
     out = {}
+    shares_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        for sym, cap, pe in pool.map(_one, tickers):
+        for sym, cap, pe, shares in pool.map(_caps, tickers):
             out[sym] = {"market_cap": cap, "forward_pe": pe}
+            shares_map[sym] = shares
+    ranked = sorted(
+        (s for s in tickers if out.get(s, {}).get("market_cap")),
+        key=lambda s: out[s]["market_cap"], reverse=True)[:8]
+    missing = [s for s in ranked if not out[s].get("forward_pe")]
+
+    def _pe(sym):
+        try:
+            from services.fmp_client import _get
+
+            rows = _get(f"/ratios/{sym}", {"limit": 1}, timeout=8)
+            if rows and isinstance(rows, list) \
+                    and rows[0].get("priceEarningsRatio"):
+                return sym, float(rows[0]["priceEarningsRatio"])
+        except Exception:
+            pass
+        shares = shares_map.get(sym)
+        if shares:
+            value = _polygon_pe(sym, shares=shares)
+            if value:
+                return sym, value
+        return sym, None
+
+    if missing:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for sym, pe in pool.map(_pe, missing):
+                if pe:
+                    out[sym]["forward_pe"] = pe
     return out
 
 
 def _fetch_peers(ticker, name):
     """Top 8 peers by market cap in the same industry, with shares.
 
-    Peers come from FMP stock-peers (free tier). Market caps come
-    from yfinance. Shares are of the summed market cap of the eight
-    shown, including the subject. Returns None when the peer list
+    Peer list: FMP stock-peers first, Polygon related companies
+    second. Market caps and forward P/E come from _fetch_peer_facts.
+    Shares are of the summed market cap of the eight shown,
+    including the subject. Returns (rows, note): the note names the
+    fallback source when one was used, or the failure when the list
     cannot be fetched.
     """
     try:
         from services.fmp_client import _get
 
         raw = _get("/stock-peers", {"symbol": ticker})
-        if not raw or not isinstance(raw, list):
-            return None, "peer list unavailable from FMP"
         symbols = []
-        for row in raw:
-            if isinstance(row, dict) and row.get("symbol"):
-                symbols.append(str(row["symbol"]).upper())
-            elif isinstance(row, str):
-                symbols.append(row.upper())
+        peer_source = "fmp"
+        if raw and isinstance(raw, list):
+            for row in raw:
+                if isinstance(row, dict) and row.get("symbol"):
+                    symbols.append(str(row["symbol"]).upper())
+                elif isinstance(row, str):
+                    symbols.append(row.upper())
+        if not symbols:
+            try:
+                from services.polygon_client import get_related_companies
+
+                symbols = get_related_companies(ticker) or []
+                peer_source = "polygon"
+            except Exception:
+                symbols = []
         symbols = [s for s in dict.fromkeys(symbols) if s != ticker][:12]
         if not symbols:
-            return None, "peer list came back empty from FMP"
-        caps = _fetch_peer_market_caps([ticker] + symbols)
+            return None, "peer list unavailable from FMP and Polygon"
+        facts = _fetch_peer_facts([ticker] + symbols)
         rows = []
         for sym in [ticker] + symbols:
-            cap = caps.get(sym, {}).get("market_cap")
+            cap = facts.get(sym, {}).get("market_cap")
             if cap:
                 rows.append({"ticker": sym, "market_cap": cap,
-                             "forward_pe": caps.get(sym, {}).get("forward_pe"),
+                             "forward_pe": facts.get(sym, {}).get("forward_pe"),
                              "is_subject": sym == ticker,
                              "name": name if sym == ticker else sym})
         rows.sort(key=lambda r: r["market_cap"], reverse=True)
@@ -592,7 +668,11 @@ def _fetch_peers(ticker, name):
         for r in rows:
             r["share_pct"] = round(r["market_cap"] / total * 100, 1)
             del r["market_cap"]
-        return rows, None
+        note = None
+        if peer_source == "polygon":
+            note = ("Peers from Polygon related companies "
+                    "(FMP stock-peers unavailable).")
+        return rows, note
     except Exception as exc:
         logger.warning("story peers failed for %s: %s", ticker, exc)
         return None, f"peer fetch failed: {exc}"
@@ -707,17 +787,220 @@ def _fetch_dcf(ticker, price):
 
 
 def _fetch_earnings_date(ticker):
-    """Next earnings date from the Finnhub calendar, or None."""
-    try:
-        import services.alert_engine as ae
+    """Next earnings date from the Finnhub 120-day calendar, or None.
 
-        days = ae._earnings_days(ticker)
+    The 30-day window the alert engine uses is correct for its
+    earnings gate, but a name that reported this month has its next
+    print a quarter out, and the Story should show that date rather
+    than reading unknown.
+    """
+    try:
+        from services.finnhub_client import get_earnings_within
+
+        days = get_earnings_within(ticker, days=120)
         if days is None:
             return None
         return (date.today() + timedelta(days=days)).isoformat()
     except Exception as exc:
         logger.warning("story earnings date failed for %s: %s", ticker, exc)
         return None
+
+
+def _fetch_polygon_fundamentals(ticker):
+    """Margins, cash and debt, free cash flow, name from Polygon.
+
+    The fallback when Yahoo company data (yfinance info) is empty
+    on the server. Financials are the latest annual SEC filing:
+    margins are gross profit and operating income over revenue.
+    Debt is long-term debt only, so net cash from here understates
+    debt slightly; the gauge still judges net cash first, as
+    designed. Returns a dict, possibly empty.
+    """
+    out = {}
+    try:
+        from services.polygon_client import get_financials, get_ticker_details
+
+        fin = get_financials(ticker) or {}
+        rev = fin.get("revenue")
+        if rev and rev > 0:
+            gp = fin.get("gross_profit")
+            oi = fin.get("operating_income")
+            if gp is not None:
+                out["gross_margin"] = float(gp) / float(rev)
+            if oi is not None:
+                out["operating_margin"] = float(oi) / float(rev)
+        cash = fin.get("cash")
+        debt = fin.get("total_debt")
+        if cash is not None and debt is not None:
+            out["net_cash"] = float(cash) - float(debt)
+            out["total_debt"] = float(debt)
+        fcf = fin.get("free_cash_flow")
+        if fcf is not None:
+            out["free_cashflow"] = float(fcf)
+        det = get_ticker_details(ticker) or {}
+        if det.get("name"):
+            out["name"] = det["name"]
+        if det.get("market_cap"):
+            out["market_cap"] = det["market_cap"]
+        if det.get("shares_outstanding"):
+            out["shares_outstanding"] = det["shares_outstanding"]
+        if det.get("sic_description"):
+            out["sic_description"] = det["sic_description"]
+    except Exception as exc:
+        logger.warning("story Polygon fundamentals failed for %s: %s", ticker, exc)
+    return out
+
+
+def _fetch_fmp_profile(ticker):
+    """Company name, sector, industry from FMP, or None."""
+    try:
+        from services.fmp_client import _get
+
+        rows = _get("/profile", {"symbol": ticker})
+        if rows and isinstance(rows, list) and isinstance(rows[0], dict):
+            r = rows[0]
+            return {"name": r.get("companyName"),
+                    "sector": r.get("sector"),
+                    "industry": r.get("industry")}
+    except Exception as exc:
+        logger.warning("story FMP profile failed for %s: %s", ticker, exc)
+    return None
+
+
+def _fetch_fmp_targets(ticker):
+    """Analyst target mean/low/high from FMP consensus, or None.
+
+    FMP consensus publishes no Buy/Hold/Sell counts, so counts stay
+    unavailable and the panel shows targets only.
+    """
+    try:
+        from services.fmp_client import _get
+
+        rows = _get("/price-target-consensus", {"symbol": ticker})
+        if rows and isinstance(rows, list) and isinstance(rows[0], dict):
+            r = rows[0]
+            mean = r.get("targetConsensus") or r.get("targetMedian")
+            low = r.get("targetLow")
+            high = r.get("targetHigh")
+            if mean is not None and low is not None and high is not None:
+                return {"low": round(float(low), 2),
+                        "mean": round(float(mean), 2),
+                        "high": round(float(high), 2)}
+    except Exception as exc:
+        logger.warning("story FMP targets failed for %s: %s", ticker, exc)
+    return None
+
+
+def _fetch_benzinga_targets(ticker):
+    """Mean/low/high of recent analyst price targets, or None.
+
+    Last resort for the Outlook panel when both Yahoo targets and
+    FMP consensus are missing. This is the mean of the most recent
+    analyst actions, not a consensus, and the panel labels it so.
+    Needs at least 3 priced actions.
+    """
+    try:
+        from services.polygon_client import get_analyst_ratings
+
+        pts = []
+        for item in get_analyst_ratings(ticker, limit=10) or []:
+            pt = item.get("pt")
+            if pt:
+                try:
+                    pts.append(float(pt))
+                except (TypeError, ValueError):
+                    continue
+        if len(pts) < 3:
+            return None
+        return {"low": round(min(pts), 2),
+                "mean": round(sum(pts) / len(pts), 2),
+                "high": round(max(pts), 2),
+                "count": len(pts)}
+    except Exception as exc:
+        logger.warning("story Benzinga targets failed for %s: %s", ticker, exc)
+        return None
+
+
+def _fetch_fmp_pe(ticker):
+    """Forward P/E from FMP ratios, or None."""
+    try:
+        from services.fmp_client import _get
+
+        rows = _get(f"/ratios/{ticker}", {"limit": 1}, timeout=8)
+        if rows and isinstance(rows, list) and rows[0].get("priceEarningsRatio"):
+            return float(rows[0]["priceEarningsRatio"])
+    except Exception as exc:
+        logger.warning("story FMP P/E failed for %s: %s", ticker, exc)
+    return None
+
+
+def _polygon_pe(ticker, shares=None):
+    """Forward P/E computed from Polygon: prev close / EPS.
+
+    EPS is latest annual net income over shares outstanding.
+    Returns None when any piece is missing or EPS is not positive.
+    """
+    try:
+        from services.polygon_client import (get_financials,
+                                             get_ticker_details,
+                                             get_ticker_snapshot)
+
+        if not shares:
+            det = get_ticker_details(ticker) or {}
+            shares = det.get("shares_outstanding")
+        if not shares:
+            return None
+        fin = get_financials(ticker) or {}
+        ni = fin.get("net_income")
+        if ni is None or ni <= 0:
+            return None
+        snap = get_ticker_snapshot(ticker) or {}
+        price = snap.get("prev_close") or snap.get("price")
+        if not price:
+            return None
+        eps = float(ni) / float(shares)
+        if eps <= 0:
+            return None
+        return round(float(price) / eps, 2)
+    except Exception as exc:
+        logger.warning("story Polygon P/E failed for %s: %s", ticker, exc)
+        return None
+
+
+def _fetch_week52(ticker, price):
+    """52-week low/high and where the price sits in the range.
+
+    Yahoo 1-year history first (the same source the price bars
+    use), Polygon daily closes second. Returns None when neither
+    works.
+    """
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist is not None and not hist.empty \
+                and "High" in hist and "Low" in hist:
+            low = float(hist["Low"].min())
+            high = float(hist["High"].max())
+            if low and high and high > low:
+                return {"low": round(low, 2), "high": round(high, 2),
+                        "position_pct": round((price - low) / (high - low) * 100, 1)}
+    except Exception as exc:
+        logger.warning("story week52 Yahoo failed for %s: %s", ticker, exc)
+    try:
+        from services.polygon_client import get_dated_closes
+
+        rows = get_dated_closes(ticker, days=250) or []
+        closes = [float(r[1]) for r in rows if len(r) > 1]
+        if closes:
+            low = min(closes)
+            high = max(closes)
+            if low and high and high > low:
+                return {"low": round(low, 2), "high": round(high, 2),
+                        "position_pct": round((price - low) / (high - low) * 100, 1)}
+    except Exception as exc:
+        logger.warning("story week52 Polygon failed for %s: %s", ticker, exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -740,46 +1023,85 @@ def build_story(ticker):
         return payload
 
     info = _fetch_yinfo(ticker) or {}
-    name = info.get("longName") or info.get("shortName") or ticker
+    # Fallback sources, used only for fields Yahoo company data did
+    # not supply. The Story keeps its letter grade in every case;
+    # the fallbacks exist so the gauges are judged on real numbers
+    # instead of reading Unknown. Provenance is reported in notes.
+    poly = None
+    profile = None
+    fallback_sources = {}
+
+    def _poly():
+        nonlocal poly
+        if poly is None:
+            poly = _fetch_polygon_fundamentals(ticker)
+        return poly or {}
+
+    def _profile():
+        nonlocal profile
+        if profile is None:
+            profile = _fetch_fmp_profile(ticker)
+        return profile or {}
+
+    def _used(source, field):
+        fallback_sources.setdefault(source, [])
+        if field not in fallback_sources[source]:
+            fallback_sources[source].append(field)
+
+    name = info.get("longName") or info.get("shortName")
+    if not name:
+        name = _profile().get("name")
+        if name:
+            _used("FMP", "company name")
+    if not name:
+        name = _poly().get("name")
+        if name:
+            _used("Polygon SEC filings", "company name")
+    name = name or ticker
     sector = info.get("sector")
+    if not sector:
+        sector = _profile().get("sector")
+        if sector:
+            _used("FMP", "sector")
     industry = info.get("industry")
-    forward_pe = info.get("forwardPE")
-    try:
-        forward_pe = float(forward_pe) if forward_pe else None
-    except (TypeError, ValueError):
-        forward_pe = None
-    gross_margin = info.get("grossMargins")
-    operating_margin = info.get("operatingMargins")
-    try:
-        gross_margin = float(gross_margin) if gross_margin is not None else None
-    except (TypeError, ValueError):
-        gross_margin = None
-    try:
-        operating_margin = float(operating_margin) if operating_margin is not None else None
-    except (TypeError, ValueError):
-        operating_margin = None
-    debt_to_equity = info.get("debtToEquity")
-    try:
-        debt_to_equity = float(debt_to_equity) if debt_to_equity is not None else None
-    except (TypeError, ValueError):
-        debt_to_equity = None
+    if not industry:
+        industry = _profile().get("industry")
+        if industry:
+            _used("FMP", "industry")
+    if not industry:
+        industry = _poly().get("sic_description")
+        if industry:
+            _used("Polygon SEC filings", "industry")
+    forward_pe = _to_float(info.get("forwardPE"))
+    gross_margin = _to_float(info.get("grossMargins"))
+    operating_margin = _to_float(info.get("operatingMargins"))
+    if gross_margin is None and operating_margin is None:
+        p = _poly()
+        gross_margin = p.get("gross_margin")
+        operating_margin = p.get("operating_margin")
+        if gross_margin is not None or operating_margin is not None:
+            _used("Polygon SEC filings", "margins")
+    debt_to_equity = _to_float(info.get("debtToEquity"))
     net_cash = None
     total_debt = None
-    free_cashflow = None
-    try:
-        total_cash = info.get("totalCash")
-        total_debt = info.get("totalDebt")
-        if total_cash is not None and total_debt is not None:
-            net_cash = float(total_cash) - float(total_debt)
-            total_debt = float(total_debt)
-    except (TypeError, ValueError):
-        net_cash = None
-        total_debt = None
-    try:
-        free_cashflow = info.get("freeCashflow")
-        free_cashflow = float(free_cashflow) if free_cashflow is not None else None
-    except (TypeError, ValueError):
-        free_cashflow = None
+    free_cashflow = _to_float(info.get("freeCashflow"))
+    total_cash = info.get("totalCash")
+    info_debt = info.get("totalDebt")
+    if total_cash is not None and info_debt is not None:
+        try:
+            net_cash = float(total_cash) - float(info_debt)
+            total_debt = float(info_debt)
+        except (TypeError, ValueError):
+            net_cash = None
+            total_debt = None
+    if net_cash is None:
+        p = _poly()
+        if p.get("net_cash") is not None:
+            net_cash = p["net_cash"]
+            total_debt = p.get("total_debt")
+            _used("Polygon SEC filings", "debt")
+        if free_cashflow is None and p.get("free_cashflow") is not None:
+            free_cashflow = p["free_cashflow"]
     eps_ttm = info.get("trailingEps")
     try:
         eps_ttm = round(float(eps_ttm), 2) if eps_ttm is not None else None
@@ -794,6 +1116,8 @@ def build_story(ticker):
                       "position_pct": round((price - float(low)) / (float(high) - float(low)) * 100, 1)}
     except (TypeError, ValueError):
         week52 = None
+    if week52 is None:
+        week52 = _fetch_week52(ticker, price)
 
     history = _fetch_revenue_history(ticker)
     last_reported_year = history[-1]["year"] if history else None
@@ -821,6 +1145,17 @@ def build_story(ticker):
             peer_median_pe = pes[len(pes) // 2] if len(pes) % 2 == 1 else (
                 pes[len(pes) // 2 - 1] + pes[len(pes) // 2]) / 2.0
 
+    if forward_pe is None:
+        forward_pe = _fetch_fmp_pe(ticker)
+        if forward_pe is not None:
+            _used("FMP", "valuation")
+    if forward_pe is None:
+        value = _polygon_pe(ticker,
+                            shares=_poly().get("shares_outstanding"))
+        if value:
+            forward_pe = value
+            _used("Polygon SEC filings", "valuation")
+
     graded = grade_gauges(growth_cagr, gross_margin, operating_margin,
                           forward_pe, peer_median_pe,
                           net_cash=net_cash, total_debt=total_debt,
@@ -844,24 +1179,48 @@ def build_story(ticker):
             targets = {"low": round(float(low), 2), "mean": round(mean, 2),
                        "high": round(float(high), 2), "now": round(price, 2),
                        "mean_vs_now_pct": round((mean - price) / price * 100, 1),
-                       "analysts": _fetch_recommendations(ticker)}
+                       "analysts": _fetch_recommendations(ticker),
+                       "source": "yahoo"}
     except (TypeError, ValueError):
         targets = None
+    if targets is None:
+        fmp = _fetch_fmp_targets(ticker)
+        if fmp:
+            mean = fmp["mean"]
+            targets = {"low": fmp["low"], "mean": mean, "high": fmp["high"],
+                       "now": round(price, 2),
+                       "mean_vs_now_pct": round((mean - price) / price * 100, 1),
+                       "analysts": None, "source": "fmp"}
+            _used("FMP", "targets")
+    if targets is None:
+        benz = _fetch_benzinga_targets(ticker)
+        if benz:
+            mean = benz["mean"]
+            targets = {"low": benz["low"], "mean": mean, "high": benz["high"],
+                       "now": round(price, 2),
+                       "mean_vs_now_pct": round((mean - price) / price * 100, 1),
+                       "analysts": None, "source": "benzinga",
+                       "count": benz.get("count")}
+            _used("Polygon Benzinga actions", "targets")
     if targets is None:
         notes.append("analyst price targets unavailable")
 
     dcf, dcf_note = _fetch_dcf(ticker, price)
     if dcf_note:
         notes.append(dcf_note)
-    if targets is not None:
-        targets["dcf_base"] = dcf["base"] if dcf else None
-        targets["dcf_bear"] = dcf["bear"] if dcf else None
-        targets["dcf_bull"] = dcf["bull"] if dcf else None
+    dcf_payload = None
+    if dcf:
+        dcf_payload = {"base": dcf.get("base"), "bear": dcf.get("bear"),
+                       "bull": dcf.get("bull"), "verdict": dcf.get("verdict")}
+    if targets is not None and dcf_payload:
+        targets["dcf_base"] = dcf_payload["base"]
+        targets["dcf_bear"] = dcf_payload["bear"]
+        targets["dcf_bull"] = dcf_payload["bull"]
 
     earnings_date = _fetch_earnings_date(ticker)
 
     consistency_note = None
-    longterm_verdict = dcf["verdict"] if dcf else None
+    longterm_verdict = dcf_payload["verdict"] if dcf_payload else None
     if longterm_verdict in ("weak",) and graded["grade"] in ("A", "B"):
         consistency_note = (
             f"The Story grade is {graded['grade']} but the long-term lane "
@@ -872,6 +1231,11 @@ def build_story(ticker):
             f"The Story grade is {graded['grade']} but the long-term lane "
             "says strong. The two disagree; the DCF above is the lane's number, "
             "so check the long-term card before acting on the grade.")
+
+    if fallback_sources:
+        parts = [f"{', '.join(fields)} from {source}"
+                 for source, fields in fallback_sources.items()]
+        notes.append("Fallback sources used: " + "; ".join(parts) + ".")
 
     payload = {
         "status": "ok",
@@ -895,6 +1259,7 @@ def build_story(ticker):
                    "gross_margin_pct": _pct1(gross_margin),
                    "eps_ttm": eps_ttm},
         "targets": targets,
+        "dcf": dcf_payload,
         "tailwinds": tailwinds,
         "headwinds": headwinds,
         "what_would_change": what_would_change(headwinds),

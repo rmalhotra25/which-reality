@@ -72,6 +72,12 @@ export default function StorySection({ ticker }) {
     }
   }
 
+  // DCF fair value, base case. The backend now surfaces it at the
+  // top level so the Outlook panel shows it even when analyst
+  // targets are missing; the targets.dcf_base field is kept for
+  // older cached payloads.
+  const dcfBase = story?.dcf?.base ?? story?.targets?.dcf_base ?? null
+
   return (
     <div style={S.card}>
       <button style={S.button} type="button" onClick={toggle}>
@@ -225,7 +231,12 @@ export default function StorySection({ ticker }) {
               <div style={S.panelTitle}>Outlook</div>
               {story.targets ? (
                 <>
-                  <div style={{ ...S.note, marginTop: '4px' }}>Analyst price targets</div>
+                  <div style={{ ...S.note, marginTop: '4px' }}>
+                    Analyst price targets
+                    {story.targets.source === 'benzinga' && (
+                      <> (recent analyst actions, not a consensus{story.targets.count ? `, ${story.targets.count} actions` : ''})</>
+                    )}
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#a0aec0', marginTop: '8px' }}>
                     <span>${story.targets.low} low</span>
                     <span style={{ color: '#4299e1', fontWeight: 800 }}>${story.targets.mean} mean target</span>
@@ -242,12 +253,16 @@ export default function StorySection({ ticker }) {
                       <div style={{ flex: Math.max(1, story.targets.analysts.sell), background: '#e53e3e', color: '#fff', padding: '4px 6px' }}>{story.targets.analysts.sell} Sell</div>
                     </div>
                   )}
-                  {story.targets.dcf_base != null && (
+                  {dcfBase != null && (
                     <div style={{ ...S.note, marginTop: '8px' }}>
-                      DCF fair value, base case: ${story.targets.dcf_base} a share. This is the same DCF as the long-term card, shown next to the analyst mean so the two anchors can be compared.
+                      DCF fair value, base case: ${dcfBase} a share. This is the same DCF as the long-term card, shown next to the analyst mean so the two anchors can be compared.
                     </div>
                   )}
                 </>
+              ) : dcfBase != null ? (
+                <div style={{ ...S.note, marginTop: '8px' }}>
+                  Analyst targets unavailable. DCF fair value, base case: ${dcfBase} a share. This is the same DCF as the long-term card.
+                </div>
               ) : (
                 <div style={{ ...S.note, marginTop: '8px' }}>Analyst targets unavailable.</div>
               )}

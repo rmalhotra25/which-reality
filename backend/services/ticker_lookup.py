@@ -178,6 +178,10 @@ class LookupInputs:
     price_source: str = "yfinance_ohlcv"
     earnings_days: Optional[int] = None
     earnings_date: Optional[str] = None
+    # Which source supplied the earnings date, from the composite
+    # resolver (services/earnings.py): fmp, polygon, yahoo or
+    # finnhub. None when no source knew a future date.
+    earnings_source: Optional[str] = None
     iv_percentile: Optional[float] = None
     iv_source: str = "unavailable"
     spy_gate: Optional[bool] = None
@@ -1723,10 +1727,20 @@ class LiveLookupProvider:
             data_timestamp = last.date().isoformat() if hasattr(last, "date") else str(last)
         except Exception:
             data_timestamp = None
-        earnings_days = ae._earnings_days(ticker)
+        # Next earnings date from the composite resolver (FMP,
+        # Polygon, Yahoo, Finnhub, first future date wins), not
+        # Finnhub alone on a 30-day window: a name that reported
+        # this month has its next print a quarter out, and the old
+        # 30-day window read that as unknown and fail-closed the
+        # verdict to CANNOT JUDGE. ZETA was the case.
+        from services.earnings import resolve_next_earnings
+
+        earnings_date_obj, earnings_source = resolve_next_earnings(ticker)
+        earnings_days = None
         earnings_date = None
-        if earnings_days is not None:
-            earnings_date = (date.today() + timedelta(days=earnings_days)).isoformat()
+        if earnings_date_obj is not None:
+            earnings_date = earnings_date_obj.isoformat()
+            earnings_days = (earnings_date_obj - date.today()).days
         iv_pct = ae._iv_percentile(self.db, ticker)
         spy_gate, spy_detail = ae._spy_gate()
         chain_puts, chain_calls, chain_source, chain_error = self._fetch_chain(
@@ -1739,6 +1753,7 @@ class LiveLookupProvider:
             price_source="yfinance_ohlcv",
             earnings_days=earnings_days,
             earnings_date=earnings_date,
+            earnings_source=earnings_source,
             iv_percentile=iv_pct,
             iv_source="iv_store" if iv_pct is not None else "unavailable",
             spy_gate=spy_gate,
@@ -1834,7 +1849,7 @@ def evaluate_lookup(ticker: str, *, inputs: Optional[LookupInputs] = None,
         "status": "known" if earnings_known else "earnings_unknown",
         "earnings_days": inputs.earnings_days,
         "earnings_date": inputs.earnings_date,
-        "source": "finnhub_earnings_calendar",
+        "source": inputs.earnings_source or "unknown",
         "note": (
             None if earnings_known else
             "earnings_unknown: no earnings date on the calendar, "

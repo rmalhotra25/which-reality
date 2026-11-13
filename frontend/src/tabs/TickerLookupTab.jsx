@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import AnswerSection from './AnswerSection'
 import StorySection from './StorySection'
@@ -394,6 +394,67 @@ function ProposalRow({ proposal, onAlign, adjustScore, setAdjustScore }) {
   )
 }
 
+function CompanySnapshot({ story, loading, error, price }) {
+  if (loading) {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Company snapshot</div>
+        <div style={S.note}>Loading the company overview…</div>
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Company snapshot</div>
+        <div style={{ ...S.note, color: '#fc8181' }}>{error}</div>
+      </div>
+    )
+  }
+  if (!story || story.status !== 'ok') {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Company snapshot</div>
+        <div style={S.note}>
+          Company overview unavailable{story && story.reason ? `: ${story.reason}` : ''}.
+        </div>
+      </div>
+    )
+  }
+  const insights = story.insights || null
+  return (
+    <div style={S.card}>
+      <div style={S.sectionLabel}>Company snapshot</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
+        <span style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>{story.name}</span>
+        <span style={{ fontSize: '14px', color: '#a0aec0', fontWeight: 700 }}>{story.ticker}</span>
+        <span style={{
+          fontSize: '13px', fontWeight: 800, color: '#1a202c',
+          background: story.grade === 'A' || story.grade === 'B' ? '#68d391' : story.grade === 'C' ? '#f6e05e' : '#fc8181',
+          borderRadius: '6px', padding: '2px 8px',
+        }}>Grade {story.grade}</span>
+        <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${story.price ?? price}</span>
+      </div>
+      {story.earnings_date && (
+        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings: {story.earnings_date}</div>
+      )}
+      {story.earnings_unknown && (
+        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings date unknown.</div>
+      )}
+      {insights ? (
+        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>What it does: </strong>{insights.business}</div>
+          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Growth story: </strong>{insights.growth_story}</div>
+          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Biggest risk: </strong>{insights.biggest_risk}</div>
+          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Moat: </strong>{insights.moat}</div>
+        </div>
+      ) : (
+        <div style={{ ...S.note, marginTop: '8px' }}>{story.story_line}</div>
+      )}
+    </div>
+  )
+}
+
 export default function TickerLookupTab() {
   const [ticker, setTicker] = useState('')
   const [explain, setExplain] = useState(false)
@@ -405,6 +466,17 @@ export default function TickerLookupTab() {
   const [ondemandError, setOndemandError] = useState(null)
   const [alignActions, setAlignActions] = useState({})
   const [adjustScores, setAdjustScores] = useState({ moat: '5', ceo: '5' })
+  // Company Story, fetched once per lookup and shared by the
+  // snapshot card and the Story section below, so the page makes
+  // one Story call, not two.
+  const [story, setStory] = useState(null)
+  const [storyLoading, setStoryLoading] = useState(false)
+  const [storyError, setStoryError] = useState(null)
+  // One toggle for everything below the snapshot: the timing
+  // verdict, the long-term lane, the DCA plan, the Story panels,
+  // the options sections, and the on-demand review. Closed by
+  // default, in both the simple and the full view.
+  const [showDetail, setShowDetail] = useState(false)
   const [simpleView, setSimpleView] = useState(() => {
     try {
       return localStorage.getItem('ticker_lookup_simple_view') !== 'full'
@@ -433,6 +505,10 @@ export default function TickerLookupTab() {
     setOndemand(null)
     setOndemandError(null)
     setAlignActions({})
+    setStory(null)
+    setStoryLoading(false)
+    setStoryError(null)
+    setShowDetail(false)
     try {
       const data = await api.lookup.get(t, explain)
       setResult(data)
@@ -442,6 +518,30 @@ export default function TickerLookupTab() {
       setLoading(false)
     }
   }
+
+  // Fetch the Story once per lookup result. The snapshot card and
+  // the Story section below both read this one fetch.
+  useEffect(() => {
+    if (!result || !result.ticker) return
+    let cancelled = false
+    setStory(null)
+    setStoryLoading(true)
+    setStoryError(null)
+    api.story.get(result.ticker)
+      .then((data) => {
+        if (!cancelled) {
+          setStory(data)
+          setStoryLoading(false)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setStoryError(err.message || 'Story failed to load')
+          setStoryLoading(false)
+        }
+      })
+    return () => { cancelled = true }
+  }, [result])
 
   function ondemandStorageKey(t, runDate) {
     return `ondemand_alignment_${t}_${runDate || 'today'}`
@@ -500,8 +600,10 @@ export default function TickerLookupTab() {
         Type a ticker, get one answer first: Buy Big, Buy Small, Hold, or Sell, with the price,
         the analyst view, the news catalysts, insider activity, and the roadmap behind it. The
         answer is framed both ways: what to do if you own it, and what to do if you do not.
-        Below it, the timing verdict (Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge),
-        the long-term lane, the DCA plan, and the company overview stay as supporting detail.
+        Below it, one company snapshot: what it does, the growth story, the biggest risk, and the
+        moat. The timing verdict (Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge), the
+        long-term lane, the DCA plan, and the company overview stay as supporting detail, behind
+        one Full detail toggle.
         The long-term lane comes first among them: is this a strong company, and is it
         undervalued on a 3 to 5 year view? A timing Avoid for Now is not a verdict on the
         company, and the long-term lane never changes the put or call answer. Buy Now
@@ -548,8 +650,9 @@ export default function TickerLookupTab() {
             {simpleView ? 'Show full expanded view' : 'Back to simple view'}
           </button>
           <div style={{ ...S.note, marginTop: '8px' }}>
-            Simple view shows the answer first, then three collapsed sections: short-term, long-term, and options.
-            Details and the full audit trail are behind the toggles below and in the full expanded view.
+            The answer comes first, then one company snapshot. Everything else, the timing verdict, the
+            long-term lane, the DCA plan, the Story panels, and the options sections, sits behind one
+            Full detail toggle below, in both views.
           </div>
         </div>
       )}
@@ -557,6 +660,15 @@ export default function TickerLookupTab() {
       {result && result.verdict && simpleView && (
         <>
           <AnswerSection ticker={result.ticker} />
+
+          <CompanySnapshot story={story} loading={storyLoading} error={storyError} price={result.price} />
+
+          <button style={S.button} type="button" onClick={() => setShowDetail(!showDetail)}>
+            {showDetail ? 'Hide full detail' : 'Show full detail'}
+          </button>
+
+          {showDetail && (
+            <>
 
           <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
             <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
@@ -567,7 +679,7 @@ export default function TickerLookupTab() {
             <div style={S.verdictNote}>What would change this: {result.verdict.stock.what_would_change}</div>
           </div>
 
-          <StorySection ticker={result.ticker} />
+          <StorySection ticker={result.ticker} storyData={story} storyLoading={storyLoading} storyError={storyError} />
 
           <details style={S.details}>
             <summary style={S.summary}>Short-term: trend, setup, trigger, invalidation</summary>
@@ -792,19 +904,30 @@ export default function TickerLookupTab() {
               </details>
             </>
           )}
+            </>
+          )}
         </>
       )}
 
       {result && result.verdict && !simpleView && (
         <>
           <AnswerSection ticker={result.ticker} />
+
+          <CompanySnapshot story={story} loading={storyLoading} error={storyError} price={result.price} />
+
+          <button style={S.button} type="button" onClick={() => setShowDetail(!showDetail)}>
+            {showDetail ? 'Hide full detail' : 'Show full detail'}
+          </button>
+
+          {showDetail && (
+            <>
           {result.summary && (
             <div style={S.card}>
               <div style={S.sectionLabel}>In plain language</div>
               <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6 }}>{result.summary}</div>
             </div>
           )}
-          <StorySection ticker={result.ticker} />
+          <StorySection ticker={result.ticker} storyData={story} storyLoading={storyLoading} storyError={storyError} />
           {result.verdict.dca && (
             <div style={S.card}>
               <div style={S.sectionLabel}>Long-term accumulation, not a timed trade</div>
@@ -1383,6 +1506,8 @@ export default function TickerLookupTab() {
             <div style={{ fontSize: '13px', color: '#a0aec0', lineHeight: 1.6 }}>{result.explanation}</div>
             <div style={{ ...S.note, marginTop: '10px' }}>{result.disclaimer}</div>
           </div>
+            </>
+          )}
         </>
       )}
     </div>

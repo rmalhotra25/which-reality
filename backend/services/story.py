@@ -32,7 +32,8 @@ Enhancements over the reference, agreed with Rohit Nov 10 2026:
 
 Data sources:
 - price: alert_engine OHLCV + indicators, the same as the lookup.
-- earnings: Finnhub calendar via alert_engine._earnings_days.
+- earnings: composite resolver (services/earnings.py): FMP, Polygon,
+  Yahoo, Finnhub, first future date wins.
 - company facts, targets, recommendations, revenue history and
   estimates: yfinance (no key).
 - peers and segment revenue: FMP free tier (stock-peers,
@@ -590,6 +591,130 @@ def what_would_change(headwinds):
     return f"What would change this assessment: if {parts[0]} or if {parts[1]}."
 
 
+# ---------------------------------------------------------------------------
+# Insight lines. Four plain sentences built only from numbers the
+# Story already fetched, so the snapshot card can say something
+# useful without a new call or any AI prose. The biggest-risk pick
+# follows a fixed priority order, worst first:
+# 1. a strength-3 news headwind (governance investigation or legal
+#    action): an event that can reprice the stock overnight and
+#    shows in no number.
+# 2. Debt High: the balance sheet is the survival question.
+# 3. Valuation Expensive: overpaying is the next way to lose money.
+# 4. Growth Weak: a stalling business.
+# 5. trend weak: the price sits in the bottom fifth of its 52-week
+#    range. The Story has no moving-average feed, so the 52-week
+#    position is the trend proxy, and it is the last resort, not
+#    the headline.
+# Nothing in the list is a trade call; the lines describe the
+# company, they do not say buy or sell.
+# ---------------------------------------------------------------------------
+
+def build_insights(name, sector, industry, segments, growth_cagr,
+                   gross_margin, operating_margin, gauges,
+                   headwinds, week52):
+    """Four insight lines from Story data already fetched.
+
+    Returns {"business", "growth_story", "biggest_risk", "moat"},
+    each a plain sentence. Missing data is stated as missing, never
+    guessed.
+    """
+    gauges = gauges or {}
+    growth_label = (gauges.get("growth") or {}).get("label")
+    margins_label = (gauges.get("margins") or {}).get("label")
+    debt_label = (gauges.get("debt") or {}).get("label")
+    price_label = (gauges.get("price") or {}).get("label")
+
+    # Business: what the company does, plus its largest segment.
+    ind = (industry or sector or "").strip()
+    if ind:
+        ind = ind.lower().replace(" - ", " ")
+    lead = None
+    product = (segments or {}).get("product") or []
+    if product:
+        top = max(product, key=lambda s: s.get("pct") or 0)
+        if top.get("name") and top.get("pct"):
+            lead = f"led by {top['name']} at {round(top['pct'])}% of revenue"
+    if ind and lead:
+        business = f"{name} is a {ind} company, {lead}."
+    elif ind:
+        business = f"{name} is a {ind} company."
+    elif lead:
+        business = f"{name} is {lead}."
+    else:
+        business = f"{name}: no business description is available from the data."
+
+    # Growth story: the revenue pace, judged against the margins.
+    cagr = _pct1(growth_cagr)
+    if growth_label == "Strong":
+        if margins_label == "Strong":
+            growth_story = (f"Sales are growing fast at {cagr}% a year with strong margins, "
+                            "so the growth is profitable, not bought with discounting.")
+        elif margins_label == "Weak":
+            growth_story = (f"Sales are growing fast at {cagr}% a year, but margins are thin, "
+                            "so the growth is not yet paying well.")
+        elif margins_label == "Moderate":
+            growth_story = (f"Sales are growing fast at {cagr}% a year on middling margins.")
+        else:
+            growth_story = (f"Sales are growing fast at {cagr}% a year, with no margin data "
+                            "to say whether the growth pays.")
+    elif growth_label == "Moderate":
+        growth_story = f"Sales are growing steadily at {cagr}% a year."
+    elif growth_label == "Weak":
+        growth_story = (f"Sales growth is weak at {cagr}% a year, so the growth story "
+                        "is stalling.")
+    else:
+        growth_story = ("No revenue history is available, so the growth story cannot "
+                        "be judged from the numbers.")
+
+    # Biggest risk: exactly one factor, by the fixed priority order.
+    risk = None
+    severe = [h for h in (headwinds or [])
+              if h.get("strength") == 3
+              and h.get("title") in ("Governance investigation", "Legal action")]
+    if severe:
+        risk = (f"The biggest risk is the {severe[0]['title'].lower()} in recent news.")
+    elif debt_label == "High":
+        basis = (gauges.get("debt") or {}).get("basis") or "heavy debt"
+        risk = f"The biggest risk is the balance sheet: {basis}."
+    elif price_label == "Expensive":
+        basis = (gauges.get("price") or {}).get("basis") or "a high price"
+        risk = (f"The biggest risk is the price: {basis}, so the market is paying "
+                "for growth that has not arrived yet.")
+    elif growth_label == "Weak":
+        risk = (f"The biggest risk is stalling growth: sales are growing only "
+                f"{cagr}% a year.")
+    elif week52 and week52.get("position_pct") is not None \
+            and week52["position_pct"] < 20:
+        risk = "The biggest risk is the trend: the price sits near its 52-week low."
+    if risk is None:
+        risk = "No single risk stands out in the numbers the Story can see."
+    biggest_risk = risk
+
+    # Moat: pricing power in the margins, or an honest no.
+    if margins_label == "Strong":
+        parts = []
+        if gross_margin is not None:
+            parts.append(f"gross margins of {_pct1(gross_margin)}%")
+        if operating_margin is not None:
+            parts.append(f"operating margins of {_pct1(operating_margin)}%")
+        detail = " and ".join(parts) if parts else "strong margins"
+        moat = (f"Pricing power looks real: {detail} is what a moat looks like "
+                "in the numbers.")
+    elif margins_label == "Moderate":
+        moat = ("Margins are decent but not distinctive, so no clear moat shows "
+                "in the numbers.")
+    elif margins_label == "Weak":
+        moat = ("Margins are thin, so there is no pricing-power moat visible "
+                "in the numbers.")
+    else:
+        moat = ("No margin data is available, so no moat can be judged from "
+                "the numbers.")
+
+    return {"business": business, "growth_story": growth_story,
+            "biggest_risk": biggest_risk, "moat": moat}
+
+
 def story_line(name, industry, growth_cagr, gross_margin, forward_pe):
     """One-line plain-language summary, templated from the numbers."""
     ind = (industry or "").strip()
@@ -980,20 +1105,19 @@ def _fetch_dcf(ticker, price):
 
 
 def _fetch_earnings_date(ticker):
-    """Next earnings date from the Finnhub 120-day calendar, or None.
+    """Next earnings date from the composite resolver, or None.
 
-    The 30-day window the alert engine uses is correct for its
-    earnings gate, but a name that reported this month has its next
-    print a quarter out, and the Story should show that date rather
-    than reading unknown.
+    The resolver tries FMP, Polygon, Yahoo and Finnhub in order and
+    takes the first future date, so a name that reported this month
+    (next print a quarter out) shows its date rather than reading
+    unknown, and the Story and the lookup can never disagree about
+    it again: both call the same resolver.
     """
     try:
-        from services.finnhub_client import get_earnings_within
+        from services.earnings import resolve_next_earnings
 
-        days = get_earnings_within(ticker, days=120)
-        if days is None:
-            return None
-        return (date.today() + timedelta(days=days)).isoformat()
+        found, _source = resolve_next_earnings(ticker)
+        return found.isoformat() if found is not None else None
     except Exception as exc:
         logger.warning("story earnings date failed for %s: %s", ticker, exc)
         return None
@@ -1429,6 +1553,11 @@ def build_story(ticker):
 
     earnings_date = _fetch_earnings_date(ticker)
 
+    insights = build_insights(
+        name, sector, industry, segments, growth_cagr,
+        gross_margin, operating_margin, graded["gauges"],
+        headwinds, week52)
+
     consistency_note = None
     longterm_verdict = dcf_payload["verdict"] if dcf_payload else None
     if longterm_verdict in ("weak",) and graded["grade"] in ("A", "B"):
@@ -1459,6 +1588,7 @@ def build_story(ticker):
         "grade_reason": graded["grade_reason"],
         "story_line": story_line(name, industry, growth_cagr,
                                  gross_margin, forward_pe),
+        "insights": insights,
         "earnings_date": earnings_date,
         "earnings_unknown": earnings_date is None,
         "week52": week52,

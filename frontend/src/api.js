@@ -167,6 +167,9 @@ export const api = {
     get: (ticker) =>
       request(`/api/story/${encodeURIComponent(ticker)}`),
   },
+  topStocks: {
+    get: () => request('/api/top-stocks'),
+  },
   recommendation: {
     get: (ticker) =>
       request(`/api/recommendation/${encodeURIComponent(ticker)}`),

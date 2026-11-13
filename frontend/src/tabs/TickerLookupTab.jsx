@@ -11,10 +11,6 @@ import StorySection from './StorySection'
 
 const S = {
   root: { display: 'flex', flexDirection: 'column', gap: '16px' },
-  banner: {
-    background: '#131825', border: '1px solid #2d3748', borderRadius: '10px',
-    padding: '12px 16px', fontSize: '13px', color: '#a0aec0', lineHeight: 1.5,
-  },
   form: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' },
   input: {
     padding: '9px 12px', fontSize: '15px', fontWeight: 700, letterSpacing: '0.05em',
@@ -455,6 +451,112 @@ function CompanySnapshot({ story, loading, error, price }) {
   )
 }
 
+function TopStocks({ onPick }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.topStocks.get()
+      .then((d) => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.message || 'Top stocks failed to load')
+          setLoading(false)
+        }
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  if (loading) {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Top stocks to consider</div>
+        <div style={S.note}>Loading the top stocks…</div>
+      </div>
+    )
+  }
+  if (error || !data || data.status !== 'ok') {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Top stocks to consider</div>
+        <div style={S.note}>
+          Top stocks unavailable{error ? `: ${error}` : ''}. You can still search any ticker below.
+        </div>
+      </div>
+    )
+  }
+  const items = data.items || []
+  if (items.length === 0) {
+    return (
+      <div style={S.card}>
+        <div style={S.sectionLabel}>Top stocks to consider</div>
+        <div style={S.note}>
+          No stock in the universe qualifies as grade A or B with a Buy or Hold recommendation
+          right now. You can still search any ticker below.
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div style={S.card}>
+      <div style={S.sectionLabel}>Top stocks to consider</div>
+      <div style={{ ...S.note, marginBottom: '10px' }}>
+        Grade A first, then B, from the quality screener universe. Click one to see why it
+        grades that way and why it is recommended to buy now.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {items.map((item) => (
+          <button
+            key={item.ticker}
+            type="button"
+            onClick={() => onPick(item.ticker)}
+            style={{
+              textAlign: 'left', cursor: 'pointer', background: '#0f1520',
+              border: '1px solid #2d3748', borderRadius: '10px', padding: '12px 14px',
+              color: '#e2e8f0',
+            }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
+              <span style={{ fontSize: '16px', fontWeight: 800 }}>{item.ticker}</span>
+              <span style={{ fontSize: '13px', color: '#a0aec0' }}>{item.name}</span>
+              <span style={{
+                fontSize: '12px', fontWeight: 800, color: '#1a202c',
+                background: item.grade === 'A' ? '#68d391' : '#63b3ed',
+                borderRadius: '6px', padding: '2px 8px',
+              }}>Grade {item.grade}</span>
+              <span style={{
+                fontSize: '13px', fontWeight: 800,
+                color: item.tier === 'buy_big' ? '#68d391'
+                  : item.tier === 'buy_small' ? '#63b3ed' : '#f6e05e',
+              }}>{item.tier_label}</span>
+              {item.price != null && (
+                <span style={{ fontSize: '15px', fontWeight: 800 }}>${item.price}</span>
+              )}
+            </div>
+            {item.growth_story && (
+              <div style={{ ...S.note, marginTop: '6px' }}>{item.growth_story}</div>
+            )}
+            {item.catalyst && item.catalyst.title && (
+              <div style={{ ...S.note, marginTop: '4px' }}>
+                Why now: {item.catalyst.title}
+                {item.catalyst.age_hours != null && (
+                  <span> ({Math.round(item.catalyst.age_hours)}h ago)</span>
+                )}
+                .
+              </div>
+            )}
+          </button>
+        ))}
+      </div>
+      {data.note && (
+        <div style={{ ...S.note, marginTop: '10px' }}>{data.note}</div>
+      )}
+    </div>
+  )
+}
+
 export default function TickerLookupTab() {
   const [ticker, setTicker] = useState('')
   const [explain, setExplain] = useState(false)
@@ -499,6 +601,14 @@ export default function TickerLookupTab() {
     e.preventDefault()
     const t = ticker.trim().toUpperCase()
     if (!t) return
+    await doLookup(t)
+  }
+
+  // The lookup body, split out so a Top 5 row can load a ticker
+  // exactly as if the user had typed it: same Answer block, same
+  // snapshot, same Full detail toggle below.
+  async function doLookup(t) {
+    setTicker(t)
     setLoading(true)
     setError(null)
     setResult(null)
@@ -517,6 +627,12 @@ export default function TickerLookupTab() {
     } finally {
       setLoading(false)
     }
+  }
+
+  function pickTopStock(t) {
+    const upper = (t || '').toUpperCase()
+    if (!upper) return
+    doLookup(upper)
   }
 
   // Fetch the Story once per lookup result. The snapshot card and
@@ -596,25 +712,7 @@ export default function TickerLookupTab() {
 
   return (
     <div style={S.root}>
-      <div style={S.banner}>
-        Type a ticker, get one answer first: Buy Big, Buy Small, Hold, or Sell, with the price,
-        the analyst view, the news catalysts, insider activity, and the roadmap behind it. The
-        answer is framed both ways: what to do if you own it, and what to do if you do not.
-        Below it, one company snapshot: what it does, the growth story, the biggest risk, and the
-        moat. The timing verdict (Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge), the
-        long-term lane, the DCA plan, and the company overview stay as supporting detail, behind
-        one Full detail toggle.
-        The long-term lane comes first among them: is this a strong company, and is it
-        undervalued on a 3 to 5 year view? A timing Avoid for Now is not a verdict on the
-        company, and the long-term lane never changes the put or call answer. Buy Now
-        keeps the strict setup rule. Wait for Entry shows the trigger price, the invalidation,
-        the drop and news context, and a dated fundamental snapshot when one exists, so you can
-        judge a dip instead of only being told today is not a buy. The answer comes from the
-        same rule registry check the alert engine runs, for one ticker, at the data timestamp
-        shown, plus the latest company news and the next earnings date. No alert fires, no
-        journal row is created, no notification is sent. The full rule check and the full
-        option chain are below, closed by default, for anyone who wants the audit trail.
-      </div>
+      <TopStocks onPick={pickTopStock} />
 
       <form onSubmit={runLookup} style={S.form}>
         <input

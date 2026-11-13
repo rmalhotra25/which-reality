@@ -1,0 +1,87 @@
+{
+  "source": "quality screener v2, Mon Nov 9, 2026 run (quality_screener_v2_results.csv)",
+  "run_date": "2026-11-09",
+  "note": "Top 20 survivors by composite score. Refresh with the Monday screener run: take the top 20 by composite from quality_screener_v2_results.csv. The Story grade and recommendation tier are computed live per ticker when the endpoint runs; this file is only the universe, never a verdict.",
+  "tickers": [
+    {
+      "ticker": "NVDA",
+      "composite": 92.7
+    },
+    {
+      "ticker": "PLTR",
+      "composite": 82.7
+    },
+    {
+      "ticker": "ANET",
+      "composite": 81.7
+    },
+    {
+      "ticker": "MU",
+      "composite": 80.6
+    },
+    {
+      "ticker": "SNDK",
+      "composite": 78.1
+    },
+    {
+      "ticker": "DOCS",
+      "composite": 74.9
+    },
+    {
+      "ticker": "YOU",
+      "composite": 74.5
+    },
+    {
+      "ticker": "RDDT",
+      "composite": 74.1
+    },
+    {
+      "ticker": "QLYS",
+      "composite": 73.7
+    },
+    {
+      "ticker": "IDCC",
+      "composite": 72.9
+    },
+    {
+      "ticker": "RMBS",
+      "composite": 71.9
+    },
+    {
+      "ticker": "HRMY",
+      "composite": 71.8
+    },
+    {
+      "ticker": "CRDO",
+      "composite": 70.4
+    },
+    {
+      "ticker": "FTNT",
+      "composite": 70.4
+    },
+    {
+      "ticker": "GMED",
+      "composite": 70.1
+    },
+    {
+      "ticker": "ALAB",
+      "composite": 69.8
+    },
+    {
+      "ticker": "EXEL",
+      "composite": 68.7
+    },
+    {
+      "ticker": "AEM",
+      "composite": 68.5
+    },
+    {
+      "ticker": "CHKP",
+      "composite": 68.2
+    },
+    {
+      "ticker": "RMD",
+      "composite": 68.0
+    }
+  ]
+}

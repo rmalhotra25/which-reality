@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.story import (
     _cagr,
     _segments_from_rows,
+    build_insights,
     build_story,
     build_tailwinds_headwinds,
     clear_story_cache,
@@ -644,3 +645,90 @@ def test_news_headwind_fetch_failure_degrades(monkeypatch):
     assert "company news unavailable" in payload["notes"]
     assert not [h for h in payload["headwinds"]
                 if h.get("source") == "news"]
+
+
+# --- insight lines ------------------------------------------------------------
+
+def _no_em_dash(lines):
+    for value in lines.values():
+        assert isinstance(value, str) and value
+        assert "\u2014" not in value, value
+
+
+def test_insights_strong_growth_case():
+    # PLTR-like: CAGR ~33%, gross 84.7%, operating 46.9%, net cash,
+    # forward P/E 66.5 vs peer median 42 (Expensive). The risk is the
+    # price, not the balance sheet or the growth.
+    gauges = grade_gauges(0.329, 0.847, 0.469, 66.5, 42.0,
+                          net_cash=10.3e9)["gauges"]
+    lines = build_insights(
+        "Palantir Technologies Inc.", "Technology",
+        "Software - Infrastructure", _pltr_segments(),
+        0.329, 0.847, 0.469, gauges, [],
+        {"low": 106.37, "high": 212.94, "position_pct": 58.9})
+    assert set(lines) == {"business", "growth_story", "biggest_risk", "moat"}
+    _no_em_dash(lines)
+    assert "Government" in lines["business"]
+    assert "54% of revenue" in lines["business"]
+    assert "32.9% a year" in lines["growth_story"]
+    assert "fast" in lines["growth_story"]
+    assert "price" in lines["biggest_risk"]
+    assert "peer median 42.0" in lines["biggest_risk"]
+    assert "Pricing power" in lines["moat"]
+
+
+def test_insights_high_risk_case():
+    # Weak growth, thin margins, net debt the FCF cannot cover, and
+    # a strength-3 governance headwind. The headwind outranks the
+    # balance sheet by the fixed priority order.
+    gauges = grade_gauges(0.05, 0.30, 0.08, 20.0, 25.0,
+                          net_cash=-2.0e9, free_cashflow=0.1e9)["gauges"]
+    assert gauges["growth"]["label"] == "Weak"
+    assert gauges["margins"]["label"] == "Weak"
+    assert gauges["debt"]["label"] == "High"
+    headwinds = [{"title": "Governance investigation",
+                  "detail": "Board opens probe (Example, Nov 12, 2026)",
+                  "strength": 3, "source": "news"}]
+    lines = build_insights(
+        "Example Corp", "Technology", "Software - Infrastructure",
+        None, 0.05, 0.30, 0.08, gauges, headwinds,
+        {"low": 10.0, "high": 40.0, "position_pct": 10.0})
+    _no_em_dash(lines)
+    assert "software infrastructure company" in lines["business"]
+    assert "weak" in lines["growth_story"]
+    assert "governance investigation" in lines["biggest_risk"]
+    assert "thin" in lines["moat"]
+
+
+def test_insights_debt_outranks_valuation():
+    # Same weak name, no news headwind: the balance sheet is the
+    # risk, even though the price is also Expensive.
+    gauges = grade_gauges(0.05, 0.30, 0.08, 90.0, 25.0,
+                          net_cash=-2.0e9, free_cashflow=0.1e9)["gauges"]
+    assert gauges["price"]["label"] == "Expensive"
+    lines = build_insights(
+        "Example Corp", None, None, None,
+        0.05, 0.30, 0.08, gauges, [],
+        {"low": 10.0, "high": 40.0, "position_pct": 50.0})
+    _no_em_dash(lines)
+    assert "balance sheet" in lines["biggest_risk"]
+    assert "no business description" in lines["business"]
+
+
+def test_insights_no_data_is_honest():
+    lines = build_insights("Example Corp", None, None, None,
+                           None, None, None, {}, [], None)
+    _no_em_dash(lines)
+    assert "no business description" in lines["business"]
+    assert "cannot be judged" in lines["growth_story"]
+    assert "No single risk stands out" in lines["biggest_risk"]
+    assert "No margin data" in lines["moat"]
+
+
+def test_builder_payload_has_insights(monkeypatch):
+    payload = _stub_build(monkeypatch)
+    lines = payload["insights"]
+    assert set(lines) == {"business", "growth_story", "biggest_risk", "moat"}
+    _no_em_dash(lines)
+    assert "Government" in lines["business"]
+    assert "price" in lines["biggest_risk"]

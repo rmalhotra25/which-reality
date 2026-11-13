@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 
 // Company Story section, shown inside the ticker lookup. A read-only
@@ -49,16 +49,29 @@ function Dots({ n, tone }) {
   return <span style={{ color, letterSpacing: '2px' }}>{filled}{empty}</span>
 }
 
-export default function StorySection({ ticker }) {
+export default function StorySection({ ticker, storyData, storyLoading, storyError }) {
   const [open, setOpen] = useState(false)
-  const [story, setStory] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [story, setStory] = useState(storyData || null)
+  const [loading, setLoading] = useState(!!storyLoading)
+  const [error, setError] = useState(storyError || null)
+
+  // When the parent already fetched the Story once (for the
+  // snapshot card), take that payload instead of fetching again.
+  // storyData is undefined when the section is used on its own,
+  // and the lazy fetch below still applies.
+  const hasPrefetch = storyData !== undefined
+  useEffect(() => {
+    if (hasPrefetch) {
+      setStory(storyData)
+      setLoading(!!storyLoading)
+      setError(storyError || null)
+    }
+  }, [hasPrefetch, storyData, storyLoading, storyError])
 
   async function toggle() {
     const next = !open
     setOpen(next)
-    if (next && !story && !loading) {
+    if (next && !hasPrefetch && !story && !loading) {
       setLoading(true)
       setError(null)
       try {

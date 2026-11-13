@@ -167,6 +167,10 @@ export const api = {
     get: (ticker) =>
       request(`/api/story/${encodeURIComponent(ticker)}`),
   },
+  recommendation: {
+    get: (ticker) =>
+      request(`/api/recommendation/${encodeURIComponent(ticker)}`),
+  },
   challenge: {
     getState: () => request('/api/challenge'),
     initAccount: (body) => request('/api/challenge/account', { method: 'POST', body }),

@@ -107,11 +107,15 @@ def test_persist_empty_result_writes_nothing():
 
 
 def test_todays_book_reads_persisted_batch_by_premium_at_risk():
+    from datetime import datetime, timedelta, timezone
+
+    # Use a recent run_at: the 36-hour staleness rule would mark the
+    # original hardcoded Nov 10 timestamp as stale once time passes.
+    recent = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
     db = _session()
-    persist_wheel_candidates(db, _result())
+    persist_wheel_candidates(db, _result(run_at=recent))
     cands, run_at, stale = wheel_candidates(db)
     assert stale is False
-    assert run_at.startswith("2026-11-10T15:32:10.884939")
     assert [c["ticker"] for c in cands] == ["FLEX", "BE", "RKLB", "HOOD"]
     flex = cands[0]
     assert flex["premium_net_per_contract"] == 400.0

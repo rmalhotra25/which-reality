@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import AnswerSection from './AnswerSection'
 import StorySection from './StorySection'
 
 // Ticker Lookup tab: a query, not a trade. Type a ticker, get the same
@@ -496,11 +497,14 @@ export default function TickerLookupTab() {
   return (
     <div style={S.root}>
       <div style={S.banner}>
-        Type a ticker, get a clear answer first: Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge,
-        plus Sell the Put or Don't Sell a Put, and Buy the Call or Don't Buy the Call. The long-term
-        lane comes first: is this a strong company, and is it undervalued on a 3 to 5 year view?
-        A timing Avoid for Now is not a verdict on the company, and the long-term lane never
-        changes the put or call answer. Buy Now
+        Type a ticker, get one answer first: Buy Big, Buy Small, Hold, or Sell, with the price,
+        the analyst view, the news catalysts, insider activity, and the roadmap behind it. The
+        answer is framed both ways: what to do if you own it, and what to do if you do not.
+        Below it, the timing verdict (Buy Now, Wait for Entry, Avoid for Now, or Cannot Judge),
+        the long-term lane, the DCA plan, and the company overview stay as supporting detail.
+        The long-term lane comes first among them: is this a strong company, and is it
+        undervalued on a 3 to 5 year view? A timing Avoid for Now is not a verdict on the
+        company, and the long-term lane never changes the put or call answer. Buy Now
         keeps the strict setup rule. Wait for Entry shows the trigger price, the invalidation,
         the drop and news context, and a dated fundamental snapshot when one exists, so you can
         judge a dip instead of only being told today is not a buy. The answer comes from the
@@ -552,6 +556,8 @@ export default function TickerLookupTab() {
 
       {result && result.verdict && simpleView && (
         <>
+          <AnswerSection ticker={result.ticker} />
+
           <div style={S.verdictCard(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
             <div style={S.verdictBig(result.verdict.stock.decision === 'buy' ? 'buy' : result.verdict.stock.decision === 'wait' ? 'wait' : result.verdict.stock.decision === 'avoid' ? 'avoid' : 'hold')}>
               {plainVerdictLabel(result.verdict.stock.decision, result.verdict.stock.label)}
@@ -791,6 +797,7 @@ export default function TickerLookupTab() {
 
       {result && result.verdict && !simpleView && (
         <>
+          <AnswerSection ticker={result.ticker} />
           {result.summary && (
             <div style={S.card}>
               <div style={S.sectionLabel}>In plain language</div>

@@ -94,6 +94,14 @@ def _indicators(df) -> Optional[dict]:
     try:
         import pandas as pd
         closes = df["Close"].squeeze()
+        # Yahoo returns a NaN row for the current day when the session
+        # has not settled yet (after hours, or before the first print).
+        # Drop it, or the last row is NaN and the price reads as no
+        # price available. Use the last settled close instead. The
+        # mask is built from the Close series, so it works whether
+        # the columns are flat or a MultiIndex from yf.download.
+        df = df[closes.notna()]
+        closes = df["Close"].squeeze()
         opens = df["Open"].squeeze()
         highs = df["High"].squeeze()
         lows = df["Low"].squeeze()

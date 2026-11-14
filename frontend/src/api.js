@@ -185,6 +185,10 @@ export const api = {
     // before the request aborts with a plain timeout message.
     get: () => request('/api/top-stocks', { timeoutMs: 90000 }),
   },
+  search: {
+    companies: (q) =>
+      request(`/api/search?q=${encodeURIComponent(q)}`, { timeoutMs: 10000 }),
+  },
   recommendation: {
     get: (ticker) =>
       request(`/api/recommendation/${encodeURIComponent(ticker)}`),

@@ -122,12 +122,33 @@ def clear_recommendation_cache():
     _CACHE.clear()
 
 
+# The sparkline shows the last 30 settled daily closes.
+_PRICE_HISTORY_DAYS = 30
+
+
 def _finite(value):
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _price_history(df):
+    """Last 30 settled daily closes, oldest to newest, as plain floats.
+
+    Drops NaN closes (the unsettled current day), same rule as the
+    price fix. Returns [] when no settled close exists, never null,
+    so the frontend can render an empty state.
+    """
+    try:
+        closes = df["Close"].squeeze()
+        settled = closes.dropna()
+        tail = settled.tail(_PRICE_HISTORY_DAYS)
+        return [round(float(v), 2) for v in tail.tolist()
+                if v is not None and math.isfinite(float(v))]
+    except Exception:
+        return []
 
 
 def _keyword_re(keyword):
@@ -403,23 +424,24 @@ def decide_recommendation(inputs: dict):
 # ---------------------------------------------------------------------------
 
 def _fetch_trend(ticker):
-    """Price, 50-day and 200-day averages from the alert engine."""
+    """Price, 50-day and 200-day averages from the alert engine,
+    plus the last 30 settled daily closes for the sparkline."""
     try:
         import services.alert_engine as ae
 
         df = ae._fetch_ohlcv(ticker)
         if df is None:
-            return None, None, None, "no price history found"
+            return None, None, None, [], "no price history found"
         ind = ae._indicators(df)
         if ind is None or ind.get("price") is None:
-            return None, None, None, "not enough history to compute indicators"
+            return None, None, None, [], "not enough history to compute indicators"
         price = _finite(ind.get("price"))
         ma50 = _finite(ind.get("ma50"))
         ma200 = _finite(ind.get("ma200"))
-        return price, ma50, ma200, None
+        return price, ma50, ma200, _price_history(df), None
     except Exception as exc:
         logger.warning("recommendation trend failed for %s: %s", ticker, exc)
-        return None, None, None, f"trend fetch failed: {exc}"
+        return None, None, None, [], f"trend fetch failed: {exc}"
 
 
 def build_recommendation(ticker: str):
@@ -430,7 +452,7 @@ def build_recommendation(ticker: str):
         return cached
     notes = []
 
-    price, ma50, ma200, trend_error = _fetch_trend(ticker)
+    price, ma50, ma200, price_history, trend_error = _fetch_trend(ticker)
     if price is None:
         payload = {"status": "unavailable", "ticker": ticker,
                    "reason": trend_error or "no price available"}
@@ -548,6 +570,7 @@ def build_recommendation(ticker: str):
         "ticker": ticker,
         "name": story.get("name") or ticker,
         "price": round(price, 2),
+        "price_history": price_history,
         "recommendation": decision,
         "evidence": evidence,
         "notes": notes,

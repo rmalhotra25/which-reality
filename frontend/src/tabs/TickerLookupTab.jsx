@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import AnswerSection from './AnswerSection'
 import StorySection from './StorySection'
@@ -15,8 +15,22 @@ const S = {
   input: {
     padding: '9px 12px', fontSize: '15px', fontWeight: 700, letterSpacing: '0.05em',
     background: '#0f1520', border: '1px solid #2d3748', borderRadius: '8px',
-    color: '#e2e8f0', width: '160px', textTransform: 'uppercase',
+    color: '#e2e8f0', width: '260px',
   },
+  searchWrap: { position: 'relative' },
+  suggestions: {
+    position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50,
+    background: '#131825', border: '1px solid #2d3748', borderRadius: '8px',
+    marginTop: '4px', overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+  },
+  suggestion: {
+    display: 'flex', gap: '8px', alignItems: 'baseline', width: '100%',
+    padding: '9px 12px', background: 'transparent', border: 'none',
+    color: '#e2e8f0', fontSize: '13px', cursor: 'pointer', textAlign: 'left',
+  },
+  suggestionTicker: { fontWeight: 800, flexShrink: 0 },
+  suggestionName: { color: '#a0aec0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  suggestionEmpty: { padding: '9px 12px', color: '#718096', fontSize: '13px' },
   button: {
     padding: '9px 18px', background: '#2b6cb0', color: '#fff', border: 'none',
     borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 700,
@@ -421,37 +435,96 @@ function CompanySnapshot({ story, loading, error, price }) {
   }
   const insights = story.insights || null
   const displayPrice = story.price ?? price
+  const gauges = story.gauges || {}
+  const growthValue = (gauges.growth || {}).value
+  const gradeColor = story.grade === 'A' || story.grade === 'B' ? '#68d391'
+    : story.grade === 'C' ? '#f6e05e' : '#fc8181'
+  // Growth bar scale: 0 to 50% a year. Values above 50 fill the bar.
+  const growthPct = growthValue != null
+    ? Math.max(0, Math.min(100, (growthValue / 50) * 100))
+    : null
   return (
     <div style={S.card}>
       <div style={S.sectionLabel}>Company snapshot</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
-        <span style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>{story.name}</span>
-        <span style={{ fontSize: '14px', color: '#a0aec0', fontWeight: 700 }}>{story.ticker}</span>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' }}>
         <span style={{
-          fontSize: '13px', fontWeight: 800, color: '#1a202c',
-          background: story.grade === 'A' || story.grade === 'B' ? '#68d391' : story.grade === 'C' ? '#f6e05e' : '#fc8181',
-          borderRadius: '6px', padding: '2px 8px',
-        }}>Grade {story.grade}</span>
-        {displayPrice != null ? (
-          <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${displayPrice}</span>
-        ) : (
-          <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
-        )}
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: '52px', height: '52px', borderRadius: '50%',
+          background: gradeColor, color: '#1a202c',
+          fontSize: '28px', fontWeight: 800, flexShrink: 0,
+        }}>{story.grade}</span>
+        <div style={{ flex: '1 1 200px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
+            <span style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>{story.name}</span>
+            <span style={{ fontSize: '14px', color: '#a0aec0', fontWeight: 700 }}>{story.ticker}</span>
+            {displayPrice != null ? (
+              <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${displayPrice}</span>
+            ) : (
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
+            )}
+          </div>
+          {insights && insights.business && (
+            <div style={{ ...S.note, marginTop: '4px' }}>{insights.business}</div>
+          )}
+        </div>
       </div>
       {story.earnings_date && (
-        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings: {story.earnings_date}</div>
+        <div style={{ ...S.note, marginTop: '8px' }}>Next earnings: {story.earnings_date}</div>
       )}
       {story.earnings_unknown && (
-        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings date unknown.</div>
+        <div style={{ ...S.note, marginTop: '8px' }}>Next earnings date unknown.</div>
       )}
-      {insights ? (
-        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>What it does: </strong>{insights.business}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Growth story: </strong>{insights.growth_story}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Biggest risk: </strong>{insights.biggest_risk}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Moat: </strong>{insights.moat}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '14px' }}>
+        <div>
+          <div style={S.note}>Growth (3-year revenue CAGR)</div>
+          {growthPct == null ? (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>Growth unavailable.</div>
+          ) : (
+            <div>
+              <div style={{ height: '8px', borderRadius: '4px', background: '#2d3748', marginTop: '6px' }}>
+                <div style={{ width: `${growthPct}%`, height: '8px', borderRadius: '4px', background: '#68d391' }} />
+              </div>
+              <div style={{ ...S.note, marginTop: '4px' }}>{growthValue}% a year.</div>
+            </div>
+          )}
+          {insights && insights.growth_story && (
+            <div style={{ ...S.note, marginTop: '4px' }}>{insights.growth_story}</div>
+          )}
         </div>
-      ) : (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: '22px', height: '22px', borderRadius: '50%',
+              background: '#fc8181', color: '#1a202c',
+              fontSize: '14px', fontWeight: 800, flexShrink: 0,
+            }}>!</span>
+            <span style={S.note}>Biggest risk</span>
+          </div>
+          {insights && insights.biggest_risk ? (
+            <div style={{ ...S.note, marginTop: '6px' }}>{insights.biggest_risk}</div>
+          ) : (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>No risk line available.</div>
+          )}
+        </div>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: '22px', height: '22px', borderRadius: '50%',
+              background: '#68d391', color: '#1a202c',
+              fontSize: '12px', fontWeight: 800, flexShrink: 0,
+            }}>◆</span>
+            <span style={S.note}>Moat</span>
+          </div>
+          {insights && insights.moat ? (
+            <div style={{ ...S.note, marginTop: '6px' }}>{insights.moat}</div>
+          ) : (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>No moat line available.</div>
+          )}
+        </div>
+      </div>
+      {!insights && (
         <div style={{ ...S.note, marginTop: '8px' }}>{story.story_line}</div>
       )}
     </div>
@@ -604,18 +677,110 @@ export default function TickerLookupTab() {
     }
   }
 
+  // Company-name autocomplete. Typing a name shows matching tickers
+  // in a dropdown under the input. Typing a ticker still works
+  // exactly as before.
+  const searchWrapRef = useRef(null)
+  const suppressSearchRef = useRef(false)
+  const [suggestions, setSuggestions] = useState([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
+
+  async function searchOnce(q) {
+    try {
+      const data = await api.search.companies(q)
+      return (data && data.results) || []
+    } catch (err) {
+      return []
+    }
+  }
+
+  // Debounced search: fetch matches 300ms after the user stops
+  // typing, only when the input is 2 or more characters.
+  useEffect(() => {
+    const q = ticker.trim()
+    if (suppressSearchRef.current) {
+      suppressSearchRef.current = false
+      return
+    }
+    if (q.length < 2) {
+      setSuggestions([])
+      setShowSuggestions(false)
+      setSearchLoading(false)
+      return
+    }
+    let cancelled = false
+    setShowSuggestions(true)
+    setSearchLoading(true)
+    const timer = setTimeout(() => {
+      searchOnce(q).then((list) => {
+        if (cancelled) return
+        setSuggestions(list)
+        setSearchLoading(false)
+      })
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [ticker])
+
+  // Escape or a click outside the search box closes the dropdown
+  // without running a lookup.
+  useEffect(() => {
+    function onDown(e) {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) {
+        setShowSuggestions(false)
+      }
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') setShowSuggestions(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [])
+
+  function pickSuggestion(match) {
+    setSuggestions([])
+    setShowSuggestions(false)
+    doLookup((match.ticker || '').toUpperCase())
+  }
+
   async function runLookup(e) {
     e.preventDefault()
-    const t = ticker.trim().toUpperCase()
-    if (!t) return
-    await doLookup(t)
+    const raw = ticker.trim()
+    if (!raw) return
+    // A ticker is short with no spaces. Anything else is a company
+    // name: search for it and take the first match.
+    if (/^[A-Za-z0-9.\-]{1,6}$/.test(raw)) {
+      await doLookup(raw.toUpperCase())
+      return
+    }
+    setShowSuggestions(false)
+    // Fetch fresh for the exact text typed. The dropdown list may be
+    // for an older query if the user typed fast and hit Enter before
+    // the debounce fired, so do not trust it here.
+    const list = await searchOnce(raw)
+    if (list.length > 0) {
+      await doLookup(list[0].ticker.toUpperCase())
+    } else {
+      setError(`No matches found for "${raw}". Try a ticker or a different company name.`)
+    }
   }
 
   // The lookup body, split out so a Top 5 row can load a ticker
   // exactly as if the user had typed it: same Answer block, same
   // snapshot, same Full detail toggle below.
   async function doLookup(t) {
+    // Do not re-run the autocomplete for the ticker just looked up.
+    suppressSearchRef.current = true
     setTicker(t)
+    setSuggestions([])
+    setShowSuggestions(false)
     setLoading(true)
     setError(null)
     setResult(null)
@@ -722,14 +887,37 @@ export default function TickerLookupTab() {
       <TopStocks onPick={pickTopStock} />
 
       <form onSubmit={runLookup} style={S.form}>
-        <input
-          style={S.input}
-          value={ticker}
-          onChange={(e) => setTicker(e.target.value)}
-          placeholder="TICKER"
-          maxLength={12}
-          aria-label="Ticker"
-        />
+        <div ref={searchWrapRef} style={S.searchWrap}>
+          <input
+            style={S.input}
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value)}
+            onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true) }}
+            placeholder="Ticker or company name"
+            maxLength={60}
+            aria-label="Ticker or company name"
+            autoComplete="off"
+          />
+          {showSuggestions && (
+            <div style={S.suggestions}>
+              {searchLoading && <div style={S.suggestionEmpty}>Searching...</div>}
+              {!searchLoading && suggestions.length === 0 && (
+                <div style={S.suggestionEmpty}>No matches found</div>
+              )}
+              {!searchLoading && suggestions.map((m) => (
+                <button
+                  key={m.ticker}
+                  type="button"
+                  style={S.suggestion}
+                  onClick={() => pickSuggestion(m)}
+                >
+                  <span style={S.suggestionTicker}>{m.ticker}</span>
+                  <span style={S.suggestionName}>{m.name}{m.exchange ? ` (${m.exchange})` : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button style={S.button} type="submit" disabled={loading}>
           {loading ? 'Looking up...' : 'Look up'}
         </button>

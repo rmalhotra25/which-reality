@@ -421,37 +421,96 @@ function CompanySnapshot({ story, loading, error, price }) {
   }
   const insights = story.insights || null
   const displayPrice = story.price ?? price
+  const gauges = story.gauges || {}
+  const growthValue = (gauges.growth || {}).value
+  const gradeColor = story.grade === 'A' || story.grade === 'B' ? '#68d391'
+    : story.grade === 'C' ? '#f6e05e' : '#fc8181'
+  // Growth bar scale: 0 to 50% a year. Values above 50 fill the bar.
+  const growthPct = growthValue != null
+    ? Math.max(0, Math.min(100, (growthValue / 50) * 100))
+    : null
   return (
     <div style={S.card}>
       <div style={S.sectionLabel}>Company snapshot</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
-        <span style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>{story.name}</span>
-        <span style={{ fontSize: '14px', color: '#a0aec0', fontWeight: 700 }}>{story.ticker}</span>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' }}>
         <span style={{
-          fontSize: '13px', fontWeight: 800, color: '#1a202c',
-          background: story.grade === 'A' || story.grade === 'B' ? '#68d391' : story.grade === 'C' ? '#f6e05e' : '#fc8181',
-          borderRadius: '6px', padding: '2px 8px',
-        }}>Grade {story.grade}</span>
-        {displayPrice != null ? (
-          <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${displayPrice}</span>
-        ) : (
-          <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
-        )}
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: '52px', height: '52px', borderRadius: '50%',
+          background: gradeColor, color: '#1a202c',
+          fontSize: '28px', fontWeight: 800, flexShrink: 0,
+        }}>{story.grade}</span>
+        <div style={{ flex: '1 1 200px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
+            <span style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0' }}>{story.name}</span>
+            <span style={{ fontSize: '14px', color: '#a0aec0', fontWeight: 700 }}>{story.ticker}</span>
+            {displayPrice != null ? (
+              <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${displayPrice}</span>
+            ) : (
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
+            )}
+          </div>
+          {insights && insights.business && (
+            <div style={{ ...S.note, marginTop: '4px' }}>{insights.business}</div>
+          )}
+        </div>
       </div>
       {story.earnings_date && (
-        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings: {story.earnings_date}</div>
+        <div style={{ ...S.note, marginTop: '8px' }}>Next earnings: {story.earnings_date}</div>
       )}
       {story.earnings_unknown && (
-        <div style={{ ...S.note, marginTop: '4px' }}>Next earnings date unknown.</div>
+        <div style={{ ...S.note, marginTop: '8px' }}>Next earnings date unknown.</div>
       )}
-      {insights ? (
-        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>What it does: </strong>{insights.business}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Growth story: </strong>{insights.growth_story}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Biggest risk: </strong>{insights.biggest_risk}</div>
-          <div style={S.note}><strong style={{ color: '#e2e8f0' }}>Moat: </strong>{insights.moat}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '14px' }}>
+        <div>
+          <div style={S.note}>Growth (3-year revenue CAGR)</div>
+          {growthPct == null ? (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>Growth unavailable.</div>
+          ) : (
+            <div>
+              <div style={{ height: '8px', borderRadius: '4px', background: '#2d3748', marginTop: '6px' }}>
+                <div style={{ width: `${growthPct}%`, height: '8px', borderRadius: '4px', background: '#68d391' }} />
+              </div>
+              <div style={{ ...S.note, marginTop: '4px' }}>{growthValue}% a year.</div>
+            </div>
+          )}
+          {insights && insights.growth_story && (
+            <div style={{ ...S.note, marginTop: '4px' }}>{insights.growth_story}</div>
+          )}
         </div>
-      ) : (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: '22px', height: '22px', borderRadius: '50%',
+              background: '#fc8181', color: '#1a202c',
+              fontSize: '14px', fontWeight: 800, flexShrink: 0,
+            }}>!</span>
+            <span style={S.note}>Biggest risk</span>
+          </div>
+          {insights && insights.biggest_risk ? (
+            <div style={{ ...S.note, marginTop: '6px' }}>{insights.biggest_risk}</div>
+          ) : (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>No risk line available.</div>
+          )}
+        </div>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: '22px', height: '22px', borderRadius: '50%',
+              background: '#68d391', color: '#1a202c',
+              fontSize: '12px', fontWeight: 800, flexShrink: 0,
+            }}>◆</span>
+            <span style={S.note}>Moat</span>
+          </div>
+          {insights && insights.moat ? (
+            <div style={{ ...S.note, marginTop: '6px' }}>{insights.moat}</div>
+          ) : (
+            <div style={{ ...S.note, color: '#718096', marginTop: '6px' }}>No moat line available.</div>
+          )}
+        </div>
+      </div>
+      {!insights && (
         <div style={{ ...S.note, marginTop: '8px' }}>{story.story_line}</div>
       )}
     </div>

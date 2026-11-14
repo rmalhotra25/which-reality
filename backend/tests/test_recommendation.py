@@ -206,7 +206,7 @@ def test_missing_inputs_never_trigger_sell():
 def test_build_recommendation_wires_inputs(monkeypatch):
     clear_recommendation_cache()
     monkeypatch.setattr(rec, "_fetch_trend",
-                        lambda ticker: (200.0, 190.0, 180.0, None))
+                        lambda ticker: (200.0, 190.0, 180.0, [180.0, 190.0, 200.0], None))
 
     class _Story:
         @staticmethod
@@ -263,6 +263,77 @@ def test_build_recommendation_wires_inputs(monkeypatch):
 def test_build_recommendation_no_price_unavailable(monkeypatch):
     clear_recommendation_cache()
     monkeypatch.setattr(rec, "_fetch_trend",
-                        lambda ticker: (None, None, None, "no price history"))
+                        lambda ticker: (None, None, None, [], "no price history"))
     payload = build_recommendation("ZZZZ")
     assert payload["status"] == "unavailable"
+
+
+# --- price history (sparkline) --------------------------------------------
+
+def test_price_history_is_list_of_numbers_oldest_first(monkeypatch):
+    clear_recommendation_cache()
+    history = [180.0 + i for i in range(30)]
+    monkeypatch.setattr(rec, "_fetch_trend",
+                        lambda ticker: (200.0, 190.0, 180.0, history, None))
+
+    class _Story:
+        @staticmethod
+        def build_story(ticker):
+            return {"status": "ok", "name": "Acme Corp", "grade": "B",
+                    "targets": {}, "gauges": {}, "dcf": {},
+                    "headwinds": [], "earnings_date": None}
+
+    import services.story as story_module
+    monkeypatch.setattr(story_module, "build_story", _Story.build_story)
+    import services.insider as insider_module
+    monkeypatch.setattr(insider_module, "fetch_insider",
+                        lambda ticker: {"summary": {}})
+
+    payload = build_recommendation("ACME")
+    assert payload["status"] == "ok"
+    hist = payload["price_history"]
+    assert isinstance(hist, list)
+    assert len(hist) == 30
+    assert hist[0] == 180.0
+    assert hist[-1] == 209.0
+    assert all(isinstance(v, (int, float)) for v in hist)
+    import math
+    assert all(math.isfinite(v) for v in hist)
+
+
+def test_price_history_empty_not_null_when_unavailable(monkeypatch):
+    clear_recommendation_cache()
+    monkeypatch.setattr(rec, "_fetch_trend",
+                        lambda ticker: (None, None, None, [], "no price history"))
+    payload = build_recommendation("ZZZZ")
+    assert payload["status"] == "unavailable"
+    assert "price_history" not in payload
+
+
+def test_price_history_drops_nan_closes():
+    import pandas as pd
+    from services.recommendation import _price_history
+    closes = [100.0 + i for i in range(29)] + [float("nan")]
+    df = pd.DataFrame({"Close": closes})
+    hist = _price_history(df)
+    assert len(hist) == 29
+    assert hist[-1] == 128.0
+    import math
+    assert all(math.isfinite(v) for v in hist)
+
+
+def test_price_history_caps_at_30():
+    import pandas as pd
+    from services.recommendation import _price_history
+    df = pd.DataFrame({"Close": [100.0 + i for i in range(60)]})
+    hist = _price_history(df)
+    assert len(hist) == 30
+    assert hist[0] == 130.0
+    assert hist[-1] == 159.0
+
+
+def test_price_history_empty_frame_returns_empty_list():
+    import pandas as pd
+    from services.recommendation import _price_history
+    assert _price_history(pd.DataFrame({"Close": []})) == []
+    assert _price_history(pd.DataFrame({"Close": [float("nan")] * 5})) == []

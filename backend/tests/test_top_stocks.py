@@ -226,7 +226,7 @@ def test_six_buyer_questions_have_a_source(monkeypatch):
     clear_story_cache()
     rec.clear_recommendation_cache()
     monkeypatch.setattr(rec, "_fetch_trend",
-                        lambda ticker: (200.0, 190.0, 180.0, None))
+                        lambda ticker: (200.0, 190.0, 180.0, [180.0, 190.0, 200.0], None))
 
     class _Story:
         @staticmethod

@@ -35,6 +35,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 _CACHE: dict = {}
 _CACHE_TTL = 6 * 3600
 _CACHE_KEY = "top_stocks"
+# One lock for the whole build: concurrent cold loads share a single
+# computation instead of each grading 20 tickers for over a minute.
+_BUILD_LOCK = threading.Lock()
 _UNIVERSE_FILE = "top_stocks_universe.json"
 
 _GRADE_RANK = {"A": 0, "B": 1}
@@ -162,10 +166,26 @@ def build_top_stocks(fetcher=None):
     fetcher grades from the Story and Answer services. The payload
     is {status, items, qualified_count, universe_size, note,
     as_of}. When fewer than five qualify, note says so plainly.
+    Concurrent cold loads share one computation: the first caller
+    holds the build lock, the rest wait and read the cache it fills.
     """
     cached = _CACHE.get(_CACHE_KEY)
     if cached and time.time() - cached[0] < _CACHE_TTL:
         return cached[1]
+    with _BUILD_LOCK:
+        cached = _CACHE.get(_CACHE_KEY)
+        if cached and time.time() - cached[0] < _CACHE_TTL:
+            return cached[1]
+        payload = _build_top_stocks_uncached(fetcher)
+        _CACHE[_CACHE_KEY] = (time.time(), payload)
+        return payload
+
+
+def _build_top_stocks_uncached(fetcher=None):
+    """Grade the universe and rank it, with no cache or lock.
+
+    Only called from build_top_stocks while it holds the build lock.
+    """
     fetch = fetcher or _default_fetcher
     universe = load_universe()
     candidates = []
@@ -183,7 +203,7 @@ def build_top_stocks(fetcher=None):
                 "the universe qualified as grade A or B with a Buy or "
                 "Hold recommendation, so the list shows "
                 f"{len(items)}.")
-    payload = {
+    return {
         "status": "ok",
         "items": items,
         "qualified_count": len(items),
@@ -191,5 +211,3 @@ def build_top_stocks(fetcher=None):
         "note": note,
         "as_of": time.strftime("%Y-%m-%d"),
     }
-    _CACHE[_CACHE_KEY] = (time.time(), payload)
-    return payload

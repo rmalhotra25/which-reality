@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +57,28 @@ def _auto_run_if_empty() -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _warm_top_stocks() -> None:
+    """Warm the Top 5 cache in a background thread at startup.
+
+    Grading 20 tickers takes over a minute cold, so the first page
+    load after a deploy would otherwise sit on "Loading" for that
+    long. Warming in the background means the cache is ready (or
+    nearly) by the time anyone opens the lookup page. Failures are
+    logged, never fatal: a cold load still works on first request.
+    """
+    import threading
+
+    def _run():
+        try:
+            from services.top_stocks import build_top_stocks
+            build_top_stocks()
+            logger.info("Top stocks cache warmed")
+        except Exception as e:
+            logger.warning("Top stocks warmup failed: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from database import init_db, SessionLocal
@@ -96,6 +118,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     logger.info("%s", auth_status_message())
     _auto_run_if_empty()
+    _warm_top_stocks()
     yield
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")
@@ -220,4 +243,8 @@ if os.path.isdir(_frontend_dist):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str):
+        # Unknown API paths are not pages: return 404 JSON instead
+        # of the SPA HTML with a 200, which misleads API clients.
+        if full_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
         return FileResponse(os.path.join(_frontend_dist, "index.html"))

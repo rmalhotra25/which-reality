@@ -159,7 +159,14 @@ def grade_gauges(growth_cagr, gross_margin, operating_margin,
       1.99 for PLTR, a company holding $10.6B of cash against $0.2B
       of debt.
     - Price Cheap at forward P/E < 0.8x the peer median; Fair up to
-      1.5x; Expensive above it. The basis is always shown.
+      1.5x; Expensive above it. The basis is always shown. The
+      comparison only applies when both P/Es are positive: a
+      loss-making company has a negative forward P/E, and the ratio
+      of two negative P/Es is not a valuation, so the gauge reads
+      Unknown instead of flipping between Cheap, Fair and Expensive
+      as the peer set changes. QUBT read Fair on Nov 14 2026 only
+      because it was its own median peer at -19.6 vs -19.6, and
+      read Expensive or Unknown on other fetches.
     Grade counts favorable gauges (Growth Strong, Margins Strong,
     Debt Low, Price Cheap or Fair): A = 4, B = 3, C = 2, D = 1, F = 0.
     An unknown gauge counts for neither side and is named in the
@@ -240,13 +247,21 @@ def grade_gauges(growth_cagr, gross_margin, operating_margin,
         gauges["price"] = {"label": "Unknown",
                            "basis": "no peer P/E to compare against",
                            "value": None}
+    elif forward_pe <= 0 or peer_median_pe <= 0:
+        # A P/E ratio only means something when earnings are
+        # positive. A loss-making company has a negative forward
+        # P/E, and the ratio of two negative P/Es says nothing about
+        # value: it flips between Cheap, Fair and Expensive as the
+        # peer set changes, and it once called QUBT Fair only
+        # because QUBT was its own median peer. No comparison is
+        # shown instead of a meaningless one. The forward P/E
+        # itself is kept in the value, so the number is not lost.
+        gauges["price"] = {"label": "Unknown",
+                           "basis": "no positive P/E to compare against",
+                           "value": round(float(forward_pe), 1)}
     else:
-        ratio = float(forward_pe) / float(peer_median_pe) if peer_median_pe else None
-        if ratio is None:
-            gauges["price"] = {"label": "Unknown",
-                               "basis": "no peer P/E to compare against",
-                               "value": None}
-        elif ratio < 0.8:
+        ratio = float(forward_pe) / float(peer_median_pe)
+        if ratio < 0.8:
             gauges["price"] = {"label": "Cheap",
                                "basis": f"forward P/E {round(float(forward_pe), 1)} "
                                         f"vs peer median {round(float(peer_median_pe), 1)}",

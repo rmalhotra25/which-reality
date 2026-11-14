@@ -122,6 +122,39 @@ def clear_recommendation_cache():
     _CACHE.clear()
 
 
+def _cached_recommendation_is_current(ticker: str, cached: dict) -> bool:
+    """True when a cached recommendation still agrees with the Story.
+
+    The roadmap grade, long-term verdict and earnings date all come
+    from the Story, which is cached separately for an hour. If the
+    Story has been rebuilt with different values since this
+    recommendation was cached, the cached payload is stale: serving
+    it would show one grade in the roadmap and another in the
+    Company Snapshot on the same page, as seen live on QUBT on
+    Nov 14 2026. Returning False makes the caller rebuild, so the
+    tier is re-decided with the current Story and both places show
+    the same grade from the same Story. An unavailable Story, or a
+    cached payload that is itself unavailable, is not a
+    disagreement: serve it.
+    """
+    if cached.get("status") != "ok":
+        return True
+    try:
+        from services import story as story_service
+
+        current = story_service.build_story(ticker) or {}
+    except Exception:
+        return True
+    if current.get("status") != "ok":
+        return True
+    roadmap = (cached.get("evidence") or {}).get("roadmap") or {}
+    return (current.get("grade") == roadmap.get("grade")
+            and current.get("longterm_verdict")
+            == roadmap.get("longterm_verdict")
+            and current.get("earnings_date")
+            == roadmap.get("earnings_date"))
+
+
 # The sparkline shows the last 30 settled daily closes.
 _PRICE_HISTORY_DAYS = 30
 
@@ -448,6 +481,8 @@ def build_recommendation(ticker: str):
     """The Answer block payload for one ticker."""
     ticker = (ticker or "").upper().strip()
     cached = _cache_get(ticker)
+    if cached is not None and not _cached_recommendation_is_current(ticker, cached):
+        cached = None
     if cached is not None:
         return cached
     notes = []

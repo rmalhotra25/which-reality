@@ -84,6 +84,45 @@ def test_price_gauge_boundaries():
     assert grade_gauges(0.25, 0.75, 0.30, 46.0, 30.0, net_cash=5.0e9)["gauges"]["price"]["label"] == "Expensive"
 
 
+def test_price_gauge_unknown_when_forward_pe_is_negative():
+    # QUBT, Nov 14 2026: forward P/E -19.6 vs peer median -19.6
+    # read Fair (ratio 1.0) only because both P/Es were negative,
+    # and the same company read Expensive or Unknown on other
+    # fetches as the peer set changed. A negative P/E means no
+    # earnings, so there is no P/E comparison to make. The forward
+    # P/E itself is still kept, so the number is not lost.
+    out = grade_gauges(0.712, -0.082, -4.544, -19.6, -19.6,
+                       net_cash=0.9e9)
+    assert out["gauges"]["price"]["label"] == "Unknown"
+    assert out["gauges"]["price"]["value"] == -19.6
+    assert "no positive P/E" in out["gauges"]["price"]["basis"]
+    # Growth Strong and Debt Low are favorable, Margins Weak is the
+    # drag, Valuation unknown: two favorable, grade C.
+    assert out["grade"] == "C"
+    assert "Valuation" in out["grade_reason"]
+
+
+def test_price_gauge_unknown_when_peer_median_is_not_positive():
+    out = grade_gauges(0.25, 0.75, 0.30, 20.0, -5.0, net_cash=5.0e9)
+    assert out["gauges"]["price"]["label"] == "Unknown"
+    assert out["grade"] == "B"
+    out = grade_gauges(0.25, 0.75, 0.30, 20.0, 0.0, net_cash=5.0e9)
+    assert out["gauges"]["price"]["label"] == "Unknown"
+
+
+def test_qubt_grade_does_not_flip_with_peer_median():
+    # The regression test for the Nov 14 2026 QUBT mismatch: the
+    # same company numbers, every peer median a fetch could return.
+    # Once the valuation gauge refuses to compare negative P/Es,
+    # the grade stays C on every fetch, so the snapshot and the
+    # roadmap can never disagree about it again.
+    for median in (-19.6, -12.31, None, 10.27, -30.0, 0.0):
+        out = grade_gauges(0.712, -0.082, -4.544, -19.6, median,
+                           net_cash=0.9e9)
+        assert out["grade"] == "C", median
+        assert out["gauges"]["price"]["label"] == "Unknown", median
+
+
 def test_debt_gauge_uses_net_cash_not_yahoo_debt_to_equity():
     # PLTR Nov 10 2026: Yahoo's debtToEquity reads 1.99, but the
     # company holds $10.6B of cash against $0.2B of debt. Net cash

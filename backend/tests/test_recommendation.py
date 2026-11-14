@@ -268,6 +268,128 @@ def test_build_recommendation_no_price_unavailable(monkeypatch):
     assert payload["status"] == "unavailable"
 
 
+# --- recommendation cache agrees with the Story ---------------------------
+# The Company Snapshot reads /api/story and the Roadmap line reads
+# /api/recommendation. Both must show the same grade, even when the
+# Story is rebuilt with a different grade between the two calls.
+# That is the Nov 14 2026 QUBT mismatch: the snapshot showed C
+# while the roadmap showed B, because the recommendation cache held
+# a grade from an earlier Story build.
+
+def _stub_story_for_cache_tests(monkeypatch, grade_holder):
+    monkeypatch.setattr(rec, "_fetch_trend",
+                        lambda ticker: (200.0, 190.0, 180.0, [180.0, 190.0, 200.0], None))
+    monkeypatch.setattr(rec, "detect_catalysts",
+                        lambda ticker: ([], None))
+    import services.insider as insider_module
+    monkeypatch.setattr(insider_module, "fetch_insider",
+                        lambda ticker: {"summary": {}})
+
+    def _story(ticker):
+        return {
+            "status": "ok", "name": "Acme Corp",
+            "grade": grade_holder["grade"],
+            "grade_reason": "Growth Strong.",
+            "targets": {"mean": 220.0, "low": 180.0, "high": 260.0,
+                        "mean_vs_now_pct": 10.0, "analysts": {},
+                        "source": "yahoo"},
+            "gauges": {"price": {"label": "Fair"}},
+            "headwinds": [],
+            "dcf": {"base": 220.0, "bear": 180.0, "bull": 260.0,
+                    "verdict": "strong"},
+            "longterm_verdict": "strong",
+            "earnings_date": "2027-02-01",
+            "earnings_unknown": False,
+            "week52": {"low": 150.0, "high": 250.0,
+                       "position_pct": 50.0},
+            "what_would_change": "What would change this assessment: if growth slows.",
+            "notes": [],
+        }
+
+    import services.story as story_module
+    monkeypatch.setattr(story_module, "build_story", _story)
+
+
+def test_cached_recommendation_served_when_story_agrees(monkeypatch):
+    clear_recommendation_cache()
+    _stub_story_for_cache_tests(monkeypatch, {"grade": "B"})
+    # Replace the helper's trend stub with a counting one, after
+    # the helper runs, so the count is not overwritten.
+    trend_calls = {"n": 0}
+
+    def _trend(ticker):
+        trend_calls["n"] += 1
+        return (200.0, 190.0, 180.0, [180.0, 190.0, 200.0], None)
+
+    monkeypatch.setattr(rec, "_fetch_trend", _trend)
+    first = build_recommendation("ACME")
+    assert first["evidence"]["roadmap"]["grade"] == "B"
+    second = build_recommendation("ACME")
+    assert second["evidence"]["roadmap"]["grade"] == "B"
+    # No rebuild: the trend was fetched once, the cached payload
+    # was served.
+    assert trend_calls["n"] == 1
+
+
+def test_cached_recommendation_rebuilds_when_story_grade_changes(monkeypatch):
+    clear_recommendation_cache()
+    grade_holder = {"grade": "B"}
+    _stub_story_for_cache_tests(monkeypatch, grade_holder)
+    first = build_recommendation("ACME")
+    assert first["evidence"]["roadmap"]["grade"] == "B"
+    assert first["recommendation"]["tier"] == "buy_small"
+
+    # The Story is rebuilt with a different grade (the QUBT case:
+    # the peer set changed between fetches). The cached
+    # recommendation must not keep serving the old grade.
+    grade_holder["grade"] = "C"
+    second = build_recommendation("ACME")
+    assert second["evidence"]["roadmap"]["grade"] == "C"
+    # The tier is re-decided with the current grade, not left over
+    # from the stale build. Here the long-term lane is still strong,
+    # so the tier stays Buy Small.
+    assert second["recommendation"]["tier"] == "buy_small"
+
+
+def test_snapshot_grade_and_roadmap_grade_agree_after_story_change(monkeypatch):
+    # The regression test for the QUBT mismatch, end to end: the
+    # snapshot side reads the Story directly, the roadmap side reads
+    # the recommendation. Both must show the same grade before and
+    # after the Story changes.
+    clear_recommendation_cache()
+    grade_holder = {"grade": "B"}
+    _stub_story_for_cache_tests(monkeypatch, grade_holder)
+    import services.story as story_module
+
+    assert story_module.build_story("ACME")["grade"] == "B"
+    first = build_recommendation("ACME")
+    assert first["evidence"]["roadmap"]["grade"] == "B"
+
+    grade_holder["grade"] = "C"
+    assert story_module.build_story("ACME")["grade"] == "C"
+    second = build_recommendation("ACME")
+    assert second["evidence"]["roadmap"]["grade"] == "C"
+    assert story_module.build_story("ACME")["grade"] == \
+        second["evidence"]["roadmap"]["grade"]
+
+
+def test_cached_recommendation_served_when_story_unavailable(monkeypatch):
+    # A Story outage is not a disagreement: the cached payload is
+    # still the best answer, and the build must not crash.
+    clear_recommendation_cache()
+    grade_holder = {"grade": "B"}
+    _stub_story_for_cache_tests(monkeypatch, grade_holder)
+    first = build_recommendation("ACME")
+    assert first["evidence"]["roadmap"]["grade"] == "B"
+
+    import services.story as story_module
+    monkeypatch.setattr(story_module, "build_story",
+                        lambda ticker: {"status": "unavailable",
+                                        "reason": "story outage"})
+    second = build_recommendation("ACME")
+    assert second["evidence"]["roadmap"]["grade"] == "B"
+
+
 # --- price history (sparkline) --------------------------------------------
 
 def test_price_history_is_list_of_numbers_oldest_first(monkeypatch):

@@ -168,6 +168,25 @@ def _fetch_spy() -> tuple[float | None, float | None, float | None, date | None]
     except Exception as e:
         logger.debug("SPY Polygon fetch failed: %s", e)
 
+    # Fallback: yfinance, same pattern as the VIX fetch. Drops the
+    # unsettled NaN row for the current day, so the last settled
+    # close is the price, not a NaN.
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("SPY").history(period="300d")
+        if not hist.empty:
+            settled = hist["Close"].dropna()
+            if not settled.empty:
+                closes = [float(c) for c in settled]
+                price = closes[-1]
+                ma50 = _ma_from_closes(closes, 50)
+                ma200 = _ma_from_closes(closes, 200)
+                last = settled.index[-1]
+                as_of = last.date() if hasattr(last, "date") else None
+                return price, ma50, ma200, as_of
+    except Exception as e:
+        logger.debug("SPY yfinance fallback failed: %s", e)
+
     return None, None, None, None
 
 

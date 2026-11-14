@@ -282,8 +282,8 @@ def _trend(ind: dict) -> dict:
             round((price - ma200) / ma200 * 100, 2)
             if price is not None and ma200 else None
         ),
-        "above_ma50": bool(price is not None and ma50 is not None and price > ma50),
-        "above_ma200": bool(price is not None and ma200 is not None and price > ma200),
+        "above_ma50": (price > ma50) if (price is not None and ma50 is not None) else None,
+        "above_ma200": (price > ma200) if (price is not None and ma200 is not None) else None,
         "ma50_direction": (
             "rising" if (ma50 is not None and ma50_lag is not None and ma50 > ma50_lag)
             else "falling" if (ma50 is not None and ma50_lag is not None and ma50 < ma50_lag)
@@ -1247,7 +1247,7 @@ def build_verdict(ticker: str, *, price: float, setups: list,
         # Position-aware WAIT wording: when price is already below
         # the 50-day, "no pullback" reads backwards, because a
         # pullback down cannot happen from below the average.
-        if trend.get("ma50") is not None and price < trend["ma50"]:
+        if price is not None and trend.get("ma50") is not None and price < trend["ma50"]:
             reasons = [
                 r if r != "No pullback to a rising average and no volume breakout today."
                 else "No setup fired today: price is below its 50-day average, so a pullback entry did not fire, and no volume breakout fired."

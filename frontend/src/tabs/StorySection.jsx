@@ -116,7 +116,11 @@ export default function StorySection({ ticker, storyData, storyLoading, storyErr
               background: story.grade === 'A' || story.grade === 'B' ? '#68d391' : story.grade === 'C' ? '#f6e05e' : '#fc8181',
               borderRadius: '6px', padding: '2px 8px',
             }}>Grade {story.grade}</span>
-            <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${story.price}</span>
+            {story.price != null ? (
+              <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${story.price}</span>
+            ) : (
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
+            )}
           </div>
           <div style={{ ...S.note, marginTop: '4px' }}>{story.grade_reason}</div>
           {story.earnings_date && (
@@ -128,9 +132,11 @@ export default function StorySection({ ticker, storyData, storyLoading, storyErr
           {story.week52 && (
             <div style={{ marginTop: '8px' }}>
               <div style={{ ...S.note }}>52-week range ${story.week52.low} to ${story.week52.high}</div>
-              <div style={{ ...S.barTrack, marginTop: '4px', position: 'relative' }}>
-                <div style={{ position: 'absolute', left: `${story.week52.position_pct}%`, top: 0, bottom: 0, width: '3px', background: '#fff' }} />
-              </div>
+              {story.week52.position_pct != null && (
+                <div style={{ ...S.barTrack, marginTop: '4px', position: 'relative' }}>
+                  <div style={{ position: 'absolute', left: `${story.week52.position_pct}%`, top: 0, bottom: 0, width: '3px', background: '#fff' }} />
+                </div>
+              )}
             </div>
           )}
           <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6, marginTop: '12px' }}>

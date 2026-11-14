@@ -152,9 +152,11 @@ function plainVerdictLabel(decision, label) {
 
 function trendLine(trend, price) {
   if (!trend) return `Price $${val(price)}`
-  const above50 = trend.above_ma50 ? 'above' : 'below'
-  const above200 = trend.above_ma200 ? 'above' : 'below'
-  return `Price $${val(price)}, ${above50} its 50-day average of $${val(trend.ma50)} (${val(trend.ma50_direction)}) and ${above200} its 200-day average of $${val(trend.ma200)} (${val(trend.ma200_direction)})`
+  const part = (above, ma, direction, label) =>
+    above == null
+      ? `${label} average unknown`
+      : `${above ? 'above' : 'below'} its ${label} average of $${val(ma)} (${val(direction)})`
+  return `Price $${val(price)}, ${part(trend.above_ma50, trend.ma50, trend.ma50_direction, '50-day')} and ${part(trend.above_ma200, trend.ma200, trend.ma200_direction, '200-day')}`
 }
 
 function dcfPresentationFor(longterm, price) {
@@ -418,6 +420,7 @@ function CompanySnapshot({ story, loading, error, price }) {
     )
   }
   const insights = story.insights || null
+  const displayPrice = story.price ?? price
   return (
     <div style={S.card}>
       <div style={S.sectionLabel}>Company snapshot</div>
@@ -429,7 +432,11 @@ function CompanySnapshot({ story, loading, error, price }) {
           background: story.grade === 'A' || story.grade === 'B' ? '#68d391' : story.grade === 'C' ? '#f6e05e' : '#fc8181',
           borderRadius: '6px', padding: '2px 8px',
         }}>Grade {story.grade}</span>
-        <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${story.price ?? price}</span>
+        {displayPrice != null ? (
+          <span style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>${displayPrice}</span>
+        ) : (
+          <span style={{ fontSize: '14px', fontWeight: 700, color: '#a0aec0' }}>price unavailable</span>
+        )}
       </div>
       {story.earnings_date && (
         <div style={{ ...S.note, marginTop: '4px' }}>Next earnings: {story.earnings_date}</div>

@@ -1,25 +1,38 @@
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    const detail = err.detail
-    // Named backend errors arrive as {error, reason}; show the reason
-    // plainly instead of "[object Object]". A plain string detail
-    // still shows as-is.
-    const message =
-      typeof detail === 'string' ? detail
-      : detail && typeof detail === 'object'
-        ? (detail.reason || detail.error || JSON.stringify(detail))
-        : `HTTP ${res.status}`
-    throw new Error(message || `HTTP ${res.status}`)
+  const timeoutMs = options.timeoutMs
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...options,
+      signal: controller ? controller.signal : options.signal,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }))
+      const detail = err.detail
+      // Named backend errors arrive as {error, reason}; show the reason
+      // plainly instead of "[object Object]". A plain string detail
+      // still shows as-is.
+      const message =
+        typeof detail === 'string' ? detail
+        : detail && typeof detail === 'object'
+          ? (detail.reason || detail.error || JSON.stringify(detail))
+          : `HTTP ${res.status}`
+      throw new Error(message || `HTTP ${res.status}`)
+    }
+    return res.json()
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error('Request timed out, still loading, try again')
+    }
+    throw err
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return res.json()
 }
 
 export const api = {
@@ -168,7 +181,9 @@ export const api = {
       request(`/api/story/${encodeURIComponent(ticker)}`),
   },
   topStocks: {
-    get: () => request('/api/top-stocks'),
+    // Grading 20 tickers takes over a minute cold, so allow 90s
+    // before the request aborts with a plain timeout message.
+    get: () => request('/api/top-stocks', { timeoutMs: 90000 }),
   },
   recommendation: {
     get: (ticker) =>

@@ -97,3 +97,44 @@ def test_annualized_yield_and_shares_total():
     assert picks["conservative"]["contracts_covered"] == 2
     assert picks["conservative"]["total_premium_for_shares"] == 200.00
     assert picks["conservative"]["annualized_yield_pct"] == round(1.0 * 365 / 37, 1)
+
+
+def test_deep_itm_stale_quote_is_rejected():
+    # AAPL Dec 18 2026, live: the only row with a positive bid was
+    # the $35 strike on a $351.91 stock, bid $284.80, delta 1.0.
+    # The strike sits 90% below the price, so no tier may use it.
+    rows = [_row(35, 284.80, 1.0)]
+    picks, fallbacks = build_picks(rows, 351.91, 30)
+    assert picks == {"aggressive": None, "middle": None, "conservative": None}
+    assert fallbacks == []
+
+
+def test_itm_bid_below_intrinsic_rejected_but_fair_bid_passes():
+    # Strike $90 on a $100 stock: intrinsic $10. A $5.00 bid sits
+    # $5 below intrinsic, far past the $2 tolerance, so it is a
+    # stale quote and no tier may use it.
+    rows = [_row(90, 5.00, 1.0)]
+    picks, _ = build_picks(rows, 100.0, 37)
+    assert picks["aggressive"] is None
+    # A $9.50 bid sits $0.50 below intrinsic, inside tolerance.
+    rows = [_row(90, 9.50, 1.0)]
+    picks, fallbacks = build_picks(rows, 100.0, 37)
+    assert picks["aggressive"]["strike"] == 90
+    assert picks["aggressive"]["band_fallback"] is True
+
+
+def test_fallback_prefers_unused_strike():
+    # Three rows: aggressive takes the $115 strike, middle takes
+    # the $100 strike. The old fallback handed conservative the
+    # $100 strike again; it must prefer the unused $105 strike.
+    rows = [
+        _row(100, 4.00, 0.40),
+        _row(105, 2.00, 0.45),
+        _row(115, 1.00, 0.50),
+    ]
+    picks, fallbacks = build_picks(rows, 100.0, 37)
+    assert picks["aggressive"]["strike"] == 115
+    assert picks["middle"]["strike"] == 100
+    assert picks["conservative"]["strike"] == 105
+    assert picks["conservative"]["band_fallback"] is True
+    assert len({p["strike"] for p in picks.values() if p}) == 3

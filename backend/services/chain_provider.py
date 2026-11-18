@@ -120,6 +120,29 @@ def resolve_sale_price(bid: float, ask: float) -> tuple[float, float, str]:
     return round(bid, 2), mid, "bid"
 
 
+def _has_executable_bid(rows, price=None) -> bool:
+    """True when at least one chain row carries a usable bid.
+
+    A chain whose every bid is 0.0 is not a live quote, even when the
+    rows carry last trades or IV. A lone positive bid on a strike far
+    from the price is not usable either: it is a stale deep
+    in-the-money quote (the AAPL Dec 18 2026 case, where a $35 strike
+    on a $351.91 stock carried the only positive bid), so when the
+    price is known the strike must sit within 25% of it. Callers
+    that price off the bid must not treat either case as a success.
+    """
+    for row in rows or []:
+        bid = float(row.get("bid") or 0)
+        if bid <= 0:
+            continue
+        if not price or price <= 0:
+            return True
+        strike = float(row.get("strike") or 0)
+        if strike and abs(strike - price) / price <= 0.25:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Black-Scholes helpers (duplicated from stock_data to keep this module
 # self-contained; stock_data's copies remain authoritative for the tiers)
@@ -749,7 +772,11 @@ class ChainProvider:
         """
         Polygon primary, yfinance second, CBOE delayed third.
         Returns ChainResult on success, ChainError on total failure.
-        Never returns an empty-rows ChainResult as a success.
+        Never returns an empty-rows ChainResult as a success. A
+        yfinance chain with no executable bid is not a success
+        either: it falls through to CBOE, and only returns the
+        bid-0 rows when CBOE has nothing, so callers can report
+        no_executable_bid instead of the contract vanishing silently.
         """
         sources_tried: list[str] = []
         live_price = near_price or self.fetch_price(ticker)
@@ -772,12 +799,21 @@ class ChainProvider:
             ticker, contract_type, dte_min, dte_max, live_price=live_price
         )
         sources_tried.append("yfinance")
-        if yf_rows:
+        if yf_rows and _has_executable_bid(yf_rows, live_price):
             return ChainResult(
                 rows=yf_rows,
                 price=yf_price or live_price or 0.0,
                 source=yf_source,
                 fetched_at=datetime.utcnow(),
+            )
+        if yf_rows:
+            # Yahoo returned rows but no executable bid (the usual
+            # stale-chain case: every bid is 0.0). A bid-0 chain is
+            # not a live quote, so fall through to CBOE delayed
+            # instead of presenting it as one.
+            self.last_yfinance_note = (
+                f"yfinance returned {len(yf_rows)} rows with no executable bid; "
+                "falling through to CBOE delayed"
             )
 
         # --- CBOE delayed fallback ---
@@ -794,6 +830,17 @@ class ChainProvider:
                 rows=cboe_rows,
                 price=cboe_price or live_price or 0.0,
                 source=cboe_source,
+                fetched_at=datetime.utcnow(),
+            )
+        if yf_rows:
+            # Neither live source nor CBOE had an executable bid.
+            # Return the yfinance rows so callers can report
+            # no_executable_bid instead of the contract vanishing
+            # silently.
+            return ChainResult(
+                rows=yf_rows,
+                price=yf_price or live_price or 0.0,
+                source=yf_source,
                 fetched_at=datetime.utcnow(),
             )
 

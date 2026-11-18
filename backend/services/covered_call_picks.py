@@ -39,6 +39,16 @@ TIER_LABELS = {
     "conservative": "Conservative: decent premium, limited chance of being called away",
 }
 
+# Sanity guards for a candidate row. A strike more than 20% from the
+# price is not a covered-call candidate, and an in-the-money bid that
+# sits far below intrinsic value is a stale quote, not an executable
+# price (a real bid cannot sit below intrinsic by more than the
+# spread). Without these, a thin chain hands every tier the same
+# deep in-the-money strike.
+MAX_STRIKE_DISTANCE_PCT = 20.0
+INTRINSIC_TOLERANCE_MIN = 1.0
+INTRINSIC_TOLERANCE_PCT = 2.0
+
 
 def _num(value):
     try:
@@ -50,29 +60,64 @@ def _num(value):
     return out
 
 
-def select_tier(rows, low, high, target):
+def _row_is_sane(row, price):
+    """True when a chain row is a plausible covered-call candidate.
+
+    Rejects strikes more than MAX_STRIKE_DISTANCE_PCT from the price
+    and in-the-money bids that sit below intrinsic value by more than
+    the tolerance. A missing price disables the checks.
+    """
+    strike = _num(row.get("strike"))
+    bid = _num(row.get("bid"))
+    if strike is None or bid is None or not price or price <= 0:
+        return True
+    if abs(strike - price) / price > MAX_STRIKE_DISTANCE_PCT / 100.0:
+        return False
+    if strike < price:
+        intrinsic = price - strike
+        tolerance = max(INTRINSIC_TOLERANCE_MIN, price * INTRINSIC_TOLERANCE_PCT / 100.0)
+        if bid < intrinsic - tolerance:
+            return False
+    return True
+
+
+def select_tier(rows, low, high, target, price=None, used_strikes=None):
     """Pick one call row for a delta band, or None.
 
     Rows inside the band win, ranked by premium (bid) first, then by
     closeness to the band target. If no row is inside the band, the
     nearest row to the target delta is used and flagged as a fallback.
-    Rows with no positive bid or no delta are never candidates.
+    Rows with no positive bid or no delta are never candidates, and
+    rows that fail the sanity guards are never candidates either.
+    A strike already used by another tier is picked only when no
+    unused candidate passes the guards, so the three tiers show
+    three different trades whenever the chain supports it.
     """
+    used = set(used_strikes or [])
     candidates = []
     for row in rows or []:
         bid = _num(row.get("bid"))
         delta = _num(row.get("delta"))
         if bid is None or bid <= 0 or delta is None:
             continue
+        if not _row_is_sane(row, price):
+            continue
         candidates.append((row, bid, abs(delta)))
     if not candidates:
         return None, False
-    in_band = [(r, b, d) for (r, b, d) in candidates if low <= d <= high]
-    if in_band:
-        in_band.sort(key=lambda item: (-item[1], abs(item[2] - target)))
-        return in_band[0][0], False
-    candidates.sort(key=lambda item: abs(item[2] - target))
-    return candidates[0][0], True
+
+    def _pick(pool):
+        in_band = [(r, b, d) for (r, b, d) in pool if low <= d <= high]
+        if in_band:
+            in_band.sort(key=lambda item: (-item[1], abs(item[2] - target)))
+            return in_band[0][0], False
+        pool = sorted(pool, key=lambda item: abs(item[2] - target))
+        return pool[0][0], True
+
+    unused = [c for c in candidates if c[0].get("strike") not in used]
+    if unused:
+        return _pick(unused)
+    return _pick(candidates)
 
 
 def enrich_pick(tier, row, price, dte, shares_owned=100, cost_basis=None):
@@ -170,15 +215,17 @@ def enrich_pick(tier, row, price, dte, shares_owned=100, cost_basis=None):
 def build_picks(rows, price, dte, shares_owned=100, cost_basis=None):
     """Build all three tiers from one expiry's call rows.
 
-    Returns (picks, fallback_tiers). A strike used by two tiers is
-    allowed only when the chain has no better distinct strike; the
-    fallback flag still names the band that had to fall back.
+    Returns (picks, fallback_tiers). A strike already used by
+    another tier is picked only when no unused candidate passes the
+    guards, so the tiers show different trades whenever the chain
+    supports it. The fallback flag still names the band that had to
+    fall back.
     """
     picks = {}
     fallback_tiers = []
     used_strikes = set()
     for tier, (low, high, target) in BANDS.items():
-        row, is_fallback = select_tier(rows, low, high, target)
+        row, is_fallback = select_tier(rows, low, high, target, price=price, used_strikes=used_strikes)
         if row is None:
             picks[tier] = None
             continue

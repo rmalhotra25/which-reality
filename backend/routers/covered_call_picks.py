@@ -194,7 +194,7 @@ def covered_call_picks(
         else None
     )
     picks, fallback_tiers = build_picks(result.rows, price, dte, shares, cost_basis)
-    return {
+    response = {
         "ticker": ticker,
         "available": True,
         "reason": None,
@@ -215,3 +215,14 @@ def covered_call_picks(
         "history": history,
         "history_note": None if history else "Price chart unavailable: no price history could be fetched. The strike ladder below still shows the trade-off.",
     }
+    if all(v is None for v in picks.values()):
+        # No tier could be priced: the chain carried no usable bid.
+        # Say so plainly instead of reporting success with three
+        # empty tiers.
+        response["available"] = False
+        response["reason"] = (
+            f"No covered-call pick could be priced for {ticker} on "
+            f"{selected['expiry']}: the {chain_source} chain returned "
+            "no usable bid for this expiry. Try another expiry."
+        )
+    return response

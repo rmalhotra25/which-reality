@@ -136,6 +136,82 @@ def test_fetch_reports_all_three_sources_when_all_fail():
     assert "cboe" in result.reason
 
 
+def test_fetch_falls_through_to_cboe_when_yfinance_has_no_executable_bid():
+    # Nov 18 2026: Yahoo returned rows for MSFT/TSLA/NVDA with every
+    # bid at 0.0, and fetch returned them as a live chain, so the
+    # picks tab showed three empty tiers while reporting success.
+    # A bid-0 chain is not a live quote: fetch must try CBOE next.
+    provider = ChainProvider()
+    expiry_date = _expiry_in_window()
+    payload = _cboe_options(expiry_date)
+    yf_rows = [
+        {"strike": 405.0, "bid": 0.0, "ask": 0.0, "delta": 0.55},
+        {"strike": 410.0, "bid": 0.0, "ask": 0.0, "delta": 0.50},
+    ]
+    with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
+         mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
+         mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=payload):
+        result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
+    assert hasattr(result, "rows")
+    assert result.source == "cboe_delayed"
+    assert any(r["bid"] > 0 for r in result.rows)
+
+
+def test_fetch_falls_through_to_cboe_when_yfinance_only_bid_is_far_from_price():
+    # AAPL Dec 18 2026: Yahoo's only positive bid was the $35 strike
+    # on a $351.91 stock. That stale deep in-the-money quote must not
+    # block the CBOE fallback the way a real near-money bid would.
+    provider = ChainProvider()
+    expiry_date = _expiry_in_window()
+    payload = _cboe_options(expiry_date)
+    yf_rows = [
+        {"strike": 35.0, "bid": 284.80, "ask": 285.00, "delta": 1.0},
+    ]
+    with mock.patch.object(ChainProvider, "fetch_price", return_value=351.91), \
+         mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
+         mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 351.91, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=payload):
+        result = provider.fetch("AAPL", "call", 14, 28, near_price=351.91)
+    assert hasattr(result, "rows")
+    assert result.source == "cboe_delayed"
+    assert any(r["bid"] > 0 for r in result.rows)
+
+
+def test_fetch_keeps_yfinance_when_it_has_a_near_money_bid():
+    # The price-aware gate must not send a healthy live chain to CBOE.
+    provider = ChainProvider()
+    yf_rows = [
+        {"strike": 405.0, "bid": 18.00, "ask": 18.20, "delta": 0.55},
+    ]
+    with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
+         mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
+         mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=[]):
+        result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
+    assert hasattr(result, "rows")
+    assert result.source == "yfinance_last_trade"
+    assert result.rows == yf_rows
+
+
+def test_fetch_returns_yfinance_rows_when_cboe_also_has_no_bid():
+    # When CBOE has nothing either, the yfinance rows come back so
+    # callers can report no_executable_bid instead of the contract
+    # vanishing silently.
+    provider = ChainProvider()
+    yf_rows = [
+        {"strike": 405.0, "bid": 0.0, "ask": 0.0, "delta": 0.55},
+    ]
+    with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
+         mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
+         mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=[]):
+        result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
+    assert hasattr(result, "rows")
+    assert result.source == "yfinance_last_trade"
+    assert result.rows == yf_rows
+
+
 def test_strategies_from_cboe_rows_carry_delayed_source():
     provider = ChainProvider()
     expiry_date = _expiry_in_window()

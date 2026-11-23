@@ -13,10 +13,17 @@ function val(v) {
   return v === null || v === undefined ? 'Missing' : v
 }
 
-function PickCard({ pick, fallback }) {
+const TIER_REASON_TEXT = {
+  no_bid: 'no strike on this expiry has a bid.',
+  no_otm_bid: 'no out-of-the-money strike has a real bid.',
+  no_band_strike: 'no listed strike sits in or near this delta band.',
+  strike_used_by_another_tier: 'the only strikes in this band are already used by another tier.',
+}
+
+function PickCard({ pick, fallback, reason }) {
   if (!pick) return (
     <div style={S.card}>
-      <div style={S.note}>No listed strike for this tier on this expiry.</div>
+      <div style={S.note}>No listed strike for this tier on this expiry.{reason ? ` ${TIER_REASON_TEXT[reason] || reason}` : ''}</div>
     </div>
   )
   return (
@@ -130,6 +137,9 @@ export default function CoveredCallsTab() {
         <div style={S.card}>
           <div style={{ color: '#fc8181', fontWeight: 700 }}>Covered call picks unavailable</div>
           <div style={S.note}>{result.reason}</div>
+          {(result.chain_notes || []).length > 0 && (
+            <div style={{ ...S.note, marginTop: '8px' }}>Sources tried: {result.chain_notes.join(' | ')}</div>
+          )}
         </div>
       )}
 
@@ -146,9 +156,9 @@ export default function CoveredCallsTab() {
             </div>
           </div>
 
-          <PickCard pick={picks.aggressive} fallback={result.band_fallback_tiers?.includes('aggressive')} />
-          <PickCard pick={picks.middle} fallback={result.band_fallback_tiers?.includes('middle')} />
-          <PickCard pick={picks.conservative} fallback={result.band_fallback_tiers?.includes('conservative')} />
+          <PickCard pick={picks.aggressive} fallback={result.band_fallback_tiers?.includes('aggressive')} reason={result.tier_reasons?.aggressive} />
+          <PickCard pick={picks.middle} fallback={result.band_fallback_tiers?.includes('middle')} reason={result.tier_reasons?.middle} />
+          <PickCard pick={picks.conservative} fallback={result.band_fallback_tiers?.includes('conservative')} reason={result.tier_reasons?.conservative} />
 
           <div style={S.card}>
             <div style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: '8px' }}>Strike ladder: premium yield vs delta</div>
@@ -182,6 +192,9 @@ export default function CoveredCallsTab() {
                 </div>
               ))}
               <div style={S.note}>Chain source: {val(result.chain_source)}. {result.chain_delay_note || ''} Expiries source: {val(result.expiries_source)}.</div>
+              {(result.chain_notes || []).length > 0 && (
+                <div style={{ ...S.note, marginTop: '8px' }}>Sources tried: {result.chain_notes.join(' | ')}</div>
+              )}
               <div style={{ ...S.note, marginTop: '8px' }}>{result.news_note}</div>
               {(result.news || []).length === 0 && <div style={S.note}>{result.news_error || 'No recent headlines found.'}</div>}
               {(result.news || []).map((n, i) => (

@@ -740,7 +740,7 @@ def covered_call_candidates(tickers, shares_by_ticker):
                     "shares_owned": shares,
                 })
                 continue
-            picks, _ = build_picks(result.rows, price, selected["dte"], shares, None)
+            picks, _, _ = build_picks(result.rows, price, selected["dte"], shares, None)
             pick = picks.get("middle")
             if pick is None:
                 out.append({

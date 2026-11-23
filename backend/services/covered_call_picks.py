@@ -7,19 +7,31 @@ instruction. It answers one narrow question for shares already owned
 (or planned to be owned): which listed call, sold against those
 shares, gives up how much upside for how much premium.
 
+The tab is built for a weekly income seller: premium the seller
+would most likely keep, with limited risk of losing the shares.
+That means out-of-the-money strikes only, a real bid, and a liquid
+strike. An in-the-money strike is never a pick: selling it means
+the shares are almost certainly called away, and most of the
+"premium" is intrinsic value the seller gives back.
+
 Tier selection, by delta bands on one expiry:
-  aggressive:    delta roughly 0.55 to 0.75, in the money or near it,
-                 best premium, most likely to be called away.
+  aggressive:    delta roughly 0.55 to 0.75, near the money, best
+                 premium, most likely to be called away.
   middle:       delta roughly 0.30 to 0.45, balanced premium and
                  assignment risk.
-  conservative: delta roughly 0.15 to 0.25, premium that is still
-                 decent, limited chance of being called away.
+  conservative: delta roughly 0.15 to 0.25, the keep-the-premium
+                 tier: far out of the money, small premium, low
+                 chance of being called away.
 
 Delta is an assignment-risk proxy only, labelled as a rough proxy,
-never as a probability guarantee. If a band has no listed strike, the
-nearest listed strike to that band is used and flagged as a fallback.
-If there is no chain at all, the tab reads unavailable with the named
-reason, never invented strikes.
+never as a probability guarantee. If a band has no listed strike,
+the nearest listed strike to that band is used and flagged as a
+fallback, but only when it sits within MAX_FALLBACK_DELTA_GAP of
+the band edge; a strike far from the band is a different trade,
+not a fallback. In-band picks are made before fallbacks, so a
+strike that sits squarely in one tier's band is never stolen as
+another tier's fallback. If there is no chain at all, the tab reads
+unavailable with the named reason, never invented strikes.
 
 Pricing: a seller collects the bid, never the mid and never the last
 trade. Rows with no positive bid are excluded. Greeks come from the
@@ -36,18 +48,23 @@ BANDS = {
 TIER_LABELS = {
     "aggressive": "Aggressive: best premium, likely called away",
     "middle": "Middle of the pack: balanced premium and assignment risk",
-    "conservative": "Conservative: decent premium, limited chance of being called away",
+    "conservative": "Keep the premium: far out of the money, small premium, low chance of being called away",
 }
 
-# Sanity guards for a candidate row. A strike more than 20% from the
-# price is not a covered-call candidate, and an in-the-money bid that
-# sits far below intrinsic value is a stale quote, not an executable
-# price (a real bid cannot sit below intrinsic by more than the
-# spread). Without these, a thin chain hands every tier the same
+# Sanity guards for a candidate row. A strike more than 10% from the
+# price is not a covered-call candidate, and an in-the-money strike
+# is never a pick: selling it hands the shares over and most of the
+# "premium" is intrinsic value. A bid under $0.20 a share is not
+# worth selling, a strike with under 10 contracts of open interest
+# has no real market, and an IV above 150% is a bad quote, not a
+# real market (the ABT Dec 18 2026 case showed 168% IV on a $82.50
+# strike). Without these, a thin chain hands every tier the same
 # deep in-the-money strike.
-MAX_STRIKE_DISTANCE_PCT = 20.0
-INTRINSIC_TOLERANCE_MIN = 1.0
-INTRINSIC_TOLERANCE_PCT = 2.0
+MAX_STRIKE_DISTANCE_PCT = 10.0
+MIN_BID_PER_SHARE = 0.20
+MIN_OPEN_INTEREST = 10
+MAX_IV_PCT = 150.0
+MAX_FALLBACK_DELTA_GAP = 0.10
 
 
 def _num(value):
@@ -63,61 +80,107 @@ def _num(value):
 def _row_is_sane(row, price):
     """True when a chain row is a plausible covered-call candidate.
 
-    Rejects strikes more than MAX_STRIKE_DISTANCE_PCT from the price
-    and in-the-money bids that sit below intrinsic value by more than
-    the tolerance. A missing price disables the checks.
+    Rejects in-the-money strikes outright, strikes more than
+    MAX_STRIKE_DISTANCE_PCT from the price, bids under
+    MIN_BID_PER_SHARE, strikes with under MIN_OPEN_INTEREST of
+    open interest (when open interest is reported), and IV above
+    MAX_IV_PCT. A missing price disables the price checks, and a
+    missing open interest does not fail the row.
     """
     strike = _num(row.get("strike"))
     bid = _num(row.get("bid"))
-    if strike is None or bid is None or not price or price <= 0:
+    if strike is None or bid is None:
+        return False
+    if bid < MIN_BID_PER_SHARE:
+        return False
+    iv = _num(row.get("iv_pct"))
+    if iv is not None and iv > MAX_IV_PCT:
+        return False
+    oi = row.get("open_interest")
+    if oi is not None:
+        try:
+            if int(oi) < MIN_OPEN_INTEREST:
+                return False
+        except (TypeError, ValueError):
+            pass
+    if not price or price <= 0:
         return True
+    if strike < price:
+        return False
     if abs(strike - price) / price > MAX_STRIKE_DISTANCE_PCT / 100.0:
         return False
-    if strike < price:
-        intrinsic = price - strike
-        tolerance = max(INTRINSIC_TOLERANCE_MIN, price * INTRINSIC_TOLERANCE_PCT / 100.0)
-        if bid < intrinsic - tolerance:
-            return False
     return True
 
 
-def select_tier(rows, low, high, target, price=None, used_strikes=None):
-    """Pick one call row for a delta band, or None.
+def select_tier(rows, low, high, target, price=None, used_strikes=None, in_band_only=False):
+    """Pick one call row for a delta band, or None with a reason.
 
-    Rows inside the band win, ranked by premium (bid) first, then by
-    closeness to the band target. If no row is inside the band, the
-    nearest row to the target delta is used and flagged as a fallback.
-    Rows with no positive bid or no delta are never candidates, and
-    rows that fail the sanity guards are never candidates either.
-    A strike already used by another tier is picked only when no
-    unused candidate passes the guards, so the three tiers show
-    three different trades whenever the chain supports it.
+    Returns (row, is_fallback, reason). Rows inside the band win,
+    ranked by premium (bid) first, then by closeness to the band
+    target. If no row is inside the band, the nearest row to the
+    band edge is used and flagged as a fallback, but only when it
+    sits within MAX_FALLBACK_DELTA_GAP of the edge. With
+    in_band_only=True, no fallback is offered: only a row inside
+    the band qualifies. Rows with no positive bid, no delta, or
+    that fail the sanity guards are never candidates. A strike
+    already used by another tier is never reused: when only used
+    strikes remain, the tier is empty with reason
+    "strike_used_by_another_tier" instead of repeating a trade
+    under a different label.
+
+    Reasons when no row is picked:
+      "no_bid": no row carries a positive bid.
+      "no_otm_bid": bids exist, but no out-of-the-money strike
+        with a real bid passes the guards.
+      "no_band_strike": sane strikes exist, but none sits in or
+        near this delta band.
+      "strike_used_by_another_tier": the only strikes in or near
+        the band are already used by another tier.
     """
     used = set(used_strikes or [])
-    candidates = []
+    any_bid = False
+    sane = []
     for row in rows or []:
         bid = _num(row.get("bid"))
         delta = _num(row.get("delta"))
+        if bid is not None and bid > 0:
+            any_bid = True
         if bid is None or bid <= 0 or delta is None:
             continue
         if not _row_is_sane(row, price):
             continue
-        candidates.append((row, bid, abs(delta)))
-    if not candidates:
-        return None, False
+        sane.append((row, bid, abs(delta)))
+    if not sane:
+        return None, False, ("no_bid" if not any_bid else "no_otm_bid")
+
+    def _gap(delta):
+        if low <= delta <= high:
+            return 0.0
+        return low - delta if delta < low else delta - high
 
     def _pick(pool):
         in_band = [(r, b, d) for (r, b, d) in pool if low <= d <= high]
         if in_band:
             in_band.sort(key=lambda item: (-item[1], abs(item[2] - target)))
             return in_band[0][0], False
-        pool = sorted(pool, key=lambda item: abs(item[2] - target))
-        return pool[0][0], True
+        if in_band_only:
+            return None, False
+        near = [(r, b, d) for (r, b, d) in pool if _gap(d) <= MAX_FALLBACK_DELTA_GAP]
+        if not near:
+            return None, False
+        near.sort(key=lambda item: (_gap(item[2]), -item[1]))
+        return near[0][0], True
 
-    unused = [c for c in candidates if c[0].get("strike") not in used]
+    unused = [c for c in sane if c[0].get("strike") not in used]
     if unused:
-        return _pick(unused)
-    return _pick(candidates)
+        row, is_fallback = _pick(unused)
+        if row is not None:
+            return row, is_fallback, None
+        return None, False, "no_band_strike"
+    row, is_fallback = _pick(sane)
+    if row is not None:
+        return None, False, "strike_used_by_another_tier"
+    return None, False, "no_band_strike"
 
 
 def enrich_pick(tier, row, price, dte, shares_owned=100, cost_basis=None):
@@ -215,20 +278,44 @@ def enrich_pick(tier, row, price, dte, shares_owned=100, cost_basis=None):
 def build_picks(rows, price, dte, shares_owned=100, cost_basis=None):
     """Build all three tiers from one expiry's call rows.
 
-    Returns (picks, fallback_tiers). A strike already used by
-    another tier is picked only when no unused candidate passes the
-    guards, so the tiers show different trades whenever the chain
-    supports it. The fallback flag still names the band that had to
-    fall back.
+    Returns (picks, fallback_tiers, tier_reasons). In-band picks
+    are made for all three tiers first, so a strike that sits
+    squarely in one tier's band is never stolen as another tier's
+    fallback; fallbacks are only offered to the tiers still empty.
+    A strike already used by another tier is never reused: that
+    tier stays empty with a reason instead of repeating a trade
+    under a different label. tier_reasons maps each empty tier to
+    the reason select_tier reported, or None when the tier has a
+    pick.
     """
     picks = {}
     fallback_tiers = []
+    tier_reasons = {}
     used_strikes = set()
+    pending = []
     for tier, (low, high, target) in BANDS.items():
-        row, is_fallback = select_tier(rows, low, high, target, price=price, used_strikes=used_strikes)
+        row, _, _ = select_tier(
+            rows, low, high, target, price=price, used_strikes=used_strikes,
+            in_band_only=True,
+        )
+        if row is None:
+            pending.append((tier, low, high, target))
+            continue
+        pick = enrich_pick(tier, row, price, dte, shares_owned, cost_basis)
+        pick["band_fallback"] = False
+        pick["band"] = [low, high]
+        picks[tier] = pick
+        tier_reasons[tier] = None
+        used_strikes.add(row.get("strike"))
+    for tier, low, high, target in pending:
+        row, is_fallback, reason = select_tier(
+            rows, low, high, target, price=price, used_strikes=used_strikes
+        )
         if row is None:
             picks[tier] = None
+            tier_reasons[tier] = reason
             continue
+        tier_reasons[tier] = None
         if is_fallback:
             fallback_tiers.append(tier)
         pick = enrich_pick(tier, row, price, dte, shares_owned, cost_basis)
@@ -236,15 +323,17 @@ def build_picks(rows, price, dte, shares_owned=100, cost_basis=None):
         pick["band"] = [low, high]
         picks[tier] = pick
         used_strikes.add(row.get("strike"))
-    return picks, fallback_tiers
+    return picks, fallback_tiers, tier_reasons
 
 
 def default_expiry(expiries):
-    """Pick the listed expiry closest to 30-45 DTE.
+    """Pick the listed expiry for weekly income first, then 30-45 DTE.
 
-    Target is 37 days, the middle of the 30-45 window. Expiries inside
-    the window win over ones outside it, and the closest to 37 wins
-    within each group. Returns None when no expiry is listed.
+    The tab is for selling premium every week and keeping it, so the
+    nearest weekly expiry wins: any expiry 4 to 14 days out, nearest
+    first. When no weekly is listed, fall back to the 30-45 day
+    window (closest to 37), then to the nearest listed expiry.
+    Returns None when no expiry is listed.
     """
     today_dte = []
     for item in expiries or []:
@@ -254,6 +343,9 @@ def default_expiry(expiries):
         today_dte.append(item)
     if not today_dte:
         return None
+    weekly = [e for e in today_dte if 4 <= e["dte"] <= 14]
+    if weekly:
+        return min(weekly, key=lambda e: e["dte"])
     in_window = [e for e in today_dte if 30 <= e["dte"] <= 45]
     pool = in_window if in_window else today_dte
     return min(pool, key=lambda e: abs(e["dte"] - 37))

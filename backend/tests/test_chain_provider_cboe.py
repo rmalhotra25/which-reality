@@ -1,4 +1,4 @@
-"""CBOE delayed chain: third fallback after Polygon and yfinance.
+"""CBOE delayed chain: fourth fallback after Polygon, yfinance, and Nasdaq.
 
 Nov 2 2026 failure: Polygon rows were all skipped for mid 0 on the
 Massive Starter plan, and yfinance returned no option expiries on
@@ -116,6 +116,7 @@ def test_fetch_tries_cboe_only_after_polygon_and_yfinance_fail():
     with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=([], None, "")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", return_value=([], None, "")), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=payload):
         result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
     assert hasattr(result, "rows")
@@ -124,16 +125,23 @@ def test_fetch_tries_cboe_only_after_polygon_and_yfinance_fail():
     assert all(r["expiry"] == expiry_date.isoformat() for r in result.rows)
 
 
-def test_fetch_reports_all_three_sources_when_all_fail():
+def test_fetch_reports_all_four_sources_when_all_fail():
     provider = ChainProvider()
+
+    def _nasdaq_empty(*args, **kwargs):
+        provider.last_nasdaq_note = "nasdaq returned no rows for TSLA"
+        return [], None, ""
+
     with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=([], None, "")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", side_effect=_nasdaq_empty), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=[]):
         result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
     assert not hasattr(result, "rows")
-    assert result.sources_tried == ["polygon", "yfinance", "cboe"]
+    assert result.sources_tried == ["polygon", "yfinance", "nasdaq", "cboe"]
     assert "cboe" in result.reason
+    assert "nasdaq" in result.reason
 
 
 def test_fetch_falls_through_to_cboe_when_yfinance_has_no_executable_bid():
@@ -151,6 +159,7 @@ def test_fetch_falls_through_to_cboe_when_yfinance_has_no_executable_bid():
     with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", return_value=([], None, "")), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=payload):
         result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
     assert hasattr(result, "rows")
@@ -171,6 +180,7 @@ def test_fetch_falls_through_to_cboe_when_yfinance_only_bid_is_far_from_price():
     with mock.patch.object(ChainProvider, "fetch_price", return_value=351.91), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 351.91, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", return_value=([], None, "")), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=payload):
         result = provider.fetch("AAPL", "call", 14, 28, near_price=351.91)
     assert hasattr(result, "rows")
@@ -187,6 +197,7 @@ def test_fetch_keeps_yfinance_when_it_has_a_near_money_bid():
     with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", return_value=([], None, "")), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=[]):
         result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
     assert hasattr(result, "rows")
@@ -205,6 +216,7 @@ def test_fetch_returns_yfinance_rows_when_cboe_also_has_no_bid():
     with mock.patch.object(ChainProvider, "fetch_price", return_value=407.0), \
          mock.patch.object(ChainProvider, "_fetch_polygon_rows", return_value=([], None)), \
          mock.patch.object(ChainProvider, "_fetch_yfinance_rows", return_value=(yf_rows, 407.0, "yfinance_last_trade")), \
+         mock.patch.object(ChainProvider, "_fetch_nasdaq_rows", return_value=([], None, "")), \
          mock.patch.object(ChainProvider, "_fetch_cboe_payload", return_value=[]):
         result = provider.fetch("TSLA", "call", 14, 28, near_price=407.0)
     assert hasattr(result, "rows")

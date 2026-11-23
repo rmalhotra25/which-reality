@@ -75,6 +75,7 @@ class ChainResult:
     price: float
     source: str
     fetched_at: datetime
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -93,6 +94,18 @@ def _safe_int(x) -> int:
     except (TypeError, ValueError):
         return 0
     return 0 if math.isnan(v) else int(v)
+
+
+def _nasdaq_num(value) -> float | None:
+    """Parse a Nasdaq option-chain number: values arrive as strings
+    that may carry commas, and '--' means no quote. Returns None
+    when the value is missing or unparseable."""
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def resolve_sale_price(bid: float, ask: float) -> tuple[float, float, str]:
@@ -127,9 +140,11 @@ def _has_executable_bid(rows, price=None) -> bool:
     rows carry last trades or IV. A lone positive bid on a strike far
     from the price is not usable either: it is a stale deep
     in-the-money quote (the AAPL Dec 18 2026 case, where a $35 strike
-    on a $351.91 stock carried the only positive bid), so when the
-    price is known the strike must sit within 25% of it. Callers
-    that price off the bid must not treat either case as a success.
+    on a $351.91 stock carried the only positive bid, and the ABT
+    Dec 18 2026 case, where an $82.50 strike on a $102.97 stock
+    carried the only positive bids), so when the price is known the
+    strike must sit within 10% of it. Callers that price off the bid
+    must not treat either case as a success.
     """
     for row in rows or []:
         bid = float(row.get("bid") or 0)
@@ -138,7 +153,7 @@ def _has_executable_bid(rows, price=None) -> bool:
         if not price or price <= 0:
             return True
         strike = float(row.get("strike") or 0)
-        if strike and abs(strike - price) / price <= 0.25:
+        if strike and abs(strike - price) / price <= 0.10:
             return True
     return False
 
@@ -261,12 +276,13 @@ def _parse_cboe_symbol(symbol: str):
 
 
 class ChainProvider:
-    """Provides normalized options chain data with Polygon primary, yfinance second, CBOE delayed third."""
+    """Provides normalized options chain data with Polygon primary, yfinance second, Nasdaq delayed third, CBOE delayed fourth."""
 
     # Human-readable notes on what the most recent fetch from each source
     # produced, so a total failure can say why instead of going silent.
     last_polygon_note: str = ""
     last_yfinance_note: str = ""
+    last_nasdaq_note: str = ""
     last_cboe_note: str = ""
 
     # ------------------------------------------------------------------
@@ -758,6 +774,138 @@ class ChainProvider:
         return rows, live_price, "cboe_delayed"
 
     # ------------------------------------------------------------------
+    # Nasdaq public option chain (nearest expiry only)
+    # ------------------------------------------------------------------
+
+    def _fetch_nasdaq_rows(
+        self,
+        ticker: str,
+        contract_type: str,
+        dte_min: int,
+        dte_max: int,
+        live_price: float | None = None,
+    ) -> tuple[list[dict], float | None, str]:
+        """
+        Fetch normalized chain rows from Nasdaq's public option-chain
+        API. Returns (rows, price, source) where source is
+        "nasdaq_delayed". Returns ([], None, "") when the endpoint
+        cannot be reached or its expiry is outside the DTE window.
+
+        Nasdaq's public endpoint serves the nearest expiry only, so
+        this source only helps when the requested window contains
+        that expiry, which is exactly the weekly case. Quotes are
+        delayed about 15 minutes. Unlike CBOE's CDN, Nasdaq's API
+        answers datacenter IPs, so this is the delayed source most
+        likely to work from the deployed app. Nasdaq carries no IV
+        or Greeks, so delta and theta are Black-Scholes on
+        historical vol, the same fallback the yfinance path uses.
+        """
+        key = str(ticker or "").strip().upper()
+        url = (
+            "https://api.nasdaq.com/api/quote/"
+            f"{key}/option-chain?assetclass=stocks&limit=0"
+        )
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            self.last_nasdaq_note = f"nasdaq failed: {type(e).__name__}: {e}"
+            logger.warning("_fetch_nasdaq_rows %s failed: %s", ticker, e)
+            return [], None, ""
+        rows_in = ((payload or {}).get("data") or {}).get("table", {}).get("rows") or []
+        if not rows_in:
+            self.last_nasdaq_note = f"nasdaq returned no rows for {key}"
+            return [], None, ""
+        today = date.today()
+        expiry_iso = None
+        for r in rows_in:
+            raw = str(r.get("expiryDate") or "").strip()
+            if not raw:
+                continue
+            try:
+                expiry_iso = datetime.strptime(raw, "%b %d, %Y").date().isoformat()
+            except ValueError:
+                continue
+            break
+        if not expiry_iso:
+            self.last_nasdaq_note = "nasdaq returned rows with no parseable expiry"
+            return [], None, ""
+        dte_val = (date.fromisoformat(expiry_iso) - today).days
+        if dte_val < dte_min or dte_val > dte_max:
+            self.last_nasdaq_note = (
+                f"nasdaq nearest expiry {expiry_iso} ({dte_val}d) outside "
+                f"dte={dte_min}-{dte_max}"
+            )
+            return [], None, ""
+        prefix = "c_" if contract_type == "call" else "p_"
+        bid_key, ask_key = f"{prefix}Bid", f"{prefix}Ask"
+        last_key = f"{prefix}Last"
+        vol_key, oi_key = f"{prefix}Volume", f"{prefix}Openinterest"
+        parsed = []
+        for r in rows_in:
+            strike = _nasdaq_num(r.get("strike"))
+            if strike is None or strike <= 0:
+                continue
+            bid = _nasdaq_num(r.get(bid_key)) or 0.0
+            ask = _nasdaq_num(r.get(ask_key)) or 0.0
+            last = _nasdaq_num(r.get(last_key)) or 0.0
+            sale_price, mid, price_source = resolve_sale_price(bid, ask)
+            if mid <= 0 and last <= 0:
+                continue
+            parsed.append({
+                "strike": strike,
+                "expiry": expiry_iso,
+                "dte": dte_val,
+                "bid": round(bid, 2),
+                "ask": round(ask, 2),
+                "mid": round(mid, 2),
+                "sale_price": sale_price,
+                "price_source": price_source,
+                "last_trade": round(last, 2),
+                "iv_pct": 0.0,
+                "delta": None,
+                "delta_abs": None,
+                "theta_seller": None,
+                "gamma": None,
+                "vega": None,
+                "volume": _safe_int(r.get(vol_key)),
+                "open_interest": _safe_int(r.get(oi_key)),
+            })
+        if not parsed:
+            self.last_nasdaq_note = f"nasdaq {expiry_iso}: no usable rows"
+            return [], None, ""
+        iv_dec = _historical_volatility(key) or 0.30
+        T = max(dte_val, 1) / 365.0
+        price = live_price
+        rows = []
+        for row in parsed:
+            if contract_type == "call":
+                delta = _bs_call_delta(price, row["strike"], iv_dec, T) if price else None
+                theta_h = _bs_call_theta_daily(price, row["strike"], iv_dec, T) if price else None
+            else:
+                delta = _bs_put_delta(price, row["strike"], iv_dec, T) if price else None
+                theta_h = _bs_put_theta_daily(price, row["strike"], iv_dec, T) if price else None
+            if delta is None:
+                continue
+            row["iv_pct"] = round(iv_dec * 100, 1)
+            row["delta"] = delta
+            row["delta_abs"] = abs(delta)
+            row["theta_seller"] = round(abs(theta_h), 4) if theta_h is not None else None
+            rows.append(row)
+        if not rows:
+            self.last_nasdaq_note = f"nasdaq {expiry_iso}: delta failed on every row"
+            return [], None, ""
+        self.last_nasdaq_note = f"nasdaq ok ({len(rows)} rows, {expiry_iso})"
+        return rows, live_price, "nasdaq_delayed"
+
+    # ------------------------------------------------------------------
     # Public fetch
     # ------------------------------------------------------------------
 
@@ -770,16 +918,25 @@ class ChainProvider:
         near_price: float | None = None,
     ) -> "ChainResult | ChainError":
         """
-        Polygon primary, yfinance second, CBOE delayed third.
-        Returns ChainResult on success, ChainError on total failure.
-        Never returns an empty-rows ChainResult as a success. A
-        yfinance chain with no executable bid is not a success
-        either: it falls through to CBOE, and only returns the
-        bid-0 rows when CBOE has nothing, so callers can report
+        Polygon primary, yfinance second, Nasdaq delayed third,
+        CBOE delayed fourth. Returns ChainResult on success,
+        ChainError on total failure. Never returns an empty-rows
+        ChainResult as a success. A chain with no executable bid
+        near the money is not a success either: it falls through
+        to the next source, and only returns the bid-0 rows when
+        every source has nothing, so callers can report
         no_executable_bid instead of the contract vanishing silently.
         """
         sources_tried: list[str] = []
         live_price = near_price or self.fetch_price(ticker)
+
+        def _notes():
+            return [n for n in (
+                self.last_polygon_note,
+                self.last_yfinance_note,
+                self.last_nasdaq_note,
+                self.last_cboe_note,
+            ) if n]
 
         # --- Polygon ---
         rows, poly_price = self._fetch_polygon_rows(
@@ -792,6 +949,7 @@ class ChainProvider:
                 price=poly_price or live_price or 0.0,
                 source="polygon_live",
                 fetched_at=datetime.utcnow(),
+                notes=_notes(),
             )
 
         # --- yfinance fallback ---
@@ -805,19 +963,41 @@ class ChainProvider:
                 price=yf_price or live_price or 0.0,
                 source=yf_source,
                 fetched_at=datetime.utcnow(),
+                notes=_notes(),
             )
         if yf_rows:
-            # Yahoo returned rows but no executable bid (the usual
-            # stale-chain case: every bid is 0.0). A bid-0 chain is
-            # not a live quote, so fall through to CBOE delayed
+            # Yahoo returned rows but no executable bid near the money
+            # (the usual stale-chain case: every bid is 0.0, or the
+            # only bids sit far in the money). A bid-0 chain is not a
+            # live quote, so fall through to the delayed sources
             # instead of presenting it as one.
             self.last_yfinance_note = (
-                f"yfinance returned {len(yf_rows)} rows with no executable bid; "
-                "falling through to CBOE delayed"
+                f"yfinance returned {len(yf_rows)} rows with no executable bid "
+                "near the money; falling through to Nasdaq delayed"
+            )
+
+        # --- Nasdaq delayed (nearest expiry only) ---
+        # Only reached when the live sources fail. Nasdaq's public
+        # endpoint serves the nearest expiry, so this helps exactly
+        # when the requested window contains it, the weekly case.
+        # The source label stays "nasdaq_delayed" all the way to
+        # the UI, so a strategy built on it is never presented as
+        # live-priced.
+        nasdaq_rows, nasdaq_price, nasdaq_source = self._fetch_nasdaq_rows(
+            ticker, contract_type, dte_min, dte_max, live_price=live_price
+        )
+        sources_tried.append("nasdaq")
+        if nasdaq_rows and _has_executable_bid(nasdaq_rows, live_price):
+            return ChainResult(
+                rows=nasdaq_rows,
+                price=nasdaq_price or live_price or 0.0,
+                source=nasdaq_source,
+                fetched_at=datetime.utcnow(),
+                notes=_notes(),
             )
 
         # --- CBOE delayed fallback ---
-        # Only reached when both live sources fail, so a delayed
+        # Only reached when the other sources fail, so a delayed
         # quote is never preferred over a live one. The source label
         # stays "cboe_delayed" all the way to the UI, so a strategy
         # built on it is never presented as live-priced.
@@ -831,17 +1011,19 @@ class ChainProvider:
                 price=cboe_price or live_price or 0.0,
                 source=cboe_source,
                 fetched_at=datetime.utcnow(),
+                notes=_notes(),
             )
         if yf_rows:
-            # Neither live source nor CBOE had an executable bid.
-            # Return the yfinance rows so callers can report
-            # no_executable_bid instead of the contract vanishing
-            # silently.
+            # Neither live source nor the delayed sources had an
+            # executable bid. Return the yfinance rows so callers
+            # can report no_executable_bid instead of the contract
+            # vanishing silently.
             return ChainResult(
                 rows=yf_rows,
                 price=yf_price or live_price or 0.0,
                 source=yf_source,
                 fetched_at=datetime.utcnow(),
+                notes=_notes(),
             )
 
         return ChainError(
@@ -849,7 +1031,8 @@ class ChainProvider:
             reason=(
                 f"No chain data from any source (dte={dte_min}-{dte_max}, "
                 f"type={contract_type}). {self.last_polygon_note}; "
-                f"{self.last_yfinance_note}; {self.last_cboe_note}"
+                f"{self.last_yfinance_note}; {self.last_nasdaq_note}; "
+                f"{self.last_cboe_note}"
             ),
             sources_tried=sources_tried,
         )

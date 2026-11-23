@@ -94,6 +94,46 @@ def _news(ticker):
         return [], f"news_unavailable: {type(exc).__name__}"
 
 
+TIER_REASON_TEXT = {
+    "no_bid": "no strike on this expiry has a bid",
+    "no_otm_bid": "no out-of-the-money strike has a real bid",
+    "no_band_strike": "no listed strike sits in or near this delta band",
+    "strike_used_by_another_tier": "the only strikes in this band are already used by another tier",
+}
+
+
+@router.get("/health")
+def chain_health(ticker: str = Query(default="ABT")):
+    """Probe the chain sources for one ticker and report which one
+    answered. The notes name each source tried and what it returned,
+    so a blocked delayed source is visible instead of silent.
+    Read-only, no trade data. Defined before /{ticker} so the
+    literal path wins over the ticker parameter."""
+    from services.chain_provider import ChainProvider
+
+    ticker = (ticker or "").strip().upper()
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Ticker must be 1-6 letters.")
+    provider = ChainProvider()
+    price = provider.fetch_price(ticker)
+    result = provider.fetch(ticker, "call", 4, 45, near_price=price)
+    if hasattr(result, "rows"):
+        return {
+            "ticker": ticker,
+            "price": price,
+            "source": result.source,
+            "rows": len(result.rows),
+            "notes": getattr(result, "notes", []),
+        }
+    return {
+        "ticker": ticker,
+        "price": price,
+        "source": None,
+        "rows": 0,
+        "notes": [getattr(result, "reason", "No chain data from any source.")],
+    }
+
+
 @router.get("/{ticker}")
 def covered_call_picks(
     ticker: str,
@@ -188,12 +228,12 @@ def covered_call_picks(
         }
 
     chain_source = result.source
-    delay_note = (
-        "Chain quotes are delayed about 15 minutes (CBOE delayed)."
-        if chain_source == "cboe_delayed"
-        else None
-    )
-    picks, fallback_tiers = build_picks(result.rows, price, dte, shares, cost_basis)
+    delay_note = None
+    if chain_source == "cboe_delayed":
+        delay_note = "Chain quotes are delayed about 15 minutes (CBOE delayed)."
+    elif chain_source == "nasdaq_delayed":
+        delay_note = "Chain quotes are delayed about 15 minutes (Nasdaq delayed)."
+    picks, fallback_tiers, tier_reasons = build_picks(result.rows, price, dte, shares, cost_basis)
     response = {
         "ticker": ticker,
         "available": True,
@@ -205,8 +245,10 @@ def covered_call_picks(
         "selected_dte": dte,
         "chain_source": chain_source,
         "chain_delay_note": delay_note,
+        "chain_notes": getattr(result, "notes", []),
         "picks": picks,
         "band_fallback_tiers": fallback_tiers,
+        "tier_reasons": tier_reasons,
         "shares_owned": shares,
         "cost_basis": cost_basis,
         "news": news,
@@ -216,13 +258,20 @@ def covered_call_picks(
         "history_note": None if history else "Price chart unavailable: no price history could be fetched. The strike ladder below still shows the trade-off.",
     }
     if all(v is None for v in picks.values()):
-        # No tier could be priced: the chain carried no usable bid.
-        # Say so plainly instead of reporting success with three
-        # empty tiers.
+        # No tier could be priced: say why, per tier, instead of
+        # reporting success with three empty tiers.
+        reasons = {r for r in tier_reasons.values() if r}
+        if len(reasons) == 1:
+            detail = TIER_REASON_TEXT.get(next(iter(reasons)), next(iter(reasons)))
+        else:
+            detail = "; ".join(
+                f"{tier}: {TIER_REASON_TEXT.get(reason, reason)}"
+                for tier, reason in tier_reasons.items() if reason
+            )
         response["available"] = False
         response["reason"] = (
             f"No covered-call pick could be priced for {ticker} on "
-            f"{selected['expiry']}: the {chain_source} chain returned "
-            "no usable bid for this expiry. Try another expiry."
+            f"{selected['expiry']}: {detail} ({chain_source}). "
+            "Try another expiry."
         )
     return response
